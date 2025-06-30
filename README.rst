@@ -39,7 +39,7 @@ you have the dependencies installed. The easiest way to do this is to run::
 
 
 For developers
-==========
+==============
 
 If you want to contribute to bits, you can run the tests with::
 
