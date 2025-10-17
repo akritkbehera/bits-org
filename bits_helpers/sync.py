@@ -341,7 +341,7 @@ class CVMFSRemoteSync:
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     cvmfs_architecture = re.sub(r"slc(\d+)_x86-64", r"el\1-x86_64", self.architecture)
-    err = execute("""\
+    err = execute(r"""\
     set -x
     # Exit without error in case we do not have any package published
     test -d "{remote_store}/{cvmfs_architecture}/Packages/{package}" || exit 0
@@ -371,6 +371,7 @@ class CVMFSRemoteSync:
       remote_store=self.remoteStore,
       links_path=links_path,
     ))
+    print(f"fetch_symlink: maybe something wrong? {err}")
 
   def upload_symlinks_and_tarball(self, spec) -> None:
     dieOnError(True, "CVMFS backend does not support uploading directly")
