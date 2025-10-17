@@ -490,7 +490,7 @@ def doBuild(args, parser):
   if branch_stream == branch_basename:
     branch_stream = ""
 
-  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture, args.xdefaults)
   (err, overrides, taps) = parseDefaults(args.disable,
                                         defaultsReader, debug)
   dieOnError(err, err)

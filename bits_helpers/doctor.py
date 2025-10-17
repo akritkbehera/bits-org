@@ -128,7 +128,7 @@ def doDoctor(args, parser):
   systemInfo()
 
   specs = {}
-  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
+  defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture, args.xdefaults)
   (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, info)
   if err:
     error("%s", err)

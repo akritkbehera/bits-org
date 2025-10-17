@@ -328,21 +328,28 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
     elif not re.match(matcher, arch):
       yield require
 
-def readDefaults(configDir, defaults, error, architecture):
-  '''
-  defaultsFilename = "%s/defaults-%s.sh" % (configDir, defaults)
-  if not exists(defaultsFilename):
-    error("Default `%s' does not exists. Viable options:\n%s" %
-          (defaults or "<no defaults specified>",
-           "\n".join("- " + basename(x).replace("defaults-", "").replace(".sh", "")
-                     for x in glob(join(configDir, "defaults-*.sh")))))
-  '''
+def readDefaults(configDir, defaults, error, architecture, xdefaults):
+
   defaultsFilename = resolveDefaultsFilename(defaults,configDir)
-  
   err, defaultsMeta, defaultsBody = parseRecipe(getRecipeReader(defaultsFilename))
   if err:
     error(err)
     sys.exit(1)
+
+  if xdefaults is not None:
+    xDefaults = resolveDefaultsFilename(xdefaults,configDir)
+    xMeta = {}
+    xBody = ""
+    if exists(xDefaults):
+      err, xMeta, xBody = parseRecipe(getRecipeReader(xDefaults))
+      if err:
+        error(err)
+        sys.exit(1)
+      for x in ["prefer_system","prefer_system_check","env","requires","overrides"]:
+        val = xMeta.get(x)
+        if val is not None:
+          defaultsMeta[x] = val
+         
   archDefaults = "%s/defaults-%s.sh" % (configDir, architecture)
   archMeta = {}
   archBody = ""
@@ -354,8 +361,8 @@ def readDefaults(configDir, defaults, error, architecture):
     for x in ["env", "disable", "overrides"]:
       defaultsMeta.setdefault(x, {}).update(archMeta.get(x, {}))
     defaultsBody += "\n# Architecture defaults\n" + archBody
-  return (defaultsMeta, defaultsBody)
 
+  return (defaultsMeta, defaultsBody)
 
 def getRecipeReader(url:str , dist=None, genPackages={}):
   m = re.search(r'^(dist|generate):(.*)@([^@]+)$', url)
