@@ -149,7 +149,7 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
 
   with the calculated content.
   """
-  defaults_upper = defaults != "release" and "_" + defaults.upper().replace("-", "_") or ""
+  defaults_upper = "" if defaults == ['release'] else "_".join(d.upper() for d in defaults)
   commit_hash = spec.get("commit_hash", "hash_unknown")
   tag = str(spec.get("tag", "tag_unknown"))
   package = spec.get("package")
@@ -333,51 +333,43 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
     elif not re.match(matcher, arch):
       yield require
 
-
-def merge_ordered_dicts(dict1, dict2):
+def merge_dicts(dict1, dict2):
   """
-  Merge two ordered dictionaries where dict2's keys overwrite dict1's keys.
-  Preserves order with dict1's keys first, followed by dict2's new keys.
+  Merge two ordered dictionaries where dict2's keys updates dict1's keys recursively.
   """
-  merged = OrderedDict()
   # Add all keys from dict1 first
-  for key, value in dict1.items():
-    merged[key] = value
-    
+  merged = dict1.copy()
   # Overwrite with dict2's values and add new keys
   for key, value in dict2.items():
-    if key in merged and isinstance(merged[key], OrderedDict) and isinstance(value, OrderedDict):
+    if key not in merged:
+      merged[key] = value
+      continue
+    elif isinstance(merged[key], dict) and isinstance(value, dict):
       # Recursively merge nested ordered dictionaries
-      merged[key] = merge_ordered_dicts(merged[key], value)
+      merged[key] = merge_dicts(merged[key], value)
+    elif isinstance(merged[key], list) and isinstance(value, list):
+      # merge lists, such as for "disabled"
+      merged[key].extend(value)
     else:
       # Overwrite existing key or add new key
       merged[key] = value
   return merged
-  
-  
-def readDefaults(configDir, defaults, error, architecture, xdefaults):
 
-  defaultsFilename = resolveDefaultsFilename(defaults,configDir)
-  err, defaultsMeta, defaultsBody = parseRecipe(getRecipeReader(defaultsFilename))
-  if err:
-    error(err)
-    sys.exit(1)
+def readDefaults(configDir, defaults, error, architecture):
+  defaultsMeta = {}
+  defaultsBody = ""
 
-  for x in ["overrides"]:
-    defaultsMeta[x] = asDict(defaultsMeta.get(x, OrderedDict()))
-
-  debug("Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
-  
-  if xdefaults is not None:
+  for xdefaults in defaults:
     xDefaults = resolveDefaultsFilename(xdefaults,configDir)
     xMeta = {}
-    xBody = ""
     if exists(xDefaults):
       err, xMeta, xBody = parseRecipe(getRecipeReader(xDefaults))
+      if xBody.strip() != "":
+        defaultsBody += "\n" + xBody.strip()
       if err:
         error(err)
         sys.exit(1)
-      defaultsMeta = merge_ordered_dicts(defaultsMeta, xMeta)
+      defaultsMeta = merge_dicts(defaultsMeta, xMeta)
 
   archDefaults = "%s/defaults-%s.sh" % (configDir, architecture)
   archMeta = {}
@@ -558,26 +550,6 @@ def asDict(overrides_array):
     debug("asDict (result): %s ",json.dumps(result))
     return result
 
-def merge_dicts(dict1, dict2):
-  """
-  Helper function to merge two dictionaries recursively.
-  dict2 values overwrite dict1 values.
-  """
-  merged = OrderedDict(dict1)
-    
-  for key, value in dict2.items():
-    if (key in merged and 
-      isinstance(merged[key], dict) and 
-      isinstance(value, dict)):
-      # Recursively merge nested dictionaries
-      merged[key] = merge_dicts(merged[key], value)
-    else:
-      # Overwrite or add new key-value pair
-      merged[key] = value
-    
-  return merged
-  
-
 # (Almost pure part of the defaults parsing)
 # Override defaultsGetter for unit tests.
 def parseDefaults(disable, defaultsGetter, log):
@@ -674,10 +646,18 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   packages = packages[:]
   generatedPackages = getGeneratedPackages(configDir)
   validDefaults = []  # empty list: all OK; None: no valid default; non-empty list: list of valid ones
-
   while packages:
     p = packages.pop(0)
-    if p in specs or (p == "defaults-release" and ("defaults-" + defaults) in specs):
+    if p in specs:
+      continue
+    skip = False
+    for d in defaults:
+      if p == "defaults-release" and ("defaults-" + d) in specs:
+        skip = True
+        break
+      else:
+        pkg_filename = ("defaults-" + d) if p == "defaults-release" else p.lower()
+    if skip:
       continue
 
     # We rewrite all defaults to "defaults-release", so load the correct
@@ -687,8 +667,6 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # they will end up with the same hash. The defaults must be called
     # "defaults-release" for this to work, since the defaults are a dependency
     # and all dependencies' names go into a package's hash.
-    pkg_filename = ("defaults-" + defaults) if p == "defaults-release" else p.lower()
-
     filename,pkgdir = resolveFilename(taps, pkg_filename, configDir, generatedPackages)
 
     dieOnError(not filename, "Package %s not found in %s" % (p, configDir))

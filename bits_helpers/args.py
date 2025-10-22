@@ -413,10 +413,7 @@ def finaliseArgs(args, parser):
     return args
 
   if hasattr(args, "defaults"):
-    if "::" in args.defaults:
-      args.defaults,args.xdefaults = args.defaults.split("::")
-    else:
-      args.xdefaults = None
+    args.defaults = args.defaults.split("::")
 
   # --architecture can be specified in both clean and build.
   if args.action in ["build", "clean"] and not args.architecture:
