@@ -328,6 +328,15 @@ def disabledByArchitectureDefaults(arch, defaults, requires):
     elif not re.match(matcher, arch):
       yield require
 
+def deep_merge_dicts(dict1, dict2):
+    result = dict1.copy()
+    for key, value in dict2.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge_dicts(result[key], value)
+        else:
+            result[key] = value
+    return result
+  
 def readDefaults(configDir, defaults, error, architecture, xdefaults):
 
   defaultsFilename = resolveDefaultsFilename(defaults,configDir)
@@ -345,10 +354,7 @@ def readDefaults(configDir, defaults, error, architecture, xdefaults):
       if err:
         error(err)
         sys.exit(1)
-      for x in ["prefer_system","prefer_system_check","env","requires","overrides"]:
-        val = xMeta.get(x)
-        if val is not None:
-          defaultsMeta[x] = val
+      defaultsMeta = deep_merge_dicts(defaultsMeta, xMeta)
          
   archDefaults = "%s/defaults-%s.sh" % (configDir, architecture)
   archMeta = {}
