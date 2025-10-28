@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
+import os
 import yaml
+import json
+from typing import Any, IO
+
+
 from os.path import exists
 import hashlib
 from glob import glob
@@ -370,6 +375,7 @@ def readDefaults(configDir, defaults, error, architecture, xdefaults):
 
   return (defaultsMeta, defaultsBody)
 
+  
 def getRecipeReader(url:str , dist=None, genPackages={}):
   m = re.search(r'^(dist|generate):(.*)@([^@]+)$', url)
   if m and m.group(1) == "generate":
@@ -411,10 +417,33 @@ class GitReader(object):
 
 def yamlLoad(s):
   class YamlSafeOrderedLoader(yaml.SafeLoader):
-    pass
+    """YAML Loader with `!include` constructor."""
+    
+    def __init__(self, stream: IO) -> None:
+      """Initialise Loader."""
+      try:
+        self._root = os.path.split(stream.name)[0]
+      except AttributeError:
+        self._root = os.path.curdir
+      super().__init__(stream)
+
+  def construct_include(loader: YamlSafeOrderedLoader, node: yaml.Node) -> Any:
+    """Include file referenced at node."""
+    filename = os.path.abspath(os.path.join(loader._root, loader.construct_scalar(node)))
+    extension = os.path.splitext(filename)[1].lstrip('.')
+    with open(filename, 'r') as f:
+      if extension in ('yaml', 'yml'):
+        return yaml.load(f, YamlSafeOrderedLoader)
+      elif extension in ('json', ):
+        return json.load(f)
+      else:
+        return ''.join(f.readlines())
+
   def construct_mapping(loader, node):
     loader.flatten_mapping(node)
     return OrderedDict(loader.construct_pairs(node))
+
+  YamlSafeOrderedLoader.add_constructor('!include', construct_include)
   YamlSafeOrderedLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
                                         construct_mapping)
   return yaml.load(s, YamlSafeOrderedLoader)
@@ -467,6 +496,24 @@ def parseDefaults(disable, defaultsGetter, log):
   for x in defaultsDisable:
     log("Package %s has been disabled by current default.", x)
   disable.extend(defaultsDisable)
+
+  d0 = defaultsMeta.get("overrides", OrderedDict())
+
+  dlist = []
+
+  if type(d0) == list :
+    for x in d0:
+      if type(x) == list:
+        for y in x:
+          if type(y) == OrderedDict:
+            dlist.append(y)
+      elif type(x) == OrderedDict:
+        dlist.append(x)
+      d0 = dlist.pop(0)
+      for item in dlist:
+        d0 = deep_merge_dicts(d0, dlist.pop(0))
+      defaultsMeta["overrides"] = d0
+  
   if type(defaultsMeta.get("overrides", OrderedDict())) != OrderedDict:
     return ("overrides should be a dictionary", None, None)
   overrides, taps = OrderedDict(), {}
