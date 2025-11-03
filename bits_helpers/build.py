@@ -1214,8 +1214,6 @@ def doBuild(args, parser):
     print(err,child.stdout)
     if(err):
       print(child.stdout)
-    #err = execute(mfCmd, printer=progress)
-    print("failed" if err else "done", err)
     buildErrMsg = dedent("""\
       Error while executing {cmd} on `{h}'.
       Log can be found in {w}/log
@@ -1247,13 +1245,13 @@ def doBuild(args, parser):
        )))
       buildErrMsg = dedent("""\
         Error while executing {sd}/build.sh on `{h}'.
-        Log can be found in {w}/BUILD/{p}-latest{devSuffix}/log
+        Log can be found in {w}/log
         Please upload it to CERNBox/Dropbox if you intend to request support.
-        Build directory is {w}/BUILD/{p}-latest{devSuffix}/{p}.
+        Build directory is {w}/{p}.
         """).format(
           h=socket.gethostname(),
           sd=scriptDir,
-          w=buildWorkDir,
+          w=join(workDir, "BUILD", spec["hash"]),
           p=spec["package"],
           devSuffix="-" + args.develPrefix
           if "develPrefix" in args and spec["is_devel_pkg"]
