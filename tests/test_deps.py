@@ -66,6 +66,11 @@ class DepsTestCase(unittest.TestCase):
                          outgraph="/tmp/outgraph.pdf",
                          package="AliRoot",
                          defaults="release",
+                         environment=[])
+        def fake_exists(n):
+            return {"/alidist/aliroot.sh": True}
+        with patch.object(os.path, "exists", fake_exists):
+            doDeps(args, MagicMock())
                          xdefaults=None)
 
 

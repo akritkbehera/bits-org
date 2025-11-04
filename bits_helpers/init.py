@@ -3,6 +3,7 @@ from bits_helpers.utilities import getPackageList, parseDefaults, readDefaults, 
 from bits_helpers.log import debug, error, warning, banner, info
 from bits_helpers.log import dieOnError
 from bits_helpers.workarea import updateReferenceRepoSpec
+from bits_helpers.cmd import getstatusoutput
 
 from os.path import join
 import os.path as path
@@ -54,7 +55,7 @@ def doInit(args):
                                          architecture="",
                                          disable=[],
                                          defaults=args.defaults,
-                                         performPreferCheck=lambda *x, **y: (1, ""),
+                                         performPreferCheck=lambda pkg, cmd: getstatusoutput(["bash", "-c", cmd]),
                                          performRequirementCheck=lambda *x, **y: (0, ""),
                                          performValidateDefaults=lambda spec : validateDefaults(spec, args.defaults),
                                          overrides=overrides,

@@ -7,7 +7,9 @@ import re
 import sys
 import time
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.exceptions import RequestException
+from urllib.parse import quote
 
 from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint
@@ -59,6 +61,7 @@ class HttpRemoteSync:
 
   def getRetry(self, url, dest=None, returnResult=False, log=True, session=None, progress=debug):
     get = session.get if session is not None else requests.get
+    url = quote(url, safe=":/")
     for i in range(0, self.httpConnRetries):
       if i > 0:
         pauseSec = self.httpBackoff * (2 ** (i - 1))
@@ -178,7 +181,7 @@ class HttpRemoteSync:
       destPath = os.path.join(self.workdir, store_path, use_tarball)
       if not os.path.isfile(destPath):   # do not download twice
         progress = ProgressPrint("Downloading tarball for %s@%s" %
-                                 (spec["package"], spec["version"]))
+                                 (spec["package"], spec["version"]), min_interval=5.0)
         progress("[0%%] Starting download of %s", use_tarball)  # initialise progress bar
         self.getRetry("/".join((self.remoteStore, store_path, use_tarball)),
                       destPath, session=session, progress=progress)
@@ -357,7 +360,7 @@ class CVMFSRemoteSync:
       # Create the dummy tarball, if it does not exists
       test -f "{workDir}/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" && continue
       mkdir -p "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}"
-      find "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" ! -name etc -maxdepth 1 -mindepth 1 -exec ln -sf {} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/" \;
+      find "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" ! -name etc -maxdepth 1 -mindepth 1 -exec ln -sf {} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/" \\;
       cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version/etc" "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/etc"
       mkdir -p "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash"
       tar -C "{workDir}/INSTALLROOT/$pkg_hash" -czf "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" .
@@ -552,7 +555,7 @@ class Boto3RemoteSync:
       for tarball in self._s3_listdir(store_path):
         debug("Fetching tarball %s", tarball)
         progress = ProgressPrint("Downloading tarball for %s@%s" %
-                                 (spec["package"], spec["version"]))
+                                 (spec["package"], spec["version"]), min_interval=5.0)
         progress("[0%%] Starting download of %s", tarball)   # initialise progress bar
         # Create containing directory locally. (exist_ok= is python3-specific.)
         os.makedirs(os.path.join(self.workdir, store_path), exist_ok=True)
@@ -680,15 +683,45 @@ class Boto3RemoteSync:
 
     # Second, upload dist symlinks. These should be in place before the main
     # tarball, to avoid races in the publisher.
-    for link_dir, symlinks in dist_symlinks.items():
-      for link_key, hash_path in symlinks:
-        self.s3.put_object(Bucket=self.writeStore,
-                           Key=link_key,
-                           Body=os.fsencode(hash_path),
-                           ACL="public-read",
-                           WebsiteRedirectLocation=hash_path)
-      debug("Uploaded %d dist symlinks to S3 from %s",
-            len(symlinks), link_dir)
+    start_time = time.time()
+    total_symlinks = 0
+
+    # Limit concurrency to avoid overwhelming S3 with too many simultaneous requests
+    max_workers = min(32, (len(dist_symlinks) * 10) or 1)
+
+    def _upload_single_symlink(link_key, hash_path):
+      self.s3.put_object(Bucket=self.writeStore,
+                         Key=link_key,
+                         Body=os.fsencode(hash_path),
+                         ACL="public-read",
+                         WebsiteRedirectLocation=hash_path)
+      return link_key
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+      future_to_info = {}
+      for link_dir, symlinks in dist_symlinks.items():
+        for link_key, hash_path in symlinks:
+          future = executor.submit(_upload_single_symlink, link_key, hash_path)
+          future_to_info[future] = (link_dir, link_key)
+          total_symlinks += 1
+
+      dir_counts = {link_dir: 0 for link_dir in dist_symlinks.keys()}
+      for future in as_completed(future_to_info):
+        link_dir, link_key = future_to_info[future]
+        try:
+          future.result()
+          dir_counts[link_dir] += 1
+        except Exception as e:
+          error("Failed to upload symlink %s: %s", link_key, e)
+          raise
+
+      for link_dir, count in dir_counts.items():
+        if count > 0:
+          debug("Uploaded %d dist symlinks to S3 from %s", count, link_dir)
+
+    end_time = time.time()
+    debug("Uploaded %d dist symlinks in %.2f seconds",
+          total_symlinks, end_time - start_time)
 
     self.s3.upload_file(Bucket=self.writeStore, Key=tar_path,
                         Filename=os.path.join(self.workdir, tar_path))

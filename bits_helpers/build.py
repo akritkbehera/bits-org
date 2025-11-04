@@ -60,7 +60,7 @@ def update_git_repos(args, specs, buildOrder):
         specs[package]["scm"] = Git()
         if specs[package]["is_devel_pkg"]:
             specs[package]["source"] = os.path.join(os.getcwd(), specs[package]["package"])
-            if exists(os.path.join(specs[package]["source"], ".sl")):
+            if exists(os.path.join(specs[package]["source"], ".sl")) or exists(os.path.join(specs[package]["source"], ".git/sl")):
                 specs[package]["scm"] = Sapling()
         updateReferenceRepoSpec(args.referenceSources, package, specs[package],
                                 fetch=args.fetchRepos, allowGitPrompt=git_prompt)
@@ -515,7 +515,10 @@ def doBuild(args, parser):
 
   install_wrapper_script("git", workDir)
 
-  with DockerRunner(args.dockerImage, args.docker_extra_args) as getstatusoutput_docker:
+  extra_env = {"BITS_CONFIG_DIR": "/alidist" if args.docker else os.path.abspath(args.configDir)}
+  extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
+
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/alidist:ro"] if args.docker else []) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
@@ -1150,12 +1153,13 @@ def doBuild(args, parser):
     if args.docker:
       build_command = (
         "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
-        "-v {workdir}:/sw -v {scriptDir}/build.sh:/build.sh:ro "
+        "-v {workdir}:/sw -v{configDir}:/alidist:ro -v {scriptDir}/build.sh:/build.sh:ro "
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
-        "-e WORK_DIR_OVERRIDE=/sw {extraArgs} {image} bash -ex /build.sh"
+        "-e WORK_DIR_OVERRIDE=/sw -e BITS_CONFIG_DIR_OVERRIDE=/alidist {extraArgs} {image} bash -ex /build.sh"
       ).format(
         image=quote(args.dockerImage),
         workdir=quote(abspath(args.workDir)),
+        configDir=quote(abspath(args.configDir)),
         scriptDir=quote(scriptDir),
         extraArgs=" ".join(map(quote, args.docker_extra_args)),
         additionalEnv=" ".join(

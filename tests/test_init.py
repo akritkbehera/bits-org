@@ -48,6 +48,7 @@ class InitTestCase(unittest.TestCase):
         dryRun = True,
         fetchRepos = False,
         architecture = "slc7_x86-64",
+        environment = {},
         xdefaults = None
       )
       self.assertRaises(SystemExit, doInit, args)
@@ -88,6 +89,7 @@ class InitTestCase(unittest.TestCase):
         dryRun = False,
         fetchRepos = False,
         architecture = "slc7_x86-64",
+        environment = {},
         xdefaults = None
       )
       doInit(args)

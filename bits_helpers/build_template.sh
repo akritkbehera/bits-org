@@ -16,6 +16,7 @@ cpath=$(which gcc)
 function hash() { true; }
 
 export WORK_DIR="${WORK_DIR_OVERRIDE:-%(workDir)s}"
+export BITS_CONFIG_DIR="${BITS_CONFIG_DIR_OVERRIDE:-%(configDir)s}"
 
 # Insert our own wrapper scripts into $PATH, patched to use the system OpenSSL,
 # instead of the one we build ourselves.
@@ -108,9 +109,9 @@ unset DYLD_LIBRARY_PATH
 EOF
 
 cd "$BUILDROOT"
-ln -snf $PKGHASH "${BUILDROOT}-latest"
+ln -snf "$PKGHASH" "$ALIBUILD_BUILD_WORK_DIR/BUILD/$PKGNAME-latest"
 if [[ $DEVEL_PREFIX ]]; then
-  ln -snf $PKGHASH "${BUILDROOT}-latest-$DEVEL_PREFIX"
+  ln -snf "$PKGHASH" "$ALIBUILD_BUILD_WORK_DIR/BUILD/$PKGNAME-latest-$DEVEL_PREFIX"
 fi
 
 cd "$BUILDDIR"
