@@ -291,7 +291,6 @@ class BuildTestCase(unittest.TestCase):
             forceTracked=False,
             plugin="legacy",
             makeflow=False,
-            xdefaults=None
         )
 
         def mkcall(args):
