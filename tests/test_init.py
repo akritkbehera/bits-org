@@ -44,12 +44,11 @@ class InitTestCase(unittest.TestCase):
         pkgname = "zlib,AliRoot@v5-08-00",
         referenceSources = "/sw/MIRROR",
         dist = fake_dist,
-        defaults = "release",
+        defaults = ["release"],
         dryRun = True,
         fetchRepos = False,
         architecture = "slc7_x86-64",
         environment = {},
-        xdefaults = None
       )
       self.assertRaises(SystemExit, doInit, args)
       self.assertEqual(mock_info.mock_calls, [call('This will initialise local checkouts for %s\n--dry-run / -n specified. Doing nothing.', 'zlib,AliRoot')])
@@ -85,12 +84,11 @@ class InitTestCase(unittest.TestCase):
         pkgname = "AliRoot@v5-08-00",
         referenceSources = "/sw/MIRROR",
         dist = fake_dist,
-        defaults = "release",
+        defaults = ["release"],
         dryRun = False,
         fetchRepos = False,
         architecture = "slc7_x86-64",
         environment = {},
-        xdefaults = None
       )
       doInit(args)
       self.assertEqual(mock_git.mock_calls, CLONE_EVERYTHING)
