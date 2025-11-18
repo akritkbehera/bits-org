@@ -62,7 +62,9 @@ def makedirs(path):
     if returncode != 0:
         raise OSError("makedirs() failed (return: {}):\n{}".format(returncode, out))
 
-def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
+def downloadUrllib2(source, destDir, work_dir, dest_filename=None, cached_source=None):
+    if cached_source is not None:
+        source = cached_source
     try:
         dest = "/".join([destDir.rstrip("/"), dest_filename if dest_filename else basename(source)])
         headers={"Cache-Control": "no-cache"}
@@ -113,7 +115,9 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
 #
 # which will be used to pack only a subset of the checkout.
 
-def downloadGit(source, dest, work_dir):
+def downloadGit(source, dest, work_dir, dest_filename=None, cached_source=None):
+    if cached_source is not None:
+        return downloadUrllib2(source, dest, dest_filename, cached_source)
     protocol, gitroot, args = parseGitUrl(source)
     tempdir = createTempDir(work_dir, "tmp")
 
@@ -172,10 +176,6 @@ def parseGitUrl(url):
     args["filter"] = sanitize(args["filter"])
     return protocol, gitroot, args
 
-
-
-
-
 def createTempDir(workDir, subDir):
     tempdir = join(workDir, subDir)
     if not exists(tempdir):
@@ -226,7 +226,7 @@ def fixUrl(s):
             if s.endswith('?'): s=s[:-1]
     return s
 
-def downloadPip(source, dest, work_dir):
+def downloadPip(source, dest, work_dir, dest_filename=None, cached_source=None):
     # Valid PIP URL formats are
     # pip://package/version?[pip_options=downloadOptions&][pip=pip_command&][pip_package=package&]output=/tarbalname
     # pip://package/version/tarbalname
@@ -240,7 +240,7 @@ def downloadPip(source, dest, work_dir):
     for tar_name in tar_names:
       pypi_file = '{}-{}.tar.gz'.format(tar_name, pkg[1].strip())
       pypi_url = 'https://pypi.io/packages/source/{}/{}/{}'.format(pack[0], pack, pypi_file)
-      if downloadUrllib2(pypi_url, dest, work_dir, dest_filename=filename):
+      if downloadUrllib2(pypi_url, dest, work_dir, dest_filename=filename, cached_source=cached_source):
         return
     pack = pack + '==' + pkg[1].strip()
     pip_opts = "--no-deps --no-binary=:all:"
@@ -278,13 +278,16 @@ def downloadPip(source, dest, work_dir):
                     url=file["url"]
         if url is not None:
             debug("Found source on pypi - downloading")
-            return downloadUrllib2(url, dest, work_dir, dest_filename=filename)
+            return downloadUrllib2(url, dest, work_dir, dest_filename=filename, cached_source=cached_source)
 
     if not '--no-deps' in pip_opts: pip_opts = '--no-deps ' + pip_opts
     if not '--no-cache-dir' in pip_opts: pip_opts = '--no-cache-dir ' + pip_opts
-    comm = 'cd ' + dest + ";" + pip + ' download ' + pip_opts + ' --disable-pip-version-check -q -d . {}; [ -e {} ] || mv *.* {}; ls -l'.format(pack, filename, filename)
-    error, output = getstatusoutput(comm)
-    return not error
+    if cached_source is None:
+        comm = 'cd ' + dest + ";" + pip + ' download ' + pip_opts + ' --disable-pip-version-check -q -d . {}; [ -e {} ] || mv *.* {}; ls -l'.format(pack, filename, filename)
+        error, output = getstatusoutput(comm)
+        return not error
+    else:
+        return downloadUrllib2(url, dest, work_dir, dest_filename=filename, cached_source=cached_source)
 
 def downloadFile(source, dest, work_dir):
     import shutil
@@ -302,11 +305,12 @@ downloadHandlers = {
 }
 
 
-def download(source, dest, work_dir):
-    noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
-    isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
-    source = fixUrl(source)
-    checksum = getUrlChecksum(source)
+
+def download(source, dest, work_dir, cached_source=None):
+  noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
+  isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
+  source = fixUrl(source)
+  checksum = getUrlChecksum(source)
 
     # Syntactic sugar to allow the following urls for tag collector:
     #
@@ -335,9 +339,9 @@ def download(source, dest, work_dir):
 
     cacheDir = abspath(join(work_dir, "SOURCES/cache"))
     urlTypeRe = re.compile(r"([^:+]*)([^:]*)://.*")
-    match = urlTypeRe.match(source)
+    match = urlTypeRe.match(cached_source or source)
     if not urlTypeRe.match(source):
-        raise MalformedUrl(source)
+        raise MalformedUrl(cached_source or source)
     downloadHandler = downloadHandlers[match.group(1)]
     filename = source.rsplit("/", 1)[1]
     downloadDir = join(cacheDir, checksum[0:2], checksum)
@@ -349,8 +353,8 @@ def download(source, dest, work_dir):
 
     realFile = join(downloadDir, filename)
     if not exists(realFile):
-        debug ("Trying to fetch source file: %s", source)
-        downloadHandler(source, downloadDir, work_dir)
+        debug("Trying to fetch source file: %s", cached_source or source)
+        downloadHandler(cached_source or source, downloadDir, work_dir, dest_filename=filename, cached_source=cached_source)
     if exists(realFile):
         executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
     else:

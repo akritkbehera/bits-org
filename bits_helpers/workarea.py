@@ -7,9 +7,9 @@ import tempfile
 from collections import OrderedDict
 
 
-from bits_helpers.log import dieOnError, debug, error
-from bits_helpers.download import download
-from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash, asList
+from bits_helpers.log import dieOnError, debug, error, banner
+from bits_helpers.download import download, getUrlChecksum
+from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash
 
 FETCH_LOG_NAME = "fetch-log.txt"
 
@@ -130,7 +130,7 @@ def is_writeable(dirpath):
     return False
 
 
-def checkout_sources(spec, work_dir, reference_sources, containerised_build):
+def checkout_sources(spec, work_dir, reference_sources, containerised_build, remote=None):
   """Check out sources to be compiled, potentially from a given reference."""
   scm = spec["scm"]
 
@@ -159,7 +159,15 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build):
       shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch),os.path.join(source_dir, patch))
   if "sources" in spec:
     for s in spec["sources"]:
-      download(s,source_dir, work_dir)
+      filename = s.rsplit("/", 1)[1]
+      if remote and hasattr(remote, "fetch_sources_from_s3"):
+        cached_src = remote.fetch_sources_from_s3(spec, getUrlChecksum(s), filename)
+        banner(f"Found cached source for {spec['package']} on remote store: {remote.remoteStore}")
+      else:
+        cached_src = None
+      download(s, source_dir, work_dir, cached_source=cached_src)
+      if remote and hasattr(remote, "upload_sources_to_s3") and cached_src is None:
+        remote.upload_sources_to_s3(spec, filename, getUrlChecksum(s))
   elif "source" not in spec:
     # There are no sources, so just create an empty SOURCEDIR.
     os.makedirs(source_dir, exist_ok=True)

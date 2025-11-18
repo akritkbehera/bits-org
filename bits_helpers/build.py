@@ -1362,7 +1362,7 @@ def doBuild(args, parser):
         cachedTarball = re.sub("^" + workDir, container_workDir, cachedTarball)
 
     if not cachedTarball:
-      checkout_sources(spec, workDir, args.referenceSources, args.docker)
+      checkout_sources(spec, workDir, args.referenceSources, args.docker, remote=syncHelper)
 
     scriptDir = join(workDir, "SPECS", pkg_arch, spec["package"],
                      spec["version"] + "-" + spec["revision"])
