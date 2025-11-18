@@ -8,7 +8,7 @@ from collections import OrderedDict
 
 
 from bits_helpers.log import dieOnError, debug, error
-from bits_helpers.download import download
+from bits_helpers.download import download, getUrlChecksum
 from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash
 
 FETCH_LOG_NAME = "fetch-log.txt"
@@ -129,7 +129,7 @@ def is_writeable(dirpath):
     return False
 
 
-def checkout_sources(spec, work_dir, reference_sources, containerised_build):
+def checkout_sources(spec, work_dir, reference_sources, containerised_build, remote=None):
   """Check out sources to be compiled, potentially from a given reference."""
   scm = spec["scm"]
 
@@ -156,9 +156,16 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build):
     os.makedirs(source_dir, exist_ok=True)
     for patch in spec["patches"]:
       shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch),os.path.join(source_dir, patch))
-  if "sources" in spec:
-    for s in spec["sources"]:
-      download(s,source_dir, work_dir)
+  for s in spec["sources"]:
+    cached_source = None
+    if remote and hasattr(remote, 'fetch_sources_from_s3'):
+        cached_source = remote.fetch_sources_from_s3(spec, checksum=getUrlChecksum(s))
+    
+    download(s, source_dir, work_dir, cached_source)
+    
+    if cached_source is None and remote and hasattr(remote, 'upload_sources_to_s3'):
+        filename = s.rsplit("/", 1)[1]
+        remote.upload_sources_to_s3(spec, filename, checksum=getUrlChecksum(s))
   elif "source" not in spec:
     # There are no sources, so just create an empty SOURCEDIR.
     os.makedirs(source_dir, exist_ok=True)
