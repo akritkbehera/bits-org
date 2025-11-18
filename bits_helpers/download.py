@@ -164,10 +164,6 @@ def parseGitUrl(url):
     args["filter"] = sanitize(args["filter"])
     return protocol, gitroot, args
 
-
-
-
-
 def createTempDir(workDir, subDir):
     tempdir = join(workDir, subDir)
     if not exists(tempdir):
@@ -285,59 +281,64 @@ downloadHandlers = {
                     'ftp': downloadUrllib2,
                     'ftps': downloadUrllib2,
                     'git': downloadGit,
-                    'pip': downloadPip} 
+                    'pip': downloadPip}
 
-def download(source, dest, work_dir):
-    noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
-    isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
-    source = fixUrl(source)
-    checksum = getUrlChecksum(source)
 
-    # Syntactic sugar to allow the following urls for tag collector:
-    #
-    # cmstc:[base.]release[.tagset[.tagset[...]]]/src.tar.gz
-    #
-    # in place of:
-    #
-    # cmstc://?tag=release&baserel=base&extratag=tagset1,tagset2,..&module=CMSSW&export=src&output=/src.tar.gz
-    if source.startswith("cmstc:") and not source.startswith("cmstc://"):
-        url = source.split(":", 1)[1]
-        desc, output = url.rsplit("/", 1)
-        parts = desc.split(".")
-        releases = [x for x in parts if not x.isdigit()]
-        extratags = [x for x in parts if x.isdigit()]
-        if extratags:
-            extratags = "&extratags=" + ",".join(extratags)
-        if len(releases) == 1:
-            baserel = ""
-            release = "tag=" + releases[0]
-        elif len(releases) == 2:
-            baserel = "&baserel=" + releases[0]
-            release = releases[1]
-        else:
-            raise MalformedUrl(source)
-        source = "cmstc://?%s%s%s&module=CMSSW&export=src&output=/%s" % (release, baserel, extratags, output)
+def download(source, dest, work_dir, cached_source=None):
+  noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
+  isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
+  source = fixUrl(source)
+  checksum = getUrlChecksum(source)
 
-    cacheDir = abspath(join(work_dir, "SOURCES/cache"))
-    urlTypeRe = re.compile(r"([^:+]*)([^:]*)://.*")
-    match = urlTypeRe.match(source)
-    if not urlTypeRe.match(source):
-        raise MalformedUrl(source)
-    downloadHandler = downloadHandlers[match.group(1)]
-    filename = source.rsplit("/", 1)[1]
-    downloadDir = join(cacheDir, checksum[0:2], checksum)
-    try:
-        makedirs(downloadDir)
-    except OSError as e:
-        if not exists(downloadDir):
-            raise downloadDir
-
-    realFile = join(downloadDir, filename)
-    if not exists(realFile):
-        debug ("Trying to fetch source file: %s", source)
-        downloadHandler(source, downloadDir, work_dir)
-    if exists(realFile):
-        executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
+  # Syntactic sugar to allow the following urls for tag collector:
+  #
+  # cmstc:[base.]release[.tagset[.tagset[...]]]/src.tar.gz
+  #
+  # in place of:
+  #
+  # cmstc://?tag=release&baserel=base&extratag=tagset1,tagset2,..&module=CMSSW&export=src&output=/src.tar.gz
+  if source.startswith("cmstc:") and not source.startswith("cmstc://"):
+    url = source.split(":", 1)[1]
+    desc, output = url.rsplit("/", 1)
+    parts = desc.split(".")
+    releases = [x for x in parts if not x.isdigit()]
+    extratags = [x for x in parts if x.isdigit()]
+    if extratags:
+      extratags = "&extratags=" + ",".join(extratags)
+    if len(releases) == 1:
+      baserel = ""
+      release = "tag=" + releases[0]
+    elif len(releases) == 2:
+      baserel = "&baserel=" + releases[0]
+      release = releases[1]
     else:
-        raise downloadDir
-    return
+      raise MalformedUrl(source)
+    source = "cmstc://?%s%s%s&module=CMSSW&export=src&output=/%s" % (release, baserel, extratags, output)
+
+  cacheDir = abspath(join(work_dir, "SOURCES/cache"))
+  urlTypeRe = re.compile(r"([^:+]*)([^:]*)://.*")
+
+  match = urlTypeRe.match(cached_source or source)
+  if not match:
+    raise MalformedUrl(cached_source or source)
+
+  downloadHandler = downloadHandlers[match.group(1)]
+
+  # Always extract filename from original source
+  filename = source.rsplit("/", 1)[1]
+  downloadDir = join(cacheDir, checksum[0:2], checksum)
+  try:
+    makedirs(downloadDir)
+  except OSError as e:
+    if not exists(downloadDir):
+      raise downloadDir
+
+  realFile = join(downloadDir, filename)
+  if not exists(realFile):
+    debug("Trying to fetch source file: %s", cached_source or source)
+    downloadHandler(cached_source or source, downloadDir, work_dir, dest_filename=filename)
+  if exists(realFile):
+    executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
+  else:
+    raise downloadDir
+  return
