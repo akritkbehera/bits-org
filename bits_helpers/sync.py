@@ -738,7 +738,7 @@ class Boto3RemoteSync:
     if not self.writeStore:
       return
     local_tarball_path = os.path.join(self.workdir, "SOURCES", "cache", checksum[0:2], checksum, filename)
-    remote_tarball_key = os.path.join("SOURCES", spec["package"], f"{checksum}.tar.gz")
+    remote_tarball_key = os.path.join("SOURCES", spec["package"], f"{checksum}_{filename}")
     debug("Uploading source tarball for %s to %s: %s", spec["package"], self.writeStore, remote_tarball_key)
     try:
       self.s3.upload_file(
@@ -749,21 +749,23 @@ class Boto3RemoteSync:
       info("Successfully uploaded source tarball for %s to S3.", spec["package"])
     except Exception as e:
       error("Failed to upload source tarball for %s to S3: %s", spec["package"], e)
-
-  def fetch_sources_from_s3(self, spec, checksum):
-    remote_source_key = os.path.join("SOURCES", spec["package"], f"{checksum}.tar.gz")
+  
+  def fetch_sources_from_s3(self, spec, checksum, filename):
+    remote_source_key = os.path.join("SOURCES", spec["package"], f"{checksum}_{filename}")
     debug("Generating download link for %s from %s: %s",
           spec["package"], self.remoteStore, remote_source_key)
     try:
+      self.s3.head_object(Bucket=self.remoteStore, Key=remote_source_key)  
       url = self.s3.generate_presigned_url(
         'get_object',
         Params={
           'Bucket': self.remoteStore,
           'Key': remote_source_key
-        },
+            },
         ExpiresIn=3600
-      )
-      debug("Generated download URL: %s", url)
+          )
+      info("Generated download URL: %s", url)
       return url
     except Exception as e:
+      debug("Failed to generate download URL for %s: %s", spec["package"], e)
       return None
