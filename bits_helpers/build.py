@@ -16,6 +16,7 @@ from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
+from bits_helpers.script import GenerateScript
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 from bits_helpers.log import ProgressPrint, log_current_package
 from glob import glob
@@ -345,6 +346,13 @@ def generate_initdotsh(package, specs, architecture, post_build=False):
   # init.sh. This is useful for development off CVMFS, since we have a
   # slightly different directory hierarchy there.
   lines = [': "${BITS_ARCH_PREFIX:=%s}"' % architecture]
+  
+  lines.extend([
+    'if [ -z "${WORK_DIR}" ]; then',
+    '    WORK_DIR=$(realpath "$0" | sed "s|/'"$BITS_ARCH_PREFIX"'.*||")',
+    '    export WORK_DIR',
+    'fi',
+  ])
 
   # Generate the part which sources the environment for all the dependencies.
   # We guarantee that a dependency is always sourced before the parts
@@ -1102,6 +1110,9 @@ def doBuild(args, parser):
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
     })
+    gs = GenerateScript(spec)
+    gs.write(scriptDir, gs.generate_rpm_spec, str(spec["package"] + ".spec"))
+    gs.write(scriptDir, gs.rpm_command, str(spec["package"] + ".execute_spec.sh"))
 
     # Define the environment so that it can be passed up to the
     # actual build script

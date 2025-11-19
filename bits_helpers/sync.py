@@ -738,7 +738,7 @@ class Boto3RemoteSync:
     if not self.writeStore:
       return
     local_tarball_path = os.path.join(self.workdir, "SOURCES", "cache", checksum[0:2], checksum, filename)
-    remote_tarball_key = os.path.join("SOURCES", spec["package"], f"{checksum}_{filename}")
+    remote_tarball_key = os.path.join("SOURCES", spec["package"], spec["version"], checksum[0:2], checksum, filename)
     debug("Uploading source tarball for %s to %s: %s", spec["package"], self.writeStore, remote_tarball_key)
     try:
       self.s3.upload_file(
@@ -751,7 +751,7 @@ class Boto3RemoteSync:
       error("Failed to upload source tarball for %s to S3: %s", spec["package"], e)
   
   def fetch_sources_from_s3(self, spec, checksum, filename):
-    remote_source_key = os.path.join("SOURCES", spec["package"], f"{checksum}_{filename}")
+    remote_source_key = os.path.join("SOURCES", spec["package"], spec["version"], checksum[0:2], checksum, filename)
     debug("Generating download link for %s from %s: %s",
           spec["package"], self.remoteStore, remote_source_key)
     try:
