@@ -338,9 +338,9 @@ def download(source, dest, work_dir, cached_source=None):
   cacheDir = abspath(join(work_dir, "SOURCES/cache"))
   urlTypeRe = re.compile(r"([^:+]*)([^:]*)://.*")
 
-  match = urlTypeRe.match(cached_source or source)
+  match = urlTypeRe.match(source)
   if not match:
-    raise MalformedUrl(cached_source or source)
+    raise MalformedUrl(source)
 
   downloadHandler = downloadHandlers[match.group(1)]
 
