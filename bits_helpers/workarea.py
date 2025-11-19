@@ -156,16 +156,17 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build, rem
     os.makedirs(source_dir, exist_ok=True)
     for patch in spec["patches"]:
       shutil.copyfile(os.path.join(spec["pkgdir"], 'patches', patch),os.path.join(source_dir, patch))
-  for s in spec["sources"]:
-    cached_source = None
-    if remote and hasattr(remote, 'fetch_sources_from_s3'):
-        cached_source = remote.fetch_sources_from_s3(spec, checksum=getUrlChecksum(s))
-    
-    download(s, source_dir, work_dir, cached_source)
-    
-    if cached_source is None and remote and hasattr(remote, 'upload_sources_to_s3'):
-        filename = s.rsplit("/", 1)[1]
-        remote.upload_sources_to_s3(spec, filename, checksum=getUrlChecksum(s))
+  if "sources" in spec:
+    for s in spec["sources"]:
+      filename = s.rsplit("/", 1)[1]
+      if remote and hasattr(remote, "fetch_sources_from_s3"):
+        cached_src = remote.fetch_sources_from_s3(spec, getUrlChecksum(s), filename)
+        print("Cached source: %s" % cached_src)
+      else:
+        cached_src = None
+      download(s, source_dir, work_dir, cached_source=cached_src)
+      if remote and hasattr(remote, "upload_sources_to_s3") and cached_src is None:
+        remote.upload_sources_to_s3(spec, filename, getUrlChecksum(s))
   elif "source" not in spec:
     # There are no sources, so just create an empty SOURCEDIR.
     os.makedirs(source_dir, exist_ok=True)
