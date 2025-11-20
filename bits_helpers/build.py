@@ -1110,7 +1110,7 @@ def doBuild(args, parser):
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
     })
-    if not spec["package"].startswith("defaults-"):
+    if args.generate_rpm and not spec["package"].startswith("defaults-"):
       gs = GenerateScript(spec)
       gs.write(scriptDir, gs.generate_rpm_spec, str(spec["package"] + "_spec.sh"))
 

@@ -746,7 +746,7 @@ class Boto3RemoteSync:
         Key=remote_tarball_key,
         Filename=local_tarball_path,
       )
-      info("Successfully uploaded source tarball for %s to S3.", spec["package"])
+      debug("Successfully uploaded source tarball for %s to S3.", spec["package"])
     except Exception as e:
       error("Failed to upload source tarball for %s to S3: %s", spec["package"], e)
   
@@ -764,7 +764,7 @@ class Boto3RemoteSync:
             },
         ExpiresIn=3600
           )
-      info("Generated download URL: %s", url)
+      debug("Generated download URL: %s", url)
       return url
     except Exception as e:
       debug("Failed to generate download URL for %s: %s", spec["package"], e)
