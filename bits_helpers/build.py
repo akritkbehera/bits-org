@@ -1328,9 +1328,9 @@ def doBuild(args, parser):
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
     })
-    gs = GenerateScript(spec)
-    gs.write(scriptDir, gs.generate_rpm_spec, str(spec["package"] + ".spec"))
-    gs.write(scriptDir, gs.rpm_command, str(spec["package"] + ".execute_spec.sh"))
+    if not spec["package"].startswith("defaults-"):
+      gs = GenerateScript(spec)
+      gs.write(scriptDir, gs.generate_rpm_spec, str(spec["package"] + "_spec.sh"))
 
     # Define the environment so that it can be passed up to the
     # actual build script
