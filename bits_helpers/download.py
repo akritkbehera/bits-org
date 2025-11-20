@@ -107,7 +107,9 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None, cached_source
 #
 # which will be used to pack only a subset of the checkout.
 
-def downloadGit(source, dest, work_dir):
+def downloadGit(source, dest, work_dir, dest_filename=None, cached_source=None):
+    if cached_source is not None:
+        return downloadUrllib2(source, dest, dest_filename, cached_source)
     protocol, gitroot, args = parseGitUrl(source)
     tempdir = createTempDir(work_dir, "tmp")
 

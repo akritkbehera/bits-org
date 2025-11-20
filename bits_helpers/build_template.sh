@@ -324,20 +324,10 @@ fi
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 
-SPEC_DIR="$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION"
-for file in "$SPEC_DIR"/*; do
-    [ -f "$file" ] || continue
-    filename=$(basename "$file")
-    if [ "$filename" = "build.sh" ] || [ "$filename" = "$PKGNAME.sh" ]; then
-        continue
-    fi
-    tmpfile=$(mktemp)
-    envsubst < "$file" > "$tmpfile" && mv "$tmpfile" "$file"
-done
-
-if [ -f "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.execute_spec.sh" ]; then
-  bash -ex "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.execute_spec.sh"
+if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}_spec.sh" ]; then
+  bash -ex "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}_spec.sh"
 fi
+
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
   ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
