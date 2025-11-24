@@ -1329,7 +1329,7 @@ def doBuild(args, parser):
       "runtime_requires": " ".join(spec["runtime_requires"]),
     })
     if args.generate_rpm and not spec["package"].startswith("defaults-"):
-      gs = GenerateScript(spec)
+      gs = GenerateScript(spec, os.path.join(dirname(realpath(__file__)), "spec.template"), specs)
       gs.write(scriptDir, gs.generate_rpm_spec, str(spec["package"] + "_spec.sh"))
 
     # Define the environment so that it can be passed up to the
@@ -1374,6 +1374,8 @@ def doBuild(args, parser):
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
+    if args.generate_rpm:
+        buildEnvironment.append(("BUILD_RPM", "1"))
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 

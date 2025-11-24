@@ -12,6 +12,15 @@ cleanup() {
   exit $exit_code
 }
 
+populate_variables() {
+    local input_file="$1"
+    local output_file="$2"
+    
+    if envsubst < "$input_file" > "$output_file"; then
+        rm "$input_file"
+    fi
+
+}
 trap cleanup EXIT
 
 # Cleanup variables which should not be exposed to user code
@@ -62,6 +71,10 @@ export PKG_BUILDNUM="$PKGREVISION"
 export PKGPATH=${ARCHITECTURE}/${PKGNAME}/${PKGVERSION}-${PKGREVISION}
 mkdir -p "$WORK_DIR/BUILD" "$WORK_DIR/SOURCES" "$WORK_DIR/TARS" \
          "$WORK_DIR/SPECS" "$WORK_DIR/INSTALLROOT"
+if [ "$BUILD_RPM" = 1 ]; then
+    mkdir -p "$WORK_DIR/rpmbuild"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+    chmod -R u+w "$WORK_DIR/rpmbuild"
+fi
 # If we are in development mode, then install directly in $WORK_DIR/$PKGPATH,
 # so that we can do "make install" directly into BUILD/$PKGPATH and have
 # changes being propagated.
@@ -323,8 +336,16 @@ fi
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 
-if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}_spec.sh" ]; then
-  bash -ex "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}_spec.sh"
+if [ "$BUILD_RPM" = 1 ] && [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}_spec.sh" ]; then
+    populate_variables "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}_spec.sh" "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}.spec"
+    source "$WORK_DIR/$ARCHITECTURE/rpm/latest/etc/profile.d/init.sh" || true
+    cp "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}.spec" "$WORK_DIR/rpmbuild/SPECS/"
+    rpmbuild -bb \
+      --define "name ${PKGNAME}_${PKGHASH}" \
+      --define "version ${PKGVERSION}" \
+      --define "revision ${PKGREVISION}" \
+      --define "arch ${ARCHITECTURE}" \
+      --define "_topdir $WORK_DIR/rpmbuild" --define "buildroot $WORK_DIR/rpmbuild/BUILDROOT/${PKGNAME}" "$WORK_DIR/rpmbuild/SPECS/${PKGNAME}.spec" 
 fi
 
 if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh" ]; then
