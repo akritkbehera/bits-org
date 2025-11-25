@@ -1231,39 +1231,37 @@ def doBuild(args, parser):
         )
       dieOnError(err, buildErrMsg.strip())
     else:
-      for (p, build_command, buildEnvironment,cachedTarball,benv,breq) in buildList:
-        spec = specs[p]
-        os.environ.update(buildEnvironment)
-        debug("Build command: %s", build_command)
-        progress = ProgressPrint(
-          ("Unpacking %s@%s" if cachedTarball else
-          "Compiling %s@%s (use --debug for full output)") %
-          (spec["package"],
-          args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-        )
-        err = execute(build_command, printer=progress)
-        progress.end("failed" if err else "done", err)
-        report_event("BuildError" if err else "BuildSuccess", spec["package"], " ".join((
-        args.architecture,
-        spec["version"],
-        spec["commit_hash"],
-        os.environ["BITS_DIST_HASH"][:10],
-        )))
-        buildErrMsg = dedent("""\
-          Error while executing {sd}/build.sh on `{h}'.
-          Log can be found in {w}/log
-          Please upload it to CERNBox/Dropbox if you intend to request support.
-          Build directory is {w}/{p}.
-          """).format(
-            h=socket.gethostname(),
-            sd=scriptDir,
-            w=join(workDir, "BUILD", spec["hash"]),
-            p=spec["package"],
-            devSuffix="-" + args.develPrefix
-            if "develPrefix" in args and spec["is_devel_pkg"]
-            else "",
-        )
-        dieOnError(err, buildErrMsg.strip())
+      os.environ.update(buildEnvironment)
+      debug("Build command: %s", build_command)
+      progress = ProgressPrint(
+        ("Unpacking %s@%s" if cachedTarball else
+         "Compiling %s@%s (use --debug for full output)") %
+        (spec["package"],
+         args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
+      )
+      err = execute(build_command, printer=progress)
+      progress.end("failed" if err else "done", err)
+      report_event("BuildError" if err else "BuildSuccess", spec["package"], " ".join((
+      args.architecture,
+      spec["version"],
+      spec["commit_hash"],
+      os.environ["BITS_DIST_HASH"][:10],
+      )))
+      buildErrMsg = dedent("""\
+        Error while executing {sd}/build.sh on `{h}'.
+        Log can be found in {w}/log
+        Please upload it to CERNBox/Dropbox if you intend to request support.
+        Build directory is {w}/{p}.
+        """).format(
+          h=socket.gethostname(),
+          sd=scriptDir,
+          w=join(workDir, "BUILD", spec["hash"]),
+          p=spec["package"],
+          devSuffix="-" + args.develPrefix
+          if "develPrefix" in args and spec["is_devel_pkg"]
+          else "",
+      )
+      dieOnError(err, buildErrMsg.strip())
 
       updatablePkgs = [dep for dep in spec["requires"] if specs[dep]["is_devel_pkg"]]
       if spec["is_devel_pkg"]:
