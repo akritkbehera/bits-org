@@ -1176,9 +1176,9 @@ def doBuild(args, parser):
                       if "reference" in spec else ""),
       )
     else:
-      buildEnvironment = {key: (val if isinstance(val, str) else "_".join(val)) for key, val in buildEnvironment}
-      os.environ.update(buildEnvironment)
-      build_command = "%s -e -x %s/build.sh 2>&1" % (BASH, quote(scriptDir))
+      buildEnvironment = ([key, (val if isinstance(val, str) else "_".join(val))] for key, val in buildEnvironment)
+      env_vars = " ".join(["%s=%s" % (key, quote(val)) for key, val in buildEnvironment])
+      build_command =  "env %s %s -e -x %s/build.sh 2>&1" % (env_vars, BASH, quote(scriptDir))
 
     benv  = ""
     for val in buildEnvironment:
