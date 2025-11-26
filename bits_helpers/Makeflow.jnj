@@ -8,6 +8,6 @@
 
 {% for (p, build_command, buildEnvironment, cachedTarball, benv,breq) in ToDo %}
 {{p}}.build:  {{breq}}
-   LOCAL env {{benv}} {{build_command}} && touch {{p}}.build
+   LOCAL {{benv}} {{build_command}} && touch {{p}}.build
 
 {% endfor %}
