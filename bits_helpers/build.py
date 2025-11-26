@@ -1188,50 +1188,7 @@ def doBuild(args, parser):
     buildList.append((p,build_command,buildEnvironment,cachedTarball,benv,breq))
     buildOrder.pop(0)
 
-    if args.makeflow:
-      mFlow = "makeflow"
-      mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
-      mfFile = mfDir + "/Makeflow"
-      mfCmd = "(cd %s; %s --clean; %s)" % (mfDir, mFlow,mFlow)  
-      makedirs(mfDir, exist_ok=True)
-      jnj = ""
-      try:
-        fp = open(dirname(realpath(__file__))+'/Makeflow.jnj', 'r')
-        jnj = fp.read()
-        fp.close()
-      except:
-        from pkg_resources import resource_string
-        jnj = resource_string("bits_helpers", 'Makeflow.jnj')
-      with open(mfFile, 'w') as mf:
-        mf.write (SandboxedEnvironment(autoescape=False)
-                .from_string(jnj)
-                .render(specs=specs, args=args, ToDo=buildList, Done=buildTargetsDone)
-                )
-      for (p, build_command, buildEnvironment, cachedTarball, benv,breq) in buildList:
-        spec = specs[p]
-        print (
-          ("Unpacking %s@%s" if cachedTarball else
-          "Compiling %s@%s (use --debug for full output)") %
-          (spec["package"],
-          args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
-        )
-      child = subprocess.run(mfCmd, shell=True, capture_output=True, text=True)
-      err = child.returncode
-      print(err,child.stdout)
-      if(err):
-        print(child.stdout)
-      buildErrMsg = dedent("""\
-        Error while executing {cmd} on `{h}'.
-        Log can be found in {w}/log
-        Please upload it to CERNBox/Dropbox if you intend to request support.
-        """).format(
-          h=socket.gethostname(),
-          cmd=mfCmd,
-          w=mfDir
-        )
-      dieOnError(err, buildErrMsg.strip())
-    else:
-      os.environ.update(buildEnvironment)
+    if not args.makeflow:
       debug("Build command: %s", build_command)
       progress = ProgressPrint(
         ("Unpacking %s@%s" if cachedTarball else
@@ -1301,6 +1258,62 @@ def doBuild(args, parser):
 
         dieOnError(err, buildErrMsg.strip())
 
+      # We need to create 2 sets of links, once with the full requires,
+      # once with only direct dependencies, since that's required to
+      # register packages.
+      createDistLinks(spec, specs, args, syncHelper, "dist", "full_requires")
+      createDistLinks(spec, specs, args, syncHelper, "dist-direct", "requires")
+      createDistLinks(spec, specs, args, syncHelper, "dist-runtime", "full_runtime_requires")
+
+      # Make sure not to upload local-only packages! These might have been
+      # produced in a previous run with a read-only remote store.
+      if not spec["revision"].startswith("local"):
+        syncHelper.upload_symlinks_and_tarball(spec)
+
+  if args.makeflow:
+    mFlow = "makeflow"
+    mfDir = join(workDir, "BUILD", spec["hash"], "makeflow")
+    mfFile = mfDir + "/Makeflow"
+    mfCmd = "(cd %s; %s --clean; %s)" % (mfDir, mFlow,mFlow)  
+    makedirs(mfDir, exist_ok=True)
+    jnj = ""
+    try:
+      fp = open(dirname(realpath(__file__))+'/Makeflow.jnj', 'r')
+      jnj = fp.read()
+      fp.close()
+    except:
+      from pkg_resources import resource_string
+      jnj = resource_string("bits_helpers", 'Makeflow.jnj')
+    with open(mfFile, 'w') as mf:
+      mf.write (SandboxedEnvironment(autoescape=False)
+              .from_string(jnj)
+              .render(specs=specs, args=args, ToDo=buildList, Done=buildTargetsDone)
+              )
+    for (p, build_command, buildEnvironment, cachedTarball, benv,breq) in buildList:
+      spec = specs[p]
+      print (
+        ("Unpacking %s@%s" if cachedTarball else
+        "Compiling %s@%s (use --debug for full output)") %
+        (spec["package"],
+        args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
+      )
+    child = subprocess.run(mfCmd, shell=True, capture_output=True, text=True)
+    err = child.returncode
+    print(err,child.stdout)
+    if(err):
+      print(child.stdout)
+    buildErrMsg = dedent("""\
+      Error while executing {cmd} on `{h}'.
+      Log can be found in {w}/log
+      Please upload it to CERNBox/Dropbox if you intend to request support.
+      """).format(
+        h=socket.gethostname(),
+        cmd=mfCmd,
+        w=mfDir
+      )
+    dieOnError(err, buildErrMsg.strip())
+    for (p, _, _, _, _, _) in buildList:
+      spec = specs[p]
       # We need to create 2 sets of links, once with the full requires,
       # once with only direct dependencies, since that's required to
       # register packages.
