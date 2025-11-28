@@ -1,0 +1,125 @@
+{
+  "defaults": {
+    "cpu": [
+      50,
+      200
+    ],
+    "rss": [
+      1024,
+      10240
+    ],
+    "time": [
+      1,
+      300
+    ]
+  },
+  "resources": {
+    "cpu": 400,
+    "rss": 20480
+  },
+  "packages": {
+    "build": {
+      "package1": {
+        "cpu": 200,
+        "rss": 10240,
+        "time": 10
+      },
+      "package2": {
+        "cpu": 200,
+        "rss": 10240,
+        "time": 10
+      },
+      "package3": {
+        "cpu": 200,
+        "rss": 10240,
+        "time": 10
+      },
+      "package4": {
+        "cpu": 200,
+        "rss": 10240,
+        "time": 10
+      },
+      "package5": {
+        "cpu": 400,
+        "rss": 10240,
+        "time": 10
+      },
+      "package6": {
+        "cpu": 400,
+        "rss": 10240,
+        "time": 10
+      },
+      "package7": {
+        "cpu": 400,
+        "rss": 10240,
+        "time": 10
+      },
+      "package8": {
+        "cpu": 400,
+        "rss": 10240,
+        "time": 10
+      },
+      "package9": {
+        "cpu": 400,
+        "rss": 1024,
+        "time": 10
+      },
+      "package10": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package11": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package12": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package13": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package14": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package15": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package16": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package17": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package18": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      },
+      "package19": {
+        "cpu": 10,
+        "rss": 1024,
+        "time": 10
+      }
+    }
+  },
+  "known": [
+    [
+      "^(?!build:).+",
+      0
+    ]
+  ]
+}
