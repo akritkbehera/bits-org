@@ -290,6 +290,9 @@ class BuildTestCase(unittest.TestCase):
             fetchRepos=False,
             forceTracked=False,
             plugin="legacy",
+            builders=1,
+            resources=None,
+            resourceMonitoring=False,
             makeflow=False,
         )
 
