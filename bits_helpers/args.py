@@ -84,6 +84,13 @@ def doParseArgs():
   build_parser.add_argument("-j", "--jobs", dest="jobs", type=int, default=multiprocessing.cpu_count(),
                             help=("The number of parallel compilation processes to run. "
                                   "Default for this system: %(default)d."))
+  build_parser.add_argument("--builders", dest="builders", type=int, default=1,
+                            help=("The number of independent packages to build in parallel. "
+                                  "Default is: %(default)d."))
+  build_parser.add_argument("--resource-monitoring", dest="resourceMonitoring", action="store_true",
+                            help="Enable resource monitoring for each built package.")
+  build_parser.add_argument("--resources", dest="resources", default=None,
+                            help="JSON files containing resources utilization of packages.")
   build_parser.add_argument("-u", "--fetch-repos", dest="fetchRepos", action="store_true",
                             help=("Fetch updates to repositories in MIRRORDIR. Required but nonexistent "
                                   "repositories are always cloned, even if this option is not given."))
@@ -500,6 +507,12 @@ def finaliseArgs(args, parser):
   if args.action == "init":
     args.configDir = args.configDir % {"prefix": args.develPrefix + "/"}
   elif args.action == "build":
+    if args.resourceMonitoring:
+      try:
+        import psutil
+      except:
+        args.resourceMonitoring = False
+        print("Warning: Unable to use psutil. Disabling resource monitoring")
     pass
   elif args.action == "clean":
     pass

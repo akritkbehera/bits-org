@@ -1,13 +1,7 @@
 # Makeflow template
 
-{% for target in Done %}
-{{target}}.build:
-   LOCAL touch {{target}}.build
-
-{% endfor %}
-
-{% for (p, build_command, buildEnvironment, cachedTarball, benv,breq) in ToDo %}
+{% for (p, build_command, cachedTarball, breq) in ToDo %}
 {{p}}.build:  {{breq}}
-   LOCAL {{benv}} {{build_command}} && touch {{p}}.build
+   LOCAL {{build_command}} && touch {{p}}.build
 
 {% endfor %}
