@@ -1014,6 +1014,8 @@ def doBuild(args, parser):
     from bits_helpers.log import logger
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources)
 
+  order=buildOrder.copy()
+
   while buildOrder:
     p = buildOrder.pop(0)
     spec = specs[p]
@@ -1368,6 +1370,12 @@ def doBuild(args, parser):
     # Add the computed track_env environment
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
 
+    # Build the spec file which will be used to generate rpms.
+    if not spec['package'].startswith('defaults-') and args.generate_rpm:
+      specFile = os.path.join(scriptDir, f"{spec['package']}.spec")
+      shutil.copyfile(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'template.spec'), specFile)
+      shutil.copyfile(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'spec_template.sh'), os.path.join(scriptDir,spec["package"]+"_spec.sh"))
+
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
     if args.docker:
@@ -1561,5 +1569,24 @@ def doBuild(args, parser):
   if untrackedFilesDirectories:
     banner("Untracked files in the following directories resulted in a rebuild of "
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
+
+  if order and args.generate_rpm:
+      from bits_helpers.dependency import RPMPackageManager
+      first_spec = specs[order[0]]
+      indexer = RPMPackageManager(first_spec, args.configDir, args.workDir)
+      if not indexer.system_packages():
+          warning("Warning: Could not load system packages, dependency checking may be incomplete")
+      banner(f"Checking dependencies for {len(order)} packages...")
+      all_satisfied = True
+      for p in order:
+          if p.startswith("defaults-"):
+              continue
+          spec = specs[p]
+          success, missing = indexer.check_dependency(spec)
+          if not success:
+              all_satisfied = False
+              warning(f"✗ Package {p}: Missing dependencies")
+          else:
+              banner(f"✓ Package {p}: All dependencies satisfied")
   debug("Everything done")
 
