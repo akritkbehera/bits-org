@@ -1359,6 +1359,12 @@ def doBuild(args, parser):
     # Add the computed track_env environment
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
 
+    # Build the spec file which will be used to generate rpms.
+    if not spec['package'].startswith('defaults-') and args.generate_rpm:
+      specFile = os.path.join(scriptDir, f"{spec['package']}.spec")
+      shutil.copyfile(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'template.spec'), specFile)
+      shutil.copyfile(os.path.join(os.path.dirname(os.path.realpath(__file__)), 'spec_template.sh'), os.path.join(scriptDir,spec["package"]+"_spec.sh"))
+
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
     if args.docker:
