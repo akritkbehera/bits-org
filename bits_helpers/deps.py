@@ -4,6 +4,8 @@ from bits_helpers.log import debug, error, info, dieOnError
 from bits_helpers.utilities import parseDefaults, readDefaults, getPackageList, validateDefaults
 from bits_helpers.cmd import DockerRunner, execute
 from tempfile import NamedTemporaryFile
+from bits_helpers.cmd import getstatusoutput
+
 from os import remove, path
 
 def doDeps(args, parser):
@@ -16,15 +18,11 @@ def doDeps(args, parser):
   specs = {}
   defaultsReader = lambda: readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
   (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, debug)
-
-  extra_env = {"BITS_CONFIG_DIR": "/alidist" if args.docker else path.abspath(args.configDir)}
-  extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
-  
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{path.abspath(args.configDir)}:/alidist:ro"] if args.docker else []) as getstatusoutput_docker:
-    def performCheck(pkg, cmd):
-      return getstatusoutput_docker(cmd)
+ 
+  def performCheck(pkg, cmd):
+    return getstatusoutput(cmd)
     
-    systemPackages, ownPackages, failed, validDefaults = \
+  systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = [args.package],
                      specs                   = specs,
                      configDir               = args.configDir,
@@ -39,7 +37,7 @@ def doDeps(args, parser):
                      overrides               = overrides,
                      taps                    = taps,
                      log                     = debug)
-
+  
   dieOnError(validDefaults and args.defaults not in validDefaults,
              "Specified default `%s' is not compatible with the packages you want to build.\n" % args.defaults +
              "Valid defaults:\n\n- " +
