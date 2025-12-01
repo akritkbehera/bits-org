@@ -299,6 +299,7 @@ class BuildTestCase(unittest.TestCase):
             resources=None,
             resourceMonitoring=False,
             makeflow=False,
+            generate_rpm=False,
         )
 
         def mkcall(args):
