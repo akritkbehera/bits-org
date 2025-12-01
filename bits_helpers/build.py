@@ -1359,6 +1359,16 @@ def doBuild(args, parser):
     # Add the computed track_env environment
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
 
+    # Build the spec file which will be used to generate rpms.
+    if not spec['package'].startswith('defaults-') and args.generate_rpm:
+      specFile = os.path.join(scriptDir, f"{spec['package']}.spec")
+      try:
+        jnj = open(os.path.join(dirname(realpath(__file__)), 'spec.jnj')).read()
+      except:
+        jnj = resource_string("bits_helpers", 'spec.jnj')
+      with open(specFile, 'w') as sf:
+        sf.write(SandboxedEnvironment(autoescape=False).from_string(jnj).render(spec=spec, specs=specs, args=args))
+
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
     if args.docker:

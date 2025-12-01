@@ -324,6 +324,27 @@ fi
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 
+if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}.spec" ]; then
+    mkdir -p "$WORK_DIR/rpmbuild"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+    mkdir -p "$WORK_DIR/rpmbuild/BUILDROOT/${PKGNAME}"
+    chmod -R u+w "$WORK_DIR/rpmbuild" 
+    source "$WORK_DIR/$ARCHITECTURE/rpm/latest/etc/profile.d/init.sh" || true
+    cp "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}.spec" "$WORK_DIR/rpmbuild/SPECS/"
+    rpmbuild -bb \
+      --define "name ${PKGNAME}_${PKGHASH}" \
+      --define "pkgname ${PKGNAME}" \
+      --define "version ${PKGVERSION}" \
+      --define "revision ${PKGREVISION}" \
+      --define "arch $(uname -m)" \
+      --define "path $ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" \
+      --define "workdir $WORK_DIR" \
+      --define "_topdir $WORK_DIR/rpmbuild" --define "buildroot $WORK_DIR/rpmbuild/BUILDROOT/${PKGNAME}" "$WORK_DIR/rpmbuild/SPECS/${PKGNAME}.spec"
+fi
+
+if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh" ]; then
+  bash -ex "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh"
+fi
+
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
   ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY

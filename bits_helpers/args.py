@@ -123,7 +123,9 @@ def doParseArgs():
   build_parser.add_argument("--only-deps", dest="onlyDeps", default=False, action="store_true",
                             help="Only build dependencies, not the main package (e.g. for caching)")
   build_parser.add_argument("--gcc-toolchain", dest="gccToolchain", default=None, metavar="PACKAGE", action="append",
-                            help=("Override gcc toolchain version tag"))  
+                            help=("Override gcc toolchain version tag"))
+  build_parser.add_argument("--generate-rpm", dest="generate_rpm", action="store_true",
+                            help="Generate RPM spec file.")   
 
   build_docker = build_parser.add_argument_group(title="Build inside a container", description="""\
   Builds can be done inside a Docker container, to make it easier to get a
