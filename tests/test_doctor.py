@@ -48,87 +48,107 @@ valid_defaults:
   - default2
 ---
 """
+
+
 class DoctorTestCase(unittest.TestCase):
+    @patch("bits_helpers.doctor.banner")
+    @patch("bits_helpers.doctor.warning")
+    @patch("bits_helpers.doctor.error")
+    @patch("bits_helpers.doctor.exists")
+    @patch("bits_helpers.utilities.exists")
+    @patch("bits_helpers.utilities.open")
+    def test_doctor(
+        self,
+        mockOpen,
+        mockUtilitiesExists,
+        mockDoctorExists,
+        mockPrintError,
+        mockPrintWarning,
+        mockPrintBanner,
+    ):
+        # If this is not a lambda, `read()` will be called more than once and
+        # return empty strings
+        recipes = lambda: {
+            "/dist/package1.sh": StringIO(RECIPE_PACKAGE1),
+            "/dist/testdef1.sh": StringIO(RECIPE_TESTDEF1),
+            "/dist/testdef2.sh": StringIO(RECIPE_TESTDEF2),
+            "/dist/sysdep.sh": StringIO(RECIPE_SYSDEP),
+            "/dist/defaults-release.sh": StringIO(RECIPE_DEFAULTS_RELEASE),
+            "/dist/breakdefaults.sh": StringIO(RECIPE_BREAKDEFAULTS),
+        }
 
-  @patch("bits_helpers.doctor.banner")
-  @patch("bits_helpers.doctor.warning")
-  @patch("bits_helpers.doctor.error")
-  @patch("bits_helpers.doctor.exists")
-  @patch("bits_helpers.utilities.exists")
-  @patch("bits_helpers.utilities.open")
-  def test_doctor(self, mockOpen, mockUtilitiesExists, mockDoctorExists, mockPrintError, mockPrintWarning, mockPrintBanner):
-    # If this is not a lambda, `read()` will be called more than once and
-    # return empty strings
-    recipes = lambda : {               "/dist/package1.sh"         : StringIO(RECIPE_PACKAGE1),
-                                       "/dist/testdef1.sh"         : StringIO(RECIPE_TESTDEF1),
-                                       "/dist/testdef2.sh"         : StringIO(RECIPE_TESTDEF2),
-                                       "/dist/sysdep.sh"           : StringIO(RECIPE_SYSDEP),
-                                       "/dist/defaults-release.sh" : StringIO(RECIPE_DEFAULTS_RELEASE),
-                                       "/dist/breakdefaults.sh"    : StringIO(RECIPE_BREAKDEFAULTS) }
+        mockOpen.side_effect = (
+            lambda f, mode="r": recipes()[f] if f in recipes().keys() else MagicMock()
+        )
 
-    mockOpen.side_effect = lambda f, mode="r": recipes()[f] if f in recipes().keys() else MagicMock()
-    def mockExists(f):
-      return f in recipes().keys()
+        def mockExists(f):
+            return f in recipes().keys()
 
-    mockUtilitiesExists.side_effect = mockExists
-    mockDoctorExists.side_effect = mockExists
+        mockUtilitiesExists.side_effect = mockExists
+        mockDoctorExists.side_effect = mockExists
 
-    # Collect printouts
-    def resetOut():
-      return { "warning": StringIO(), "error": StringIO(), "banner": StringIO() }
-    mockPrintError.side_effect   = lambda e, *a: out["error"].write((e%a)+"\n")
-    mockPrintWarning.side_effect = lambda e, *a: out["warning"].write((e%a)+"\n")
-    mockPrintBanner.side_effect  = lambda e, *a: out["banner"].write((e%a)+"\n")
+        # Collect printouts
+        def resetOut():
+            return {"warning": StringIO(), "error": StringIO(), "banner": StringIO()}
 
-    args = Namespace(workDir="/work",
-                     configDir="/dist",
-                     docker=False,
-                     dockerImage=None,
-                     docker_extra_args=["--network=host"],
-                     debug=False,
-                     preferSystem=[],
-                     noSystem="*",
-                     architecture="osx_x86-64",
-                     disable=[],
-                     defaults=["release"],
-                     environment=[])
+        mockPrintError.side_effect = lambda e, *a: out["error"].write((e % a) + "\n")
+        mockPrintWarning.side_effect = lambda e, *a: out["warning"].write(
+            (e % a) + "\n"
+        )
+        mockPrintBanner.side_effect = lambda e, *a: out["banner"].write((e % a) + "\n")
 
-    # What to call (longer names deprecated in Python 3.5+)
-    if not hasattr(self, "assertRegex"):
-      self.assertRegex = self.assertRegexpMatches
-      self.assertNotRegex = self.assertNotRegexpMatches
+        args = Namespace(
+            workDir="/work",
+            configDir="/dist",
+            docker=False,
+            dockerImage=None,
+            docker_extra_args=["--network=host"],
+            debug=False,
+            preferSystem=[],
+            noSystem="*",
+            architecture="osx_x86-64",
+            disable=[],
+            defaults=["release"],
+            environment=[],
+        )
 
-    # Test: all should go OK (exit with 0)
-    out = resetOut()
-    with self.assertRaises(SystemExit) as cm:
-      args.packages=["Package1"]
-      doDoctor(args, MagicMock())
-    self.assertEqual(cm.exception.code, 0)
+        # What to call (longer names deprecated in Python 3.5+)
+        if not hasattr(self, "assertRegex"):
+            self.assertRegex = self.assertRegexpMatches
+            self.assertNotRegex = self.assertNotRegexpMatches
 
-    # Test: system dependency not found
-    out = resetOut()
-    with self.assertRaises(SystemExit) as cm:
-      args.packages=["SysDep"]
-      doDoctor(args, MagicMock())
-    self.assertEqual(cm.exception.code, 1)
+        # Test: all should go OK (exit with 0)
+        out = resetOut()
+        with self.assertRaises(SystemExit) as cm:
+            args.packages = ["Package1"]
+            doDoctor(args, MagicMock())
+        self.assertEqual(cm.exception.code, 0)
 
-    # Test: invalid default
-    out = resetOut()
-    with self.assertRaises(SystemExit) as cm:
-      args.packages=["BreakDefaults"]
-      doDoctor(args, MagicMock())
-    self.assertEqual(cm.exception.code, 2)
-    self.assertRegex(out["error"].getvalue(), "- its_not_there")
+        # Test: system dependency not found
+        out = resetOut()
+        with self.assertRaises(SystemExit) as cm:
+            args.packages = ["SysDep"]
+            doDoctor(args, MagicMock())
+        self.assertEqual(cm.exception.code, 1)
 
-    # Test: common defaults
-    out = resetOut()
-    with self.assertRaises(SystemExit) as cm:
-      args.packages=["TestDef1"]
-      doDoctor(args, MagicMock())
-    self.assertEqual(cm.exception.code, 2)
-    self.assertRegex(out["banner"].getvalue(), "- common_default")
-    self.assertNotRegex(out["banner"].getvalue(), "- default1")
-    self.assertNotRegex(out["banner"].getvalue(), "- default2")
+        # Test: invalid default
+        out = resetOut()
+        with self.assertRaises(SystemExit) as cm:
+            args.packages = ["BreakDefaults"]
+            doDoctor(args, MagicMock())
+        self.assertEqual(cm.exception.code, 2)
+        self.assertRegex(out["error"].getvalue(), "- its_not_there")
 
-if __name__ == '__main__':
-  unittest.main()
+        # Test: common defaults
+        out = resetOut()
+        with self.assertRaises(SystemExit) as cm:
+            args.packages = ["TestDef1"]
+            doDoctor(args, MagicMock())
+        self.assertEqual(cm.exception.code, 2)
+        self.assertRegex(out["banner"].getvalue(), "- common_default")
+        self.assertNotRegex(out["banner"].getvalue(), "- default1")
+        self.assertNotRegex(out["banner"].getvalue(), "- default2")
+
+
+if __name__ == "__main__":
+    unittest.main()

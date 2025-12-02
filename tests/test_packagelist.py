@@ -80,6 +80,7 @@ RECIPES = {
     """),
 }
 
+
 class MockReader:
     def __init__(self, url, dist=None, genPackages=None):
         self._contents = RECIPES[url]
@@ -90,10 +91,14 @@ class MockReader:
 
 
 def getPackageListWithDefaults(packages, force_rebuild=()):
-    specs = {}   # getPackageList will mutate this
+    specs = {}  # getPackageList will mutate this
+
     def performPreferCheckWithTempDir(pkg, cmd):
-      with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
-        return getstatusoutput(cmd, cwd=temp_dir)
+        with tempfile.TemporaryDirectory(
+            prefix=f"bits_prefer_check_{pkg['package']}_"
+        ) as temp_dir:
+            return getstatusoutput(cmd, cwd=temp_dir)
+
     return_values = getPackageList(
         packages=packages,
         specs=specs,
@@ -129,8 +134,9 @@ class ReplacementTestCase(unittest.TestCase):
         This is was the only available behaviour in previous bits versions
         and must be preserved for backward compatibility.
         """
-        specs, systemPkgs, ownPkgs, failedReqs, validDefaults = \
+        specs, systemPkgs, ownPkgs, failedReqs, validDefaults = (
             getPackageListWithDefaults(["disable"])
+        )
         self.assertIn("disable", systemPkgs)
         self.assertNotIn("disable", ownPkgs)
         self.assertNotIn("disable", specs)
@@ -141,8 +147,9 @@ class ReplacementTestCase(unittest.TestCase):
         This also checks that if no recipe is given, we report the package as
         a system package to the user.
         """
-        specs, systemPkgs, ownPkgs, failedReqs, validDefaults = \
+        specs, systemPkgs, ownPkgs, failedReqs, validDefaults = (
             getPackageListWithDefaults(["with-replacement"])
+        )
         self.assertIn("with-replacement", specs)
         self.assertEqual(specs["with-replacement"]["env"]["SENTINEL_VAR"], "magic")
         # Make sure nothing is run by default.
@@ -158,8 +165,9 @@ class ReplacementTestCase(unittest.TestCase):
         Also check that we report to the user that a package will be compiled
         when a replacement recipe is given.
         """
-        specs, systemPkgs, ownPkgs, failedReqs, validDefaults = \
+        specs, systemPkgs, ownPkgs, failedReqs, validDefaults = (
             getPackageListWithDefaults(["with-replacement-recipe"])
+        )
         self.assertIn("with-replacement-recipe", specs)
         self.assertIn("recipe", specs["with-replacement-recipe"])
         self.assertEqual("true", specs["with-replacement-recipe"]["recipe"])
@@ -173,19 +181,24 @@ class ReplacementTestCase(unittest.TestCase):
         """Check a warning is displayed when the replacement spec is not found."""
         warning_msg = "falling back to building the package ourselves"
         warning_exists = False
+
         def side_effect(msg, *args, **kwargs):
             nonlocal warning_exists
             if warning_msg in str(msg):
-              warning_exists = True
+                warning_exists = True
+
         mock_warning.side_effect = side_effect
-        specs, systemPkgs, ownPkgs, failedReqs, validDefaults = \
+        specs, systemPkgs, ownPkgs, failedReqs, validDefaults = (
             getPackageListWithDefaults(["missing-spec"])
+        )
         self.assertTrue(warning_exists)
 
     def test_dirty_system_check(self) -> None:
         """Check that prefer_system_check runs in isolation and doesn't create files in cwd."""
+
         def fake_exists(n):
             return n in RECIPES.keys()
+
         with patch.object(os.path, "exists", fake_exists):
             getPackageListWithDefaults(["dirty_prefer_system_check"])
             # can't use os.path.exists() ourselves, as we just mocked it
@@ -206,13 +219,12 @@ class ForceRebuildTestCase(unittest.TestCase):
     def test_force_rebuild_command_line(self) -> None:
         """The --force-rebuild option must take precedence, if given."""
         specs, _, _, _, _ = getPackageListWithDefaults(
-            ["force-rebuild"], force_rebuild=["defaults-release", "force-rebuild"],
+            ["force-rebuild"],
+            force_rebuild=["defaults-release", "force-rebuild"],
         )
         self.assertTrue(specs["force-rebuild"]["force_rebuild"])
         self.assertTrue(specs["defaults-release"]["force_rebuild"])
 
 
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,7 @@
+Original buildEnvironment: [('ARCHITECTURE', 'amd64'), ('BUILD_REQUIRES', 'package1 package2'), ('CACHED_TARBALL', 'path/to/tarball'), ('DUPLICATE_KEY', 'value1'), ('DUPLICATE_KEY', 'value2')]
+
+Dictionary for os.environ: {'ARCHITECTURE': 'amd64', 'BUILD_REQUIRES': 'package1 package2', 'CACHED_TARBALL': 'path/to/tarball', 'DUPLICATE_KEY': 'value2'}
+
+Generated benv string: ARCHITECTURE='amd64' BUILD_REQUIRES='package1 package2' CACHED_TARBALL='path/to/tarball' DUPLICATE_KEY='value1' DUPLICATE_KEY='value2' 
+
+SUCCESS: benv string matches expected output.

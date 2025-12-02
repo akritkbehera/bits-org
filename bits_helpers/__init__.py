@@ -12,6 +12,7 @@ except ImportError:
         __version__ = None
     else:
         import os.path
+
         source_root = os.path.join(os.path.dirname(__file__), os.path.pardir)
         try:
             __version__ = get_version(root=source_root)

@@ -5,7 +5,11 @@ import unittest
 # Assuming you are using the mock library to ... mock things
 from unittest.mock import patch
 
-from bits_helpers.utilities import doDetectArch, filterByArchitectureDefaults, disabledByArchitectureDefaults
+from bits_helpers.utilities import (
+    doDetectArch,
+    filterByArchitectureDefaults,
+    disabledByArchitectureDefaults,
+)
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
@@ -201,136 +205,359 @@ REDHAT_SUPPORT_PRODUCT_VERSION="9.6"
 """
 
 architecturePayloads = [
-  ['osx_x86-64', False, [], ('','',''), 'Darwin', 'x86-64'],
-  ['osx_arm64', False, [], ('','',''), 'Darwin', 'arm64'],
-  ['slc5_x86-64', False, [], ('redhat', '5.XX', 'Boron'), 'Linux', 'x86-64'],
-  ['slc6_x86-64', False, [], ('centos', '6.X', 'Carbon'), 'Linux', 'x86-64'],
-  ['slc7_x86-64', False, [], ('centos', '7.X', 'Ptor'), 'Linux', 'x86-64'],
-  ['slc8_x86-64', True, ALMA_8_OS_RELEASE.split("\n"), ('AlmaLinux', '8.10', 'Cerulean Leopard'), 'Linux', 'x86_64'],
-  ['slc8_x86-64', True, ROCKY_8_OS_RELEASE.split("\n"), ('Rocky Linux', '8.10', 'Green Obsidian'), 'Linux', 'x86_64'],
-  ['slc9_x86-64', True, ALMA_9_OS_RELEASE.split("\n"), ('AlmaLinux', '9.6', 'Sage Margay'), 'Linux', 'x86_64'],
-  ['slc9_x86-64', True, ROCKY_9_OS_RELEASE.split("\n"), ('Rocky Linux', '9.6', 'Blue Onyx'), 'Linux', 'x86_64'],
-  ['ubuntu1804_x86-64', True, UBUNTU_1804_OS_RELEASE.split("\n"), ('Ubuntu', '18.04', 'bionic'), 'Linux', 'x86-64'],
-  ['ubuntu1604_x86-64', True, UBUNTU_1604_OS_RELEASE.split("\n"), ('Ubuntu', '16.04', 'xenial'), 'Linux', 'x86-64'],
-  ['ubuntu1510_x86-64', False, [], ('Ubuntu', '15.10', 'wily'), 'Linux', 'x86-64'],
-  ['ubuntu1510_x86-64', True, UBUNTU_1510_OS_RELEASE.split("\n"), ('Ubuntu', '15.10', 'wily'), 'Linux', 'x86-64'],
-  ['ubuntu1510_x86-64', True, UBUNTU_1510_OS_RELEASE.split("\n"), ('', '', ''), 'Linux', 'x86-64'], # ANACONDA case
-  ['ubuntu1404_x86-64', True, UBUNTU_1404_OS_RELEASE.split("\n"), ('Ubuntu', '14.04', 'trusty'), 'Linux', 'x86-64'],
-  ['ubuntu1404_x86-64', True, UBUNTU_1404_OS_RELEASE.split("\n"), ('', '', ''), 'Linux', 'x86-64'],
-  ['ubuntu1404_x86-64', True, LINUX_MINT_OS_RELEASE.split("\n"), ('LinuxMint', '17.3', 'rosa'), 'Linux', 'x86-64'], # LinuxMint
-  ['ubuntu1204_x86-64', True, DEBIAN_7_OS_RELEASE.split("\n"), ('Debian', '7', 'wheezy'), 'Linux', 'x86-64'],
-  ['ubuntu1404_x86-64', True, DEBIAN_8_OS_RELEASE.split("\n"), ('Debian', '8', 'jessie'), 'Linux', 'x86-64'],
-  ['sabayon2_x86-64', True, SABAYON2_OS_RELEASE.split("\n"), ('gentoo', '2.2', ''), 'Linux', 'x86_64']
+    ["osx_x86-64", False, [], ("", "", ""), "Darwin", "x86-64"],
+    ["osx_arm64", False, [], ("", "", ""), "Darwin", "arm64"],
+    ["slc5_x86-64", False, [], ("redhat", "5.XX", "Boron"), "Linux", "x86-64"],
+    ["slc6_x86-64", False, [], ("centos", "6.X", "Carbon"), "Linux", "x86-64"],
+    ["slc7_x86-64", False, [], ("centos", "7.X", "Ptor"), "Linux", "x86-64"],
+    [
+        "slc8_x86-64",
+        True,
+        ALMA_8_OS_RELEASE.split("\n"),
+        ("AlmaLinux", "8.10", "Cerulean Leopard"),
+        "Linux",
+        "x86_64",
+    ],
+    [
+        "slc8_x86-64",
+        True,
+        ROCKY_8_OS_RELEASE.split("\n"),
+        ("Rocky Linux", "8.10", "Green Obsidian"),
+        "Linux",
+        "x86_64",
+    ],
+    [
+        "slc9_x86-64",
+        True,
+        ALMA_9_OS_RELEASE.split("\n"),
+        ("AlmaLinux", "9.6", "Sage Margay"),
+        "Linux",
+        "x86_64",
+    ],
+    [
+        "slc9_x86-64",
+        True,
+        ROCKY_9_OS_RELEASE.split("\n"),
+        ("Rocky Linux", "9.6", "Blue Onyx"),
+        "Linux",
+        "x86_64",
+    ],
+    [
+        "ubuntu1804_x86-64",
+        True,
+        UBUNTU_1804_OS_RELEASE.split("\n"),
+        ("Ubuntu", "18.04", "bionic"),
+        "Linux",
+        "x86-64",
+    ],
+    [
+        "ubuntu1604_x86-64",
+        True,
+        UBUNTU_1604_OS_RELEASE.split("\n"),
+        ("Ubuntu", "16.04", "xenial"),
+        "Linux",
+        "x86-64",
+    ],
+    ["ubuntu1510_x86-64", False, [], ("Ubuntu", "15.10", "wily"), "Linux", "x86-64"],
+    [
+        "ubuntu1510_x86-64",
+        True,
+        UBUNTU_1510_OS_RELEASE.split("\n"),
+        ("Ubuntu", "15.10", "wily"),
+        "Linux",
+        "x86-64",
+    ],
+    [
+        "ubuntu1510_x86-64",
+        True,
+        UBUNTU_1510_OS_RELEASE.split("\n"),
+        ("", "", ""),
+        "Linux",
+        "x86-64",
+    ],  # ANACONDA case
+    [
+        "ubuntu1404_x86-64",
+        True,
+        UBUNTU_1404_OS_RELEASE.split("\n"),
+        ("Ubuntu", "14.04", "trusty"),
+        "Linux",
+        "x86-64",
+    ],
+    [
+        "ubuntu1404_x86-64",
+        True,
+        UBUNTU_1404_OS_RELEASE.split("\n"),
+        ("", "", ""),
+        "Linux",
+        "x86-64",
+    ],
+    [
+        "ubuntu1404_x86-64",
+        True,
+        LINUX_MINT_OS_RELEASE.split("\n"),
+        ("LinuxMint", "17.3", "rosa"),
+        "Linux",
+        "x86-64",
+    ],  # LinuxMint
+    [
+        "ubuntu1204_x86-64",
+        True,
+        DEBIAN_7_OS_RELEASE.split("\n"),
+        ("Debian", "7", "wheezy"),
+        "Linux",
+        "x86-64",
+    ],
+    [
+        "ubuntu1404_x86-64",
+        True,
+        DEBIAN_8_OS_RELEASE.split("\n"),
+        ("Debian", "8", "jessie"),
+        "Linux",
+        "x86-64",
+    ],
+    [
+        "sabayon2_x86-64",
+        True,
+        SABAYON2_OS_RELEASE.split("\n"),
+        ("gentoo", "2.2", ""),
+        "Linux",
+        "x86_64",
+    ],
 ]
 
 macOSArchitecturePayloads = [
-  ['osx_x86-64', False, [], ('','',''), 'Darwin', 'x86_64'],
-  ['osx_arm64', False, [], ('','',''), 'Darwin', 'arm64'],
+    ["osx_x86-64", False, [], ("", "", ""), "Darwin", "x86_64"],
+    ["osx_arm64", False, [], ("", "", ""), "Darwin", "arm64"],
 ]
 
+
 class TestUtilities(unittest.TestCase):
-  def test_osx(self) -> None:
-    for payload in architecturePayloads:
-      result, hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor = payload
-      self.assertEqual(result, doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor))
-  # Test by mocking platform.processor
-  def test_osx_mock(self) -> None:
-    for payload in macOSArchitecturePayloads:
-      result, hasOsRelease, osReleaseLines, platformTuple, platformSystem, platformProcessor = payload
-      with patch('platform.machine', return_value=platformProcessor):
-        platformProcessor = None
-        self.assertEqual(result, doDetectArch(hasOsRelease, osReleaseLines, platformTuple, platformSystem, None))
-  def test_Hasher(self) -> None:
-    h = Hasher()
-    h("foo")
-    self.assertEqual("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33", h.hexdigest())
-    h("")
-    self.assertEqual("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33", h.hexdigest())
-    self.assertRaises(AttributeError, h, 1)
-    h("bar")
-    self.assertEqual("8843d7f92416211de9ebb963ff4ce28125932878", h.hexdigest())
+    def test_osx(self) -> None:
+        for payload in architecturePayloads:
+            (
+                result,
+                hasOsRelease,
+                osReleaseLines,
+                platformTuple,
+                platformSystem,
+                platformProcessor,
+            ) = payload
+            self.assertEqual(
+                result,
+                doDetectArch(
+                    hasOsRelease,
+                    osReleaseLines,
+                    platformTuple,
+                    platformSystem,
+                    platformProcessor,
+                ),
+            )
 
-  def test_UTF8_Hasher(self) -> None:
-    h1 = Hasher()
-    h2 = Hasher()
-    h3 = Hasher()
-    h1(u'\ua000')
-    h2(u'\ua001')
-    h3(b'foo')
-    self.assertEqual(h1.hexdigest(), "2af8e41129115eb231a0af76ec5465d3a9184fc4")
-    self.assertEqual(h2.hexdigest(), "1619bcdbeff6828138ad9b6e43cc17e856457603")
-    self.assertEqual(h3.hexdigest(), "0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33")
-    self.assertNotEqual(h1.hexdigest(), h2.hexdigest())
+    # Test by mocking platform.processor
+    def test_osx_mock(self) -> None:
+        for payload in macOSArchitecturePayloads:
+            (
+                result,
+                hasOsRelease,
+                osReleaseLines,
+                platformTuple,
+                platformSystem,
+                platformProcessor,
+            ) = payload
+            with patch("platform.machine", return_value=platformProcessor):
+                platformProcessor = None
+                self.assertEqual(
+                    result,
+                    doDetectArch(
+                        hasOsRelease,
+                        osReleaseLines,
+                        platformTuple,
+                        platformSystem,
+                        None,
+                    ),
+                )
 
-  def test_asList(self) -> None:
-    self.assertEqual(asList("a"), ["a"])
-    self.assertEqual(asList(["a"]), ["a"])
-    self.assertEqual(asList(None), [None])
+    def test_Hasher(self) -> None:
+        h = Hasher()
+        h("foo")
+        self.assertEqual("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33", h.hexdigest())
+        h("")
+        self.assertEqual("0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33", h.hexdigest())
+        self.assertRaises(AttributeError, h, 1)
+        h("bar")
+        self.assertEqual("8843d7f92416211de9ebb963ff4ce28125932878", h.hexdigest())
 
-  def test_filterByArchitecture(self) -> None:
-    self.assertEqual(["AliRoot"], list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot"])))
-    self.assertEqual([], list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:(?!osx)"])))
-    self.assertEqual(["GCC"], list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:(?!osx)", "GCC"])))
-    self.assertEqual(["AliRoot", "GCC"], list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:(?!slc6)", "GCC"])))
-    self.assertEqual(["GCC"], list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:slc6", "GCC:osx"])))
-    self.assertEqual([], list(filterByArchitectureDefaults("osx_x86-64", "ali", [])))
-    self.assertEqual(["GCC"], list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:slc6", "GCC:defaults=ali"])))
-    self.assertEqual([], list(filterByArchitectureDefaults("osx_x86-64", "o2", ["AliRoot:slc6", "GCC:defaults=ali"])))
+    def test_UTF8_Hasher(self) -> None:
+        h1 = Hasher()
+        h2 = Hasher()
+        h3 = Hasher()
+        h1("\ua000")
+        h2("\ua001")
+        h3(b"foo")
+        self.assertEqual(h1.hexdigest(), "2af8e41129115eb231a0af76ec5465d3a9184fc4")
+        self.assertEqual(h2.hexdigest(), "1619bcdbeff6828138ad9b6e43cc17e856457603")
+        self.assertEqual(h3.hexdigest(), "0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33")
+        self.assertNotEqual(h1.hexdigest(), h2.hexdigest())
 
-  def test_disabledByArchitecture(self) -> None:
-    self.assertEqual([], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot"])))
-    self.assertEqual(["AliRoot"], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:(?!osx)"])))
-    self.assertEqual(["AliRoot"], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:(?!osx)", "GCC"])))
-    self.assertEqual([], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:(?!slc6)", "GCC"])))
-    self.assertEqual(["AliRoot"], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:slc6", "GCC:osx"])))
-    self.assertEqual([], list(disabledByArchitectureDefaults("osx_x86-64", "ali", [])))
-    self.assertEqual(["AliRoot"], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:slc6", "GCC:defaults=ali"])))
-    self.assertEqual(["AliRoot", "GCC"], list(disabledByArchitectureDefaults("osx_x86-64", "o2", ["AliRoot:slc6", "GCC:defaults=ali"])))
+    def test_asList(self) -> None:
+        self.assertEqual(asList("a"), ["a"])
+        self.assertEqual(asList(["a"]), ["a"])
+        self.assertEqual(asList(None), [None])
 
-  def test_prunePaths(self) -> None:
-    fake_env = {
-      "PATH": "/sw/bin:/usr/local/bin",
-      "LD_LIBRARY_PATH": "/sw/lib",
-      "DYLD_LIBRARY_PATH": "/sw/lib",
-      "BITS_VERSION": "v1.0.0",
-      "ROOT_VERSION": "v1.0.0"
-    }
-    fake_env_copy = {
-      "PATH": "/sw/bin:/usr/local/bin",
-      "LD_LIBRARY_PATH": "/sw/lib",
-      "DYLD_LIBRARY_PATH": "/sw/lib",
-      "BITS_VERSION": "v1.0.0",
-      "ROOT_VERSION": "v1.0.0"
-    }
-    with patch.object(os, "environ", fake_env):
-      prunePaths("/sw")
-      self.assertTrue("ROOT_VERSION" not in fake_env)
-      self.assertTrue(fake_env["PATH"] == "/usr/local/bin")
-      self.assertTrue(fake_env["LD_LIBRARY_PATH"] == "")
-      self.assertTrue(fake_env["DYLD_LIBRARY_PATH"] == "")
-      self.assertTrue(fake_env["BITS_VERSION"] == "v1.0.0")
+    def test_filterByArchitecture(self) -> None:
+        self.assertEqual(
+            ["AliRoot"],
+            list(filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot"])),
+        )
+        self.assertEqual(
+            [],
+            list(
+                filterByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:(?!osx)"])
+            ),
+        )
+        self.assertEqual(
+            ["GCC"],
+            list(
+                filterByArchitectureDefaults(
+                    "osx_x86-64", "ali", ["AliRoot:(?!osx)", "GCC"]
+                )
+            ),
+        )
+        self.assertEqual(
+            ["AliRoot", "GCC"],
+            list(
+                filterByArchitectureDefaults(
+                    "osx_x86-64", "ali", ["AliRoot:(?!slc6)", "GCC"]
+                )
+            ),
+        )
+        self.assertEqual(
+            ["GCC"],
+            list(
+                filterByArchitectureDefaults(
+                    "osx_x86-64", "ali", ["AliRoot:slc6", "GCC:osx"]
+                )
+            ),
+        )
+        self.assertEqual(
+            [], list(filterByArchitectureDefaults("osx_x86-64", "ali", []))
+        )
+        self.assertEqual(
+            ["GCC"],
+            list(
+                filterByArchitectureDefaults(
+                    "osx_x86-64", "ali", ["AliRoot:slc6", "GCC:defaults=ali"]
+                )
+            ),
+        )
+        self.assertEqual(
+            [],
+            list(
+                filterByArchitectureDefaults(
+                    "osx_x86-64", "o2", ["AliRoot:slc6", "GCC:defaults=ali"]
+                )
+            ),
+        )
 
-    with patch.object(os, "environ", fake_env_copy):
-      prunePaths("/foo")
-      self.assertTrue("ROOT_VERSION" not in fake_env_copy)
-      self.assertTrue(fake_env_copy["PATH"] == "/sw/bin:/usr/local/bin")
-      self.assertTrue(fake_env_copy["LD_LIBRARY_PATH"] == "/sw/lib")
-      self.assertTrue(fake_env_copy["DYLD_LIBRARY_PATH"] == "/sw/lib")
-      self.assertTrue(fake_env_copy["BITS_VERSION"] == "v1.0.0")
+    def test_disabledByArchitecture(self) -> None:
+        self.assertEqual(
+            [], list(disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot"]))
+        )
+        self.assertEqual(
+            ["AliRoot"],
+            list(
+                disabledByArchitectureDefaults("osx_x86-64", "ali", ["AliRoot:(?!osx)"])
+            ),
+        )
+        self.assertEqual(
+            ["AliRoot"],
+            list(
+                disabledByArchitectureDefaults(
+                    "osx_x86-64", "ali", ["AliRoot:(?!osx)", "GCC"]
+                )
+            ),
+        )
+        self.assertEqual(
+            [],
+            list(
+                disabledByArchitectureDefaults(
+                    "osx_x86-64", "ali", ["AliRoot:(?!slc6)", "GCC"]
+                )
+            ),
+        )
+        self.assertEqual(
+            ["AliRoot"],
+            list(
+                disabledByArchitectureDefaults(
+                    "osx_x86-64", "ali", ["AliRoot:slc6", "GCC:osx"]
+                )
+            ),
+        )
+        self.assertEqual(
+            [], list(disabledByArchitectureDefaults("osx_x86-64", "ali", []))
+        )
+        self.assertEqual(
+            ["AliRoot"],
+            list(
+                disabledByArchitectureDefaults(
+                    "osx_x86-64", "ali", ["AliRoot:slc6", "GCC:defaults=ali"]
+                )
+            ),
+        )
+        self.assertEqual(
+            ["AliRoot", "GCC"],
+            list(
+                disabledByArchitectureDefaults(
+                    "osx_x86-64", "o2", ["AliRoot:slc6", "GCC:defaults=ali"]
+                )
+            ),
+        )
 
-  def test_resolver(self) -> None:
-    spec = {"package": "test-pkg",
-      "version": "%(tag_basename)s",
-      "tag": "foo/bar",
-      "commit_hash": "000000000000000000000000000"
-    }
-    self.assertTrue(resolve_version(spec, "release", "stream/v1", "v1"), "bar")
-    spec["version"] = "%(branch_stream)s"
-    self.assertTrue(resolve_version(spec, "release", "stream/v1", "v1"), "v1")
-    spec["version"] = "%(defaults_upper)s"
-    self.assertTrue(resolve_version(spec, "o2", "stream/v1", "v1"), "O2")
-    spec["version"] = "NO%(defaults_upper)s"
-    self.assertTrue(resolve_version(spec, "release", "stream/v1", "v1"), "NO")
+    def test_prunePaths(self) -> None:
+        fake_env = {
+            "PATH": "/sw/bin:/usr/local/bin",
+            "LD_LIBRARY_PATH": "/sw/lib",
+            "DYLD_LIBRARY_PATH": "/sw/lib",
+            "BITS_VERSION": "v1.0.0",
+            "ROOT_VERSION": "v1.0.0",
+        }
+        fake_env_copy = {
+            "PATH": "/sw/bin:/usr/local/bin",
+            "LD_LIBRARY_PATH": "/sw/lib",
+            "DYLD_LIBRARY_PATH": "/sw/lib",
+            "BITS_VERSION": "v1.0.0",
+            "ROOT_VERSION": "v1.0.0",
+        }
+        with patch.object(os, "environ", fake_env):
+            prunePaths("/sw")
+            self.assertTrue("ROOT_VERSION" not in fake_env)
+            self.assertTrue(fake_env["PATH"] == "/usr/local/bin")
+            self.assertTrue(fake_env["LD_LIBRARY_PATH"] == "")
+            self.assertTrue(fake_env["DYLD_LIBRARY_PATH"] == "")
+            self.assertTrue(fake_env["BITS_VERSION"] == "v1.0.0")
+
+        with patch.object(os, "environ", fake_env_copy):
+            prunePaths("/foo")
+            self.assertTrue("ROOT_VERSION" not in fake_env_copy)
+            self.assertTrue(fake_env_copy["PATH"] == "/sw/bin:/usr/local/bin")
+            self.assertTrue(fake_env_copy["LD_LIBRARY_PATH"] == "/sw/lib")
+            self.assertTrue(fake_env_copy["DYLD_LIBRARY_PATH"] == "/sw/lib")
+            self.assertTrue(fake_env_copy["BITS_VERSION"] == "v1.0.0")
+
+    def test_resolver(self) -> None:
+        spec = {
+            "package": "test-pkg",
+            "version": "%(tag_basename)s",
+            "tag": "foo/bar",
+            "commit_hash": "000000000000000000000000000",
+        }
+        self.assertTrue(resolve_version(spec, "release", "stream/v1", "v1"), "bar")
+        spec["version"] = "%(branch_stream)s"
+        self.assertTrue(resolve_version(spec, "release", "stream/v1", "v1"), "v1")
+        spec["version"] = "%(defaults_upper)s"
+        self.assertTrue(resolve_version(spec, "o2", "stream/v1", "v1"), "O2")
+        spec["version"] = "NO%(defaults_upper)s"
+        self.assertTrue(resolve_version(spec, "release", "stream/v1", "v1"), "NO")
 
 
 class TestTopologicalSort(unittest.TestCase):
@@ -340,30 +567,45 @@ class TestTopologicalSort(unittest.TestCase):
         """Test that topological sorting correctly sorts packages in a dependency chain."""
         # Topological sorting only takes "requires" into account, since the
         # build/runtime distinction does not matter for resolving build order.
-        self.assertEqual(["c", "b", "a"], list(topological_sort({
-            "a": {"package": "a", "requires": ["b"]},
-            "b": {"package": "b", "requires": ["c"]},
-            "c": {"package": "c", "requires": []},
-        })))
+        self.assertEqual(
+            ["c", "b", "a"],
+            list(
+                topological_sort(
+                    {
+                        "a": {"package": "a", "requires": ["b"]},
+                        "b": {"package": "b", "requires": ["c"]},
+                        "c": {"package": "c", "requires": []},
+                    }
+                )
+            ),
+        )
 
     def test_diamond_dependency(self) -> None:
         """Test that a diamond dependency relationship is handled correctly."""
-        self.assertEqual(["base", "mid2", "mid1", "top"], list(topological_sort({
-            "top": {"package": "top", "requires": ["mid1", "mid2"]},
-            # Add a mid1 -> mid2 cross-dependency to make the order deterministic.
-            "mid1": {"package": "mid1", "requires": ["base", "mid2"]},
-            "mid2": {"package": "mid2", "requires": ["base"]},
-            "base": {"package": "base", "requires": []},
-        })))
+        self.assertEqual(
+            ["base", "mid2", "mid1", "top"],
+            list(
+                topological_sort(
+                    {
+                        "top": {"package": "top", "requires": ["mid1", "mid2"]},
+                        # Add a mid1 -> mid2 cross-dependency to make the order deterministic.
+                        "mid1": {"package": "mid1", "requires": ["base", "mid2"]},
+                        "mid2": {"package": "mid2", "requires": ["base"]},
+                        "base": {"package": "base", "requires": []},
+                    }
+                )
+            ),
+        )
 
     def test_dont_drop_packages(self) -> None:
         """Check that topological sorting doesn't drop any packages."""
         # For half the packages, depend on the first package, to make this a
         # little more than trivial.
-        specs = {pkg: {"package": pkg, "requires": [] if pkg < "m" else ["a"]}
-                 for pkg in string.ascii_lowercase}
-        self.assertEqual(frozenset(specs.keys()),
-                         frozenset(topological_sort(specs)))
+        specs = {
+            pkg: {"package": pkg, "requires": [] if pkg < "m" else ["a"]}
+            for pkg in string.ascii_lowercase
+        }
+        self.assertEqual(frozenset(specs.keys()), frozenset(topological_sort(specs)))
 
     def test_cycle(self) -> None:
         """Test that dependency cycles are detected and reported."""
@@ -371,33 +613,40 @@ class TestTopologicalSort(unittest.TestCase):
             "A": {"package": "A", "requires": ["B"]},
             "B": {"package": "B", "requires": ["C"]},
             "C": {"package": "C", "requires": ["D"]},
-            "D": {"package": "D", "requires": ["A"]}
+            "D": {"package": "D", "requires": ["A"]},
         }
-        with patch.object(bits_helpers.log, 'error') as mock_error:
-          with self.assertRaises(SystemExit) as cm:
-            list(topological_sort(specs))
-          self.assertEqual(cm.exception.code, 1)
-          mock_error.assert_called_once_with("%s", "Dependency cycle detected: A -> B -> C -> D -> A")
+        with patch.object(bits_helpers.log, "error") as mock_error:
+            with self.assertRaises(SystemExit) as cm:
+                list(topological_sort(specs))
+            self.assertEqual(cm.exception.code, 1)
+            mock_error.assert_called_once_with(
+                "%s", "Dependency cycle detected: A -> B -> C -> D -> A"
+            )
 
     def test_empty_set(self) -> None:
         """Test that an empty set of packages is handled correctly."""
         self.assertEqual([], list(topological_sort({})))
-        
+
     def test_single_package(self) -> None:
         """Test that a single package with no dependencies is handled correctly."""
-        self.assertEqual(["A"], list(topological_sort({
-            "A": {"package": "A", "requires": []}
-        })))
-        
+        self.assertEqual(
+            ["A"], list(topological_sort({"A": {"package": "A", "requires": []}}))
+        )
+
     def test_independent_packages(self) -> None:
         """Test that packages with no dependencies between them are handled correctly."""
-        result = list(topological_sort({
-            "A": {"package": "A", "requires": []},
-            "B": {"package": "B", "requires": []},
-            "C": {"package": "C", "requires": []}
-        }))
+        result = list(
+            topological_sort(
+                {
+                    "A": {"package": "A", "requires": []},
+                    "B": {"package": "B", "requires": []},
+                    "C": {"package": "C", "requires": []},
+                }
+            )
+        )
         self.assertEqual(set(["A", "B", "C"]), set(result))
         self.assertEqual(3, len(result))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

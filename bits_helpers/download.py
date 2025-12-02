@@ -16,10 +16,12 @@ from bits_helpers.log import error, warning, debug
 import json
 
 urlRe = re.compile(r".*:.*/.*")
-urlAuthRe = re.compile(r'^(http(s|)://)([^:]+:[^@]+)@(.+)$')
+urlAuthRe = re.compile(r"^(http(s|)://)([^:]+:[^@]+)@(.+)$")
+
 
 def format(s, **kwds):
     return s % kwds
+
 
 def executeWithErrorCheck(command, errorMessage):
     debug(command)
@@ -37,15 +39,16 @@ def executeWithErrorCheck(command, errorMessage):
 
 
 def packCheckout(tempdir, dest, *exports):
-    """ Use this helper method when download protocol is like cvs/svn/git
-        where the code is checked out in a temporary directory and then tarred
-        up.
+    """Use this helper method when download protocol is like cvs/svn/git
+    where the code is checked out in a temporary directory and then tarred
+    up.
     """
     export = " ".join(['"%s"' % x for x in exports])
     packCommand = """cd %(tempdir)s; tar -zcf "%(dest)s" %(export)s """
     packCommand = packCommand % locals()
     errorMessage = "Error while creating a tar archive for checked out area"
     return executeWithErrorCheck(packCommand, errorMessage)
+
 
 # We have our own version rather than using the one from os
 # because the latter does not work seem to be thread safe.
@@ -54,14 +57,17 @@ def makedirs(path):
     if returncode != 0:
         raise OSError("makedirs() failed (return: %s):\n%s" % (returncode, out))
 
+
 def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
     try:
-        dest = "/".join([destDir.rstrip("/"), dest_filename if dest_filename else basename(source)])
-        headers={"Cache-Control": "no-cache"}
+        dest = "/".join(
+            [destDir.rstrip("/"), dest_filename if dest_filename else basename(source)]
+        )
+        headers = {"Cache-Control": "no-cache"}
         m = urlAuthRe.match(source)
         if m:
-            source = m.group(1)+m.group(4)
-            headers['Authorization'] = "Basic %s" % base64.b64encode(m.group(3))
+            source = m.group(1) + m.group(4)
+            headers["Authorization"] = "Basic %s" % base64.b64encode(m.group(3))
         req = Request(source, headers=headers)
         s = urlopen(req)
         tmpfile = "%s.%f.tmp" % (dest, time())
@@ -86,6 +92,7 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
         return False
     return True
 
+
 # Download a files from a git url.  We do not clone the remote reposiotory, but
 # we simply pull the branch we are interested in and then we drop all the git
 # information while creating a tarball.  The syntax to define a repository is
@@ -105,45 +112,59 @@ def downloadUrllib2(source, destDir, work_dir, dest_filename=None):
 #
 # which will be used to pack only a subset of the checkout.
 
+
 def downloadGit(source, dest, work_dir):
     protocol, gitroot, args = parseGitUrl(source)
     tempdir = createTempDir(work_dir, "tmp")
 
     exportpath = join(tempdir, args["export"])
-    if protocol=="git": protocol="https"
+    if protocol == "git":
+        protocol = "https"
     if protocol:
         protocol += "://"
     if not protocol and not gitroot.endswith(".git"):
         gitroot = join(gitroot, ".git")
 
     dest = join(dest, args["output"].lstrip("/"))
-    args.update({"protocol": protocol, "tempdir": tempdir,
-                 "gitroot": gitroot, "dest": dest,
-                 "exportpath": exportpath})
+    args.update(
+        {
+            "protocol": protocol,
+            "tempdir": tempdir,
+            "gitroot": gitroot,
+            "dest": dest,
+            "exportpath": exportpath,
+        }
+    )
     makedirs(exportpath)
     if "submodules" in args:
         args["submodules"] = " git submodule update --recursive --init &&"
     else:
         args["submodules"] = ""
-    command = format("cd %(exportpath)s &&"
-                     "git init &&"
-                     "git pull --tags %(protocol)s%(gitroot)s refs/heads/%(branch)s &&"
-                     "git remote add origin %(protocol)s%(gitroot)s &&"
-                     "git reset --hard %(tag)s && %(submodules)s"
-                     "find . ! -path '%(filter)s' -delete &&"
-                     "rm -rf .git .gitattributes .gitignore", **args)
+    command = format(
+        "cd %(exportpath)s &&"
+        "git init &&"
+        "git pull --tags %(protocol)s%(gitroot)s refs/heads/%(branch)s &&"
+        "git remote add origin %(protocol)s%(gitroot)s &&"
+        "git reset --hard %(tag)s && %(submodules)s"
+        "find . ! -path '%(filter)s' -delete &&"
+        "rm -rf .git .gitattributes .gitignore",
+        **args,
+    )
     error, output = getstatusoutput(command % args)
     if error:
-        warning("Error while downloading sources from %s using git.\n\n"
+        warning(
+            "Error while downloading sources from %s using git.\n\n"
             "%s\n\n"
-            "resulted in:\n%s" % (gitroot, command % args, output))
+            "resulted in:\n%s" % (gitroot, command % args, output)
+        )
         return False
     return packCheckout(args["tempdir"], args["dest"], args["export"])
 
 
 def parseGitUrl(url):
-    protocol, gitroot, args = parseUrl(url, requestedKind="git",
-                                       defaults={"obj": "master/HEAD"})
+    protocol, gitroot, args = parseUrl(
+        url, requestedKind="git", defaults={"obj": "master/HEAD"}
+    )
     parts = args["obj"].rsplit("/", 1)
     if len(parts) != 2:
         parts += ["HEAD"]
@@ -165,9 +186,6 @@ def parseGitUrl(url):
     return protocol, gitroot, args
 
 
-
-
-
 def createTempDir(workDir, subDir):
     tempdir = join(workDir, subDir)
     if not exists(tempdir):
@@ -175,13 +193,16 @@ def createTempDir(workDir, subDir):
     tempdir = mkdtemp(dir=tempdir)
     return tempdir
 
+
 # Minimal string sanitization.
 def sanitize(s):
     return re.sub(r"[^a-zA-Z_0-9*./-]", "", s)
 
+
 def getUrlChecksum(s):
     m = md5adder(fixUrl(s).encode())
     return m.hexdigest()
+
 
 def parseUrl(url, requestedKind=None, defaults={}, required=[]):
     match = re.match("([^+:]*)([^:]*)://([^?]*)(.*)", url)
@@ -210,13 +231,17 @@ def parseUrl(url, requestedKind=None, defaults={}, required=[]):
         raise MalformedUrl(url, missingArgs)
     return protocol, server, argsDict
 
+
 def fixUrl(s):
-    for x in ['no-cmssdt-cache=1', 'cmdist-generated=1']:
+    for x in ["no-cmssdt-cache=1", "cmdist-generated=1"]:
         if x in s:
-            s = s.replace(x,'').replace("&&","&").replace("?&","?")
-            if s.endswith('&'): s=s[:-1]
-            if s.endswith('?'): s=s[:-1]
+            s = s.replace(x, "").replace("&&", "&").replace("?&", "?")
+            if s.endswith("&"):
+                s = s[:-1]
+            if s.endswith("?"):
+                s = s[:-1]
     return s
+
 
 def downloadPip(source, dest, work_dir):
     # Valid PIP URL formats are
@@ -225,71 +250,96 @@ def downloadPip(source, dest, work_dir):
     url_parts = source.split("pip://", 1)[1].split("?", 1)
     filename = source.rsplit("/", 1)[1]
     opts = []
-    if len(url_parts) > 1: opts = url_parts[1].split("&")
+    if len(url_parts) > 1:
+        opts = url_parts[1].split("&")
     pkg = url_parts[0].split("/")
     pack = pkg[0].strip()
-    tar_names = [pack.replace("-", "_"), pack] if '-' in pack else [pack]
+    tar_names = [pack.replace("-", "_"), pack] if "-" in pack else [pack]
     for tar_name in tar_names:
-      pypi_file = '%s-%s.tar.gz' % (tar_name, pkg[1].strip())
-      pypi_url = 'https://pypi.io/packages/source/%s/%s/%s' % (pack[0], pack, pypi_file)
-      if downloadUrllib2(pypi_url, dest, work_dir, dest_filename=filename):
-        return
-    pack = pack + '==' + pkg[1].strip()
+        pypi_file = "%s-%s.tar.gz" % (tar_name, pkg[1].strip())
+        pypi_url = "https://pypi.io/packages/source/%s/%s/%s" % (
+            pack[0],
+            pack,
+            pypi_file,
+        )
+        if downloadUrllib2(pypi_url, dest, work_dir, dest_filename=filename):
+            return
+    pack = pack + "==" + pkg[1].strip()
     pip_opts = "--no-deps --no-binary=:all:"
-    pip="pip"
-    isSourceDownload=True
+    pip = "pip"
+    isSourceDownload = True
 
     for opt in opts:
-        if opt.startswith("pip="): pip=opt.split('=',1)[-1]
+        if opt.startswith("pip="):
+            pip = opt.split("=", 1)[-1]
         elif opt.startswith("pip_options="):
-            pip_optsT = opt[12:].replace("+", " ").replace("%20", " ").replace("%3D", "=")
+            pip_optsT = (
+                opt[12:].replace("+", " ").replace("%20", " ").replace("%3D", "=")
+            )
             # hack here a alternative source location
-            pip_opts = ''
+            pip_opts = ""
             spSrc = pip_optsT.split()
             for i in range(len(spSrc)):
-                if 'ALTSRC' in spSrc[i]:
+                if "ALTSRC" in spSrc[i]:
                     pack = spSrc[i + 1]
                     i = i + 1
                 else:
                     if ("no-binary" in spSrc[i]) or ("only-binary" in spSrc[i]):
-                        spSrc[i] = re.sub(',arch=[a-z0-9_]+','',spSrc[i])
-                    pip_opts = pip_opts + ' ' + spSrc[i]
+                        spSrc[i] = re.sub(",arch=[a-z0-9_]+", "", spSrc[i])
+                    pip_opts = pip_opts + " " + spSrc[i]
                     if "only-binary=:all:" in spSrc[i]:
-                        isSourceDownload=False
+                        isSourceDownload = False
                     elif "no-binary" in spSrc[i] and "all" not in spSrc[i]:
-                        isSourceDownload=False #not totally robust - but basically use pip if source is overridden
+                        isSourceDownload = False  # not totally robust - but basically use pip if source is overridden
 
     if isSourceDownload:
-        debug("Looking for sources at https://pypi.org/pypi/"+pack.split('=')[0]+"/json")
-        fj=urlopen("https://pypi.org/pypi/"+pack.split('=')[0]+"/json")
-        data=json.load(fj)
-        url=None
-        if "releases" in data and pack.split('=')[2] in data["releases"]:
-            for file in data["releases"][pack.split('=')[2]]:
+        debug(
+            "Looking for sources at https://pypi.org/pypi/"
+            + pack.split("=")[0]
+            + "/json"
+        )
+        fj = urlopen("https://pypi.org/pypi/" + pack.split("=")[0] + "/json")
+        data = json.load(fj)
+        url = None
+        if "releases" in data and pack.split("=")[2] in data["releases"]:
+            for file in data["releases"][pack.split("=")[2]]:
                 if file["packagetype"] == "sdist":
-                    url=file["url"]
+                    url = file["url"]
         if url is not None:
             debug("Found source on pypi - downloading")
             return downloadUrllib2(url, dest, work_dir, dest_filename=filename)
 
-    if not '--no-deps' in pip_opts: pip_opts = '--no-deps ' + pip_opts
-    if not '--no-cache-dir' in pip_opts: pip_opts = '--no-cache-dir ' + pip_opts
-    comm = 'cd ' + dest + ";" + pip + ' download ' + pip_opts + ' --disable-pip-version-check -q -d . %s; [ -e %s ] || mv *.* %s; ls -l' % (pack, filename, filename)
+    if not "--no-deps" in pip_opts:
+        pip_opts = "--no-deps " + pip_opts
+    if not "--no-cache-dir" in pip_opts:
+        pip_opts = "--no-cache-dir " + pip_opts
+    comm = (
+        "cd "
+        + dest
+        + ";"
+        + pip
+        + " download "
+        + pip_opts
+        + " --disable-pip-version-check -q -d . %s; [ -e %s ] || mv *.* %s; ls -l"
+        % (pack, filename, filename)
+    )
     error, output = getstatusoutput(comm)
     return not error
 
 
 downloadHandlers = {
-                    'http': downloadUrllib2,
-                    'https': downloadUrllib2,
-                    'ftp': downloadUrllib2,
-                    'ftps': downloadUrllib2,
-                    'git': downloadGit,
-                    'pip': downloadPip} 
+    "http": downloadUrllib2,
+    "https": downloadUrllib2,
+    "ftp": downloadUrllib2,
+    "ftps": downloadUrllib2,
+    "git": downloadGit,
+    "pip": downloadPip,
+}
+
 
 def download(source, dest, work_dir):
-    noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
-    isCmsdistGenerated = True if 'cmdist-generated=1' in source else False
+    noCmssdtCache = True if "no-cmssdt-cache=1" in source else False
+    isCmsdistGenerated = True if "cmdist-generated=1" in source else False
     source = fixUrl(source)
     checksum = getUrlChecksum(source)
 
@@ -316,7 +366,12 @@ def download(source, dest, work_dir):
             release = releases[1]
         else:
             raise MalformedUrl(source)
-        source = "cmstc://?%s%s%s&module=CMSSW&export=src&output=/%s" % (release, baserel, extratags, output)
+        source = "cmstc://?%s%s%s&module=CMSSW&export=src&output=/%s" % (
+            release,
+            baserel,
+            extratags,
+            output,
+        )
 
     cacheDir = abspath(join(work_dir, "SOURCES/cache"))
     urlTypeRe = re.compile(r"([^:+]*)([^:]*)://.*")
@@ -334,10 +389,13 @@ def download(source, dest, work_dir):
 
     realFile = join(downloadDir, filename)
     if not exists(realFile):
-        debug ("Trying to fetch source file: %s", source)
+        debug("Trying to fetch source file: %s", source)
         downloadHandler(source, downloadDir, work_dir)
     if exists(realFile):
-        executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
+        executeWithErrorCheck(
+            "mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile),
+            "Failed to move source",
+        )
     else:
         raise downloadDir
     return

@@ -10,8 +10,11 @@ PRIVATE_REPO = "https://gitlab.cern.ch/ALICEPrivateExternals/FLUKA.git"
 
 
 err, out = git(("--help",), check=False)
-@unittest.skipUnless(not err and out.startswith("usage:"),
-                     "need a working git executable on the system")
+
+
+@unittest.skipUnless(
+    not err and out.startswith("usage:"), "need a working git executable on the system"
+)
 class GitWrapperTestCase(unittest.TestCase):
     """Make sure the git() wrapper function is working."""
 
@@ -30,19 +33,34 @@ class GitWrapperTestCase(unittest.TestCase):
 
     def test_git_existing_repo(self) -> None:
         """Check git can read an existing repo."""
-        err, out = git(("ls-remote", "-ht", EXISTING_REPO),
-                       check=False, prompt=False)
+        err, out = git(("ls-remote", "-ht", EXISTING_REPO), check=False, prompt=False)
         self.assertEqual(err, 0, "git output:\n" + out)
         self.assertTrue(out, "expected non-empty output from git")
 
     def test_git_missing_repo(self) -> None:
         """Check we get the right exception when a repo doesn't exist."""
-        self.assertRaises(SCMError, git, (
-            "ls-remote", "-ht", MISSING_REPO,
-        ), prompt=False)
+        self.assertRaises(
+            SCMError,
+            git,
+            (
+                "ls-remote",
+                "-ht",
+                MISSING_REPO,
+            ),
+            prompt=False,
+        )
 
     def test_git_private_repo(self) -> None:
         """Check we get the right exception when credentials are required."""
-        self.assertRaises(SCMError, git, (
-            "-c", "credential.helper=", "ls-remote", "-ht", PRIVATE_REPO,
-        ), prompt=False)
+        self.assertRaises(
+            SCMError,
+            git,
+            (
+                "-c",
+                "credential.helper=",
+                "ls-remote",
+                "-ht",
+                PRIVATE_REPO,
+            ),
+            prompt=False,
+        )
