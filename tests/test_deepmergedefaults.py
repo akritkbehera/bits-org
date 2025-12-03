@@ -3,12 +3,13 @@ import yaml
 import bits_helpers.utilities
 from bits_helpers.utilities import merge_dicts
 
+
 class DeepMergeTest(unittest.TestCase):
     # Test overwriting existing top-level keys from dict1 with top-level keys from dict2.
     # Test adding new top level keys from dict2.
     def test_flat_merge(self):
-        d1 = ({"a": 1, "b": 2})
-        d2 = ({"b": 3, "c": 4})
+        d1 = {"a": 1, "b": 2}
+        d2 = {"b": 3, "c": 4}
         result = merge_dicts(d1, d2)
         self.assertEqual(result, {"a": 1, "b": 3, "c": 4})
 

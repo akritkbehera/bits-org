@@ -7,8 +7,8 @@ import bits_helpers.utilities
 from bits_helpers.utilities import merge_dicts
 from bits_helpers.utilities import yamlLoad
 
-class TestYamlLoadIncludes(unittest.TestCase):
 
+class TestYamlLoadIncludes(unittest.TestCase):
     def setUp(self):
         # Sets up temporary directories
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -27,9 +27,12 @@ class TestYamlLoadIncludes(unittest.TestCase):
 
     def test_basic_include(self):
         # Include one YAML file inside a defaults file
-        included = self._write("included.yaml", """
+        included = self._write(
+            "included.yaml",
+            """
             b: 2
-            """)
+            """,
+        )
         main = r"""
             a: 1
             overrides: !include included.yaml
@@ -46,15 +49,24 @@ class TestYamlLoadIncludes(unittest.TestCase):
 
     def test_nested_includes(self):
         # Include a yaml file that itself includes another yaml file in a defaults file
-        deep = self._write("deep.yaml", """
+        deep = self._write(
+            "deep.yaml",
+            """
             x: 42
-            """)
-        inner = self._write("inner.yaml", r"""
+            """,
+        )
+        inner = self._write(
+            "inner.yaml",
+            r"""
             nested: !include deep.yaml
-            """)
-        main = self._write("main.yaml", r"""
+            """,
+        )
+        main = self._write(
+            "main.yaml",
+            r"""
             root: !include inner.yaml
-            """)
+            """,
+        )
 
         with open(main) as f:
             data = yamlLoad(f)
@@ -63,9 +75,12 @@ class TestYamlLoadIncludes(unittest.TestCase):
 
     def test_missing_include_raises(self):
         # Include a missing yaml file raises FileNotFoundError
-        main = self._write("main.yaml", """
+        main = self._write(
+            "main.yaml",
+            """
             missing: !include nofile.yaml
-            """)
+            """,
+        )
 
         with self.assertRaises(FileNotFoundError):
             with open(main) as f:
@@ -88,13 +103,19 @@ class TestYamlLoadIncludes(unittest.TestCase):
         self.assertEqual(data["child"]["v"], 99)
 
     def test_order_preservation(self):
-        included = self._write("included.yaml", r"""
+        included = self._write(
+            "included.yaml",
+            r"""
             x: 1
             y: 2
-            """)
-        main = self._write("main.yaml", r"""
+            """,
+        )
+        main = self._write(
+            "main.yaml",
+            r"""
             !include included.yaml
-            """)
+            """,
+        )
 
         with open(main) as f:
             data = yamlLoad(f)
@@ -103,7 +124,7 @@ class TestYamlLoadIncludes(unittest.TestCase):
         self.assertEqual(keys, ["x", "y"])
 
         def test_merge_defaults_with_package_overrides(self):
-        # Simulate a "base defaults" YAML structure
+            # Simulate a "base defaults" YAML structure
             base_defaults = {
                 "packages": {
                     "ROOT": {
@@ -121,24 +142,24 @@ class TestYamlLoadIncludes(unittest.TestCase):
                 "architecture": "slc9_x86-64",
             }
 
-        # Simulate an "override defaults" YAML
+            # Simulate an "override defaults" YAML
             override_defaults = {
                 "packages": {
-                   "ROOT": {
+                    "ROOT": {
                         # overrides the tag and adds an extra dependency
                         "tag": "v6-32-02",
                         "requires": ["Python", "zlib", "OpenSSL"],
-                   },
-                   "AliRoot": {
+                    },
+                    "AliRoot": {
                         # same tag, but overrides the source
                         "source": "https://mirror.example.com/AliRoot.git",
-                   },
-                   "AliPhysics": {
+                    },
+                    "AliPhysics": {
                         # completely new package
                         "tag": "v5-09-60a",
                         "source": "https://github.com/alisw/AliPhysics.git",
                         "requires": ["AliRoot"],
-                   },
+                    },
                 },
                 "disable": ["Boost"],
             }

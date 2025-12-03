@@ -9,15 +9,30 @@ from bits_helpers.cmd import monitor_progress
 SAMPLE_INTERVAL = 1.0
 cpu_initialized = set()
 
+
 def update_monitor_stats(proc):
     global cpu_initialized
     children = []
-    try: children = proc.children(recursive=True)
-    except: return {}
-    stats = {"rss": 0, "vms": 0, "shared": 0, "data": 0, "uss": 0, "pss": 0, "num_fds": 0, "num_threads": 0, "processes": 0, "cpu": 0}
+    try:
+        children = proc.children(recursive=True)
+    except:
+        return {}
+    stats = {
+        "rss": 0,
+        "vms": 0,
+        "shared": 0,
+        "data": 0,
+        "uss": 0,
+        "pss": 0,
+        "num_fds": 0,
+        "num_threads": 0,
+        "processes": 0,
+        "cpu": 0,
+    }
     clds = len(children)
-    if clds==0: return stats
-    stats['processes'] = clds
+    if clds == 0:
+        return stats
+    stats["processes"] = clds
 
     # Step 1: Initialize CPU counters for new PIDs
     current_pids = set()
@@ -58,6 +73,7 @@ def update_monitor_stats(proc):
     cpu_initialized.intersection_update(current_pids)
     return stats
 
+
 def monitor_stats(p_id, stats_file_name):
     stime = int(time())
     p = psutil.Process(p_id)
@@ -67,7 +83,7 @@ def monitor_stats(p_id, stats_file_name):
         if not stats:
             sleep(SAMPLE_INTERVAL)
             continue
-        stats['time'] = int(time()-stime)
+        stats["time"] = int(time() - stime)
         data.append(stats)
     with open(stats_file_name, "w") as sf:
         json_dump(data, sf)
@@ -75,9 +91,21 @@ def monitor_stats(p_id, stats_file_name):
 
 
 def run_monitor_on_command(command, stats_file_name, printer, timeout=None):
-  popen = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, close_fds= True)
-  mon_thd = Thread(target=monitor_stats, args=(popen.pid, stats_file_name,))
-  mon_thd.start()
-  returncode = monitor_progress(popen, printer, timeout)
-  mon_thd.join() # wait for monitoring thread to write its output
-  return returncode
+    popen = subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        close_fds=True,
+    )
+    mon_thd = Thread(
+        target=monitor_stats,
+        args=(
+            popen.pid,
+            stats_file_name,
+        ),
+    )
+    mon_thd.start()
+    returncode = monitor_progress(popen, printer, timeout)
+    mon_thd.join()  # wait for monitoring thread to write its output
+    return returncode

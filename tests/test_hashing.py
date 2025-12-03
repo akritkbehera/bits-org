@@ -9,9 +9,11 @@ from bits_helpers.build import storeHashes
 
 LOGFILE = "build.log"
 SPEC_RE = re.compile(r"spec = (OrderedDict\(\[\('package', '([^']+)'.*\)\]\))")
-HASH_RE = re.compile(r"Hashes for recipe (.*) are "
-                     r"(([0-9a-f]{40})(?:, [0-9a-f]{40})*) \(remote\)[,;] "
-                     r"(([0-9a-f]{40})(?:, [0-9a-f]{40})*) \(local\)")
+HASH_RE = re.compile(
+    r"Hashes for recipe (.*) are "
+    r"(([0-9a-f]{40})(?:, [0-9a-f]{40})*) \(remote\)[,;] "
+    r"(([0-9a-f]{40})(?:, [0-9a-f]{40})*) \(local\)"
+)
 
 
 class KnownGoodHashesTestCase(unittest.TestCase):
@@ -26,8 +28,9 @@ class KnownGoodHashesTestCase(unittest.TestCase):
     hashes is checked.
     """
 
-    @unittest.skipIf(not os.path.exists(LOGFILE),
-                     "Need a reference build log at path " + LOGFILE)
+    @unittest.skipIf(
+        not os.path.exists(LOGFILE), "Need a reference build log at path " + LOGFILE
+    )
     def test_hashes_match_build_log(self) -> None:
         checked = set()
         specs = {}
@@ -63,5 +66,5 @@ class KnownGoodHashesTestCase(unittest.TestCase):
                 continue
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

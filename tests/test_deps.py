@@ -36,7 +36,6 @@ build_requires:
 
 
 class DepsTestCase(unittest.TestCase):
-
     @patch("bits_helpers.deps.open")
     @patch("bits_helpers.deps.execute", new=lambda cmd: True)
     @patch("bits_helpers.utilities.open", new=lambda f: StringIO(RECIPES[f]))
@@ -49,35 +48,38 @@ class DepsTestCase(unittest.TestCase):
         def depsOpen(fn, mode):
             dot.name = fn
             return dot
+
         mockDepsOpen.side_effect = depsOpen
 
-        args = Namespace(workDir="/work",
-                         configDir="/dist",
-                         debug=False,
-                         docker=False,
-                         dockerImage=None,
-                         docker_extra_args=["--network=host"],
-                         preferSystem=[],
-                         noSystem="*",
-                         architecture="slc7_x86-64",
-                         disable=[],
-                         neat=True,
-                         outdot="/tmp/out.dot",
-                         outgraph="/tmp/outgraph.pdf",
-                         package="AliRoot",
-                         defaults=["release"],
-                         environment=[])
+        args = Namespace(
+            workDir="/work",
+            configDir="/dist",
+            debug=False,
+            docker=False,
+            dockerImage=None,
+            docker_extra_args=["--network=host"],
+            preferSystem=[],
+            noSystem="*",
+            architecture="slc7_x86-64",
+            disable=[],
+            neat=True,
+            outdot="/tmp/out.dot",
+            outgraph="/tmp/outgraph.pdf",
+            package="AliRoot",
+            defaults=["release"],
+            environment=[],
+        )
 
         def fake_exists(n):
             return True if n in RECIPES else False
 
         with patch.object(os.path, "exists", fake_exists):
-          doDeps(args, MagicMock())
+            doDeps(args, MagicMock())
 
-          # Same check without explicit intermediate dotfile
-          args.outdot = None
-          doDeps(args, MagicMock())
+            # Same check without explicit intermediate dotfile
+            args.outdot = None
+            doDeps(args, MagicMock())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -15,20 +15,26 @@ PACKAGE = "zlib"
 GOOD_HASH = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 BAD_HASH = "baadf00dbaadf00dbaadf00dbaadf00dbaadf00d"
 NONEXISTENT_HASH = "TRIGGERS_A_404"
-GOOD_SPEC = {    # fully present on the remote store
-    "package": PACKAGE, "version": "v1.3.1", "revision": "1",
+GOOD_SPEC = {  # fully present on the remote store
+    "package": PACKAGE,
+    "version": "v1.3.1",
+    "revision": "1",
     "hash": GOOD_HASH,
     "remote_revision_hash": GOOD_HASH,
     "remote_hashes": [GOOD_HASH],
 }
-BAD_SPEC = {     # partially present on the remote store
-    "package": PACKAGE, "version": "v1.3.1", "revision": "2",
+BAD_SPEC = {  # partially present on the remote store
+    "package": PACKAGE,
+    "version": "v1.3.1",
+    "revision": "2",
     "hash": BAD_HASH,
     "remote_revision_hash": BAD_HASH,
     "remote_hashes": [BAD_HASH],
 }
-MISSING_SPEC = {    # completely absent from the remote store
-    "package": PACKAGE, "version": "v1.3.1", "revision": "3",
+MISSING_SPEC = {  # completely absent from the remote store
+    "package": PACKAGE,
+    "version": "v1.3.1",
+    "revision": "3",
     "hash": NONEXISTENT_HASH,
     "remote_revision_hash": NONEXISTENT_HASH,
     "remote_hashes": [NONEXISTENT_HASH],
@@ -36,8 +42,9 @@ MISSING_SPEC = {    # completely absent from the remote store
 
 
 def tarball_name(spec):
-    return ("{package}-{version}-{revision}.{arch}.tar.gz"
-            .format(arch=ARCHITECTURE, **spec))
+    return "{package}-{version}-{revision}.{arch}.tar.gz".format(
+        arch=ARCHITECTURE, **spec
+    )
 
 
 TAR_NAMES = tarball_name(GOOD_SPEC), tarball_name(BAD_SPEC), tarball_name(MISSING_SPEC)
@@ -74,13 +81,15 @@ class SyncTestCase(unittest.TestCase):
             if GOOD_HASH in url:
                 return MockRequest([{"name": tarball_name(GOOD_SPEC)}])
             elif BAD_HASH in url:
-                return MockRequest([{"name": tarball_name(BAD_SPEC)}],
-                                   simulate_err=True)
+                return MockRequest(
+                    [{"name": tarball_name(BAD_SPEC)}], simulate_err=True
+                )
         elif url.endswith(".manifest"):
             return MockRequest("")
         elif ("/%s/" % PACKAGE) in url:
-            return MockRequest([{"name": tarball_name(GOOD_SPEC)},
-                                {"name": tarball_name(BAD_SPEC)}])
+            return MockRequest(
+                [{"name": tarball_name(GOOD_SPEC)}, {"name": tarball_name(BAD_SPEC)}]
+            )
         raise NotImplementedError(url)
 
     @patch("bits_helpers.sync.open", new=lambda fn, mode: BytesIO())
@@ -96,9 +105,12 @@ class SyncTestCase(unittest.TestCase):
     def test_http_remote(self, mock_get, mock_error, mock_debug):
         """Test HTTPS remote store."""
         mock_get.side_effect = self.mock_get
-        syncer = sync.HttpRemoteSync(remoteStore="https://localhost/test",
-                                     architecture=ARCHITECTURE,
-                                     workdir="/sw", insecure=False)
+        syncer = sync.HttpRemoteSync(
+            remoteStore="https://localhost/test",
+            architecture=ARCHITECTURE,
+            workdir="/sw",
+            insecure=False,
+        )
         syncer.httpBackoff = 0  # speed up tests
 
         # Try good spec
@@ -118,15 +130,20 @@ class SyncTestCase(unittest.TestCase):
         # We can't use mock_error.assert_called_once_with because two
         # PartialDownloadError instances don't compare equal.
         self.assertEqual(len(mock_error.call_args_list), 1)
-        self.assertEqual(mock_error.call_args_list[0][0][0],
-                         "GET %s failed: %s")
-        self.assertEqual(mock_error.call_args_list[0][0][1],
-                         "https://localhost/test/TARS/%s/store/%s/%s/%s" %
-                         (ARCHITECTURE, BAD_SPEC["remote_revision_hash"][:2],
-                          BAD_SPEC["remote_revision_hash"],
-                          tarball_name(BAD_SPEC)))
-        self.assertIsInstance(mock_error.call_args_list[0][0][2],
-                              sync.PartialDownloadError)
+        self.assertEqual(mock_error.call_args_list[0][0][0], "GET %s failed: %s")
+        self.assertEqual(
+            mock_error.call_args_list[0][0][1],
+            "https://localhost/test/TARS/%s/store/%s/%s/%s"
+            % (
+                ARCHITECTURE,
+                BAD_SPEC["remote_revision_hash"][:2],
+                BAD_SPEC["remote_revision_hash"],
+                tarball_name(BAD_SPEC),
+            ),
+        )
+        self.assertIsInstance(
+            mock_error.call_args_list[0][0][2], sync.PartialDownloadError
+        )
 
         syncer.upload_symlinks_and_tarball(BAD_SPEC)
 
@@ -134,8 +151,9 @@ class SyncTestCase(unittest.TestCase):
         mock_debug.reset_mock()
         syncer.fetch_symlinks(MISSING_SPEC)
         syncer.fetch_tarball(MISSING_SPEC)
-        mock_debug.assert_called_with("Nothing fetched for %s (%s)",
-                                      MISSING_SPEC["package"], NONEXISTENT_HASH)
+        mock_debug.assert_called_with(
+            "Nothing fetched for %s (%s)", MISSING_SPEC["package"], NONEXISTENT_HASH
+        )
 
     @patch("bits_helpers.sync.execute", new=lambda cmd, printer=None: 0)
     @patch("bits_helpers.sync.os")
@@ -148,14 +166,18 @@ class SyncTestCase(unittest.TestCase):
 
         syncers = [
             sync.NoRemoteSync(),
-            sync.RsyncRemoteSync(remoteStore="ssh://localhost/test",
-                                 writeStore="ssh://localhost/test",
-                                 architecture=ARCHITECTURE,
-                                 workdir="/sw"),
-            sync.S3RemoteSync(remoteStore="s3://localhost",
-                              writeStore="s3://localhost",
-                              architecture=ARCHITECTURE,
-                              workdir="/sw"),
+            sync.RsyncRemoteSync(
+                remoteStore="ssh://localhost/test",
+                writeStore="ssh://localhost/test",
+                architecture=ARCHITECTURE,
+                workdir="/sw",
+            ),
+            sync.S3RemoteSync(
+                remoteStore="s3://localhost",
+                writeStore="s3://localhost",
+                architecture=ARCHITECTURE,
+                workdir="/sw",
+            ),
         ]
 
         for spec in (GOOD_SPEC, BAD_SPEC):
@@ -197,30 +219,53 @@ class Boto3TestCase(unittest.TestCase):
 
         def paginate_listdir(Bucket, Delimiter, Prefix):
             dir = Prefix.rstrip(Delimiter)
-            if dir in (resolve_store_path(ARCHITECTURE, NONEXISTENT_HASH),
-                       resolve_store_path(ARCHITECTURE, BAD_HASH)):
+            if dir in (
+                resolve_store_path(ARCHITECTURE, NONEXISTENT_HASH),
+                resolve_store_path(ARCHITECTURE, BAD_HASH),
+            ):
                 return [{}]
-            elif dir in (resolve_store_path(ARCHITECTURE, GOOD_HASH),
-                         resolve_links_path(ARCHITECTURE, PACKAGE)):
-                return [{"Contents": [
-                    {"Key": dir + Delimiter + tarball_name(GOOD_SPEC)},
-                ]}]
+            elif dir in (
+                resolve_store_path(ARCHITECTURE, GOOD_HASH),
+                resolve_links_path(ARCHITECTURE, PACKAGE),
+            ):
+                return [
+                    {
+                        "Contents": [
+                            {"Key": dir + Delimiter + tarball_name(GOOD_SPEC)},
+                        ]
+                    }
+                ]
             elif "/dist" not in Prefix:
                 raise NotImplementedError("unknown prefix " + Prefix)
             elif dir.endswith("-" + GOOD_SPEC["revision"]):
                 # The expected dist symlinks already exist on S3. As our
                 # test package has no dependencies, the prefix should only
                 # contain a link to the package itself.
-                return [{"Contents": [
-                    {"Key": dir + Delimiter + "%s.%s.tar.gz" %
-                     (os.path.basename(dir), ARCHITECTURE)},
-                ]}]
+                return [
+                    {
+                        "Contents": [
+                            {
+                                "Key": dir
+                                + Delimiter
+                                + "%s.%s.tar.gz" % (os.path.basename(dir), ARCHITECTURE)
+                            },
+                        ]
+                    }
+                ]
             elif dir.endswith("-" + BAD_SPEC["revision"]):
                 # Simulate partially complete upload of symlinks, e.g. by
                 # another bits running in parallel.
-                return [{"Contents": [
-                    {"Key": dir + Delimiter + "somepackage-v1-1.%s.tar.gz" % ARCHITECTURE},
-                ]}]
+                return [
+                    {
+                        "Contents": [
+                            {
+                                "Key": dir
+                                + Delimiter
+                                + "somepackage-v1-1.%s.tar.gz" % ARCHITECTURE
+                            },
+                        ]
+                    }
+                ]
             elif dir.endswith("-" + MISSING_SPEC["revision"]):
                 # No pre-existing symlinks under dist*.
                 return [{"Contents": []}]
@@ -228,8 +273,11 @@ class Boto3TestCase(unittest.TestCase):
                 raise NotImplementedError("unknown dist prefix " + Prefix)
 
         def head_object(Bucket, Key):
-            if NONEXISTENT_HASH in Key or BAD_HASH in Key or \
-               os.path.basename(Key) == tarball_name(MISSING_SPEC):
+            if (
+                NONEXISTENT_HASH in Key
+                or BAD_HASH in Key
+                or os.path.basename(Key) == tarball_name(MISSING_SPEC)
+            ):
                 raise ClientError({"Error": {"Code": "404"}}, "head_object")
             return {}
 
@@ -239,9 +287,14 @@ class Boto3TestCase(unittest.TestCase):
 
         def get_object(Bucket, Key):
             if Key.endswith(".manifest"):
-                return {"Body": MagicMock(iter_lines=lambda: [
-                    tarball_name(GOOD_SPEC).encode("utf-8") + b"\t...from manifest\n",
-                ])}
+                return {
+                    "Body": MagicMock(
+                        iter_lines=lambda: [
+                            tarball_name(GOOD_SPEC).encode("utf-8")
+                            + b"\t...from manifest\n",
+                        ]
+                    )
+                }
             return {"Body": MagicMock(read=lambda: b"...fetched individually")}
 
         def get_paginator(method):
@@ -269,8 +322,11 @@ class Boto3TestCase(unittest.TestCase):
     def test_tarball_download(self) -> None:
         """Test boto3 behaviour when downloading tarballs from the remote."""
         b3sync = sync.Boto3RemoteSync(
-            remoteStore="b3://localhost", writeStore="b3://localhost",
-            architecture=ARCHITECTURE, workdir="/sw")
+            remoteStore="b3://localhost",
+            writeStore="b3://localhost",
+            architecture=ARCHITECTURE,
+            workdir="/sw",
+        )
         b3sync.s3 = self.mock_s3()
 
         b3sync.s3.download_file.reset_mock()
@@ -288,19 +344,28 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.fetch_tarball(MISSING_SPEC)
         b3sync.s3.download_file.assert_not_called()
 
-    @patch("os.listdir", new=lambda path: (
-        [tarball_name(GOOD_SPEC)] if path.endswith("-" + GOOD_SPEC["revision"]) else
-        [tarball_name(BAD_SPEC)] if path.endswith("-" + BAD_SPEC["revision"]) else
-        [] if path.endswith("-" + MISSING_SPEC["revision"]) else
-        NotImplemented
-    ))
+    @patch(
+        "os.listdir",
+        new=lambda path: (
+            [tarball_name(GOOD_SPEC)]
+            if path.endswith("-" + GOOD_SPEC["revision"])
+            else [tarball_name(BAD_SPEC)]
+            if path.endswith("-" + BAD_SPEC["revision"])
+            else []
+            if path.endswith("-" + MISSING_SPEC["revision"])
+            else NotImplemented
+        ),
+    )
     @patch("os.readlink", new=MagicMock(return_value="dummy path"))
     @patch("os.path.islink", new=MagicMock(return_value=True))
     def test_tarball_upload(self) -> None:
         """Test boto3 behaviour when building packages for upload locally."""
         b3sync = sync.Boto3RemoteSync(
-            remoteStore="b3://localhost", writeStore="b3://localhost",
-            architecture=ARCHITECTURE, workdir="/sw")
+            remoteStore="b3://localhost",
+            writeStore="b3://localhost",
+            architecture=ARCHITECTURE,
+            workdir="/sw",
+        )
         b3sync.s3 = self.mock_s3()
 
         # Make sure upload of a fresh, new tarball works fine.
@@ -328,5 +393,5 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.s3.upload_file.assert_not_called()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
