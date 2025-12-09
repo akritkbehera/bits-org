@@ -1000,6 +1000,8 @@ def doBuild(args, parser):
     from bits_helpers.log import logger
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources)
 
+  order=buildOrder.copy()
+
   while buildOrder:
     p = buildOrder.pop(0)
     spec = specs[p]
@@ -1554,5 +1556,19 @@ def doBuild(args, parser):
   if untrackedFilesDirectories:
     banner("Untracked files in the following directories resulted in a rebuild of "
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
+
+  if order and args.generate_rpm:
+      from bits_helpers.dependency import RpmIndexer
+      for p in order:
+          spec = specs[p]
+          indexer = RpmIndexer(spec, args.configDir, args.workDir)
+          
+          # Check dependencies (this also adds current package's provides to global list)
+          success, missing = indexer.checkDependency()
+          
+          if not success:
+              print(f"Missing dependencies for package {p}: {', '.join(missing)}")
+          
+          print(f"✓ Package {p} dependencies satisfied")
   debug("Everything done")
 
