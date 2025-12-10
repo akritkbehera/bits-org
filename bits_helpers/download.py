@@ -278,14 +278,21 @@ def downloadPip(source, dest, work_dir):
     error, output = getstatusoutput(comm)
     return not error
 
+def downloadFile(source, dest, work_dir):
+    import shutil
+    shutil.copy(source.removeprefix("file:/"), dest)
+    return
 
 downloadHandlers = {
-                    'http': downloadUrllib2,
-                    'https': downloadUrllib2,
-                    'ftp': downloadUrllib2,
-                    'ftps': downloadUrllib2,
-                    'git': downloadGit,
-                    'pip': downloadPip} 
+    "http": downloadUrllib2,
+    "https": downloadUrllib2,
+    "ftp": downloadUrllib2,
+    "ftps": downloadUrllib2,
+    "git": downloadGit,
+    "pip": downloadPip,
+    "file": downloadFile
+}   
+
 
 def download(source, dest, work_dir):
     noCmssdtCache = True if 'no-cmssdt-cache=1' in source else False
@@ -322,8 +329,9 @@ def download(source, dest, work_dir):
     urlTypeRe = re.compile(r"([^:+]*)([^:]*)://.*")
     match = urlTypeRe.match(source)
     if not urlTypeRe.match(source):
-        raise MalformedUrl(source)
-    downloadHandler = downloadHandlers[match.group(1)]
+        if not source.startswith("/"):
+            raise MalformedUrl(source)
+    downloadHandler = downloadHandlers[match.group(1)] 
     filename = source.rsplit("/", 1)[1]
     downloadDir = join(cacheDir, checksum[0:2], checksum)
     try:
