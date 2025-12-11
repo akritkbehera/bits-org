@@ -1558,17 +1558,22 @@ def doBuild(args, parser):
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
 
   if order and args.generate_rpm:
-      from bits_helpers.dependency import RpmIndexer
+      from bits_helpers.dependency import RPMPackageManager
+      first_spec = specs[order[0]]
+      indexer = RPMPackageManager(first_spec, args.configDir, args.workDir)
+      if not indexer.system_packages():
+          warning("Warning: Could not load system packages, dependency checking may be incomplete")
+      banner(f"Checking dependencies for {len(order)} packages...")
+      all_satisfied = True
       for p in order:
+          if p.startswith("defaults-"):
+              continue
           spec = specs[p]
-          indexer = RpmIndexer(spec, args.configDir, args.workDir)
-          
-          # Check dependencies (this also adds current package's provides to global list)
-          success, missing = indexer.checkDependency()
-          
+          success, missing = indexer.check_dependency(spec)
           if not success:
-              print(f"Missing dependencies for package {p}: {', '.join(missing)}")
-          
-          print(f"✓ Package {p} dependencies satisfied")
+              all_satisfied = False
+              warning(f"✗ Package {p}: Missing dependencies")
+          else:
+              banner(f"✓ Package {p}: All dependencies satisfied")
   debug("Everything done")
 

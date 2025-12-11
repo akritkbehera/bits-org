@@ -17,13 +17,20 @@ if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/
     requires+=("${f}_${!ver}_${!rev}_${!hash}")
   done
 
+  if [ ${#requires[@]} -eq 0 ]; then
+    requires_str="%{nil}"
+  else
+    printf -v requires_str '%s ' "${requires[@]}"
+    requires_str="${requires_str% }"
+  fi
+
   rpmbuild -bb \
     --define "name ${PKGNAME}_${PKGVERSION}_${PKGREVISION}_${PKGHASH}" \
     --define "pkgname ${PKGNAME}" \
     --define "arch $(uname -m)" \
     --define "path $ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" \
     --define "workdir $WORK_DIR" \
-    --define "requires ${requires[*]:-%{nil}}" \
+    --define "requires $requires_str" \
     --define "_topdir $WORK_DIR/rpmbuild" \
     --define "buildroot $WORK_DIR/rpmbuild/BUILDROOT/${PKGNAME}" \
     "$WORK_DIR/rpmbuild/SPECS/${PKGNAME}.spec"
