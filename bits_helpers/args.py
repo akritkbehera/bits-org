@@ -248,7 +248,7 @@ def doParseArgs():
                                  "with spaces, and make sure quoting is correct! Implies --docker."))
 
   deps_parser.add_argument_group(title="Customise bits directories") \
-             .add_argument("-c", "--config-dir", dest="configDir", default="alidist",
+             .add_argument("-c", "--config-dir", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"),
                            help="The directory containing build recipes. Default '%(default)s'.")
 
   deps_system = deps_parser.add_mutually_exclusive_group()
@@ -325,7 +325,7 @@ def doParseArgs():
   doctor_dirs.add_argument("-w", "--work-dir", dest="workDir", default=DEFAULT_WORK_DIR,  # TODO: previous default was "workDir".
                            help=("The toplevel directory under which builds should be done and build results "
                                  "should be installed. Default '%(default)s'."))
-  doctor_dirs.add_argument("-c", "--config", dest="configDir", default="alidist",
+  doctor_dirs.add_argument("-c", "--config", dest="configDir", default=os.environ.get("BITS_REPO_DIR","alidist"), 
                            help="The directory containing build recipes. Default '%(default)s'.")
 
   # Options for the init subcommand
@@ -476,8 +476,8 @@ def finaliseArgs(args, parser):
       in (assignment.partition("=") for assignment in args.annotate)
     }
 
+
   if args.action in ("build", "doctor"):
-    args.configDir = args.configDir
 
     # On selected platforms, caching is active by default
     if args.architecture in S3_SUPPORTED_ARCHS and not args.preferSystem and not args.no_remote_store:

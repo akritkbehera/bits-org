@@ -12,7 +12,7 @@ from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
 from bits_helpers.utilities import Hasher
-from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data
+from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data, resolveLocalPath
 from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
@@ -225,7 +225,12 @@ def storeHashes(package, specs, considerRelocation):
         hasher(tag)
   if "sources" in spec:
     for src in spec["sources"]:
-      h_all(src)
+      if src.startswith("file://"):
+        with open(src.removeprefix("file:/")) as ref:
+          file_content = "".join(ref.readlines())
+          h_all(file_content)
+      else:
+        h_all(src)
   if "patches" in spec:
     for patch in spec["patches"]:
       h_all(patch)
@@ -489,7 +494,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       args.develPrefix if "develPrefix" in args and spec["is_devel_pkg"] else spec["version"])
     )
   if args.resourceMonitoring:
-    err, out = run_monitor_on_command(build_command, "%s/%s.json" % (scriptDir, p))
+    err = run_monitor_on_command(build_command, "%s/%s.json" % (scriptDir, p), printer=progress)
   else:
     err = execute(build_command, printer=progress)
   if args.builders==1:
@@ -879,6 +884,9 @@ def doBuild(args, parser):
         spec["commit_hash"] = "0"
 
     if "sources" in spec:
+      for i, s in enumerate(spec["sources"]):
+        resolved = resolveLocalPath(args.configDir, s)
+        spec["sources"][i] = resolved 
       spec["commit_hash"] = spec["tag"]
     # Version may contain date params like tag, plus %(commit_hash)s,
     # %(short_hash)s and %(tag)s.
@@ -1278,15 +1286,10 @@ def doBuild(args, parser):
 
     # The actual build script.
     debug("spec = %r", spec)
-
-    cmd_raw = ""
-    try:
-      fp = open(dirname(realpath(__file__))+'/build_template.sh', 'r')
-      cmd_raw = fp.read()
-      fp.close()
-    except Exception:
-      from pkg_resources import resource_string
-      cmd_raw = resource_string("bits_helpers", 'build_template.sh')
+    
+    fp = open(dirname(realpath(__file__))+'/build_template.sh', 'r')
+    cmd_raw = fp.read()
+    fp.close()
 
     if args.docker:
       cachedTarball = re.sub("^" + workDir, "/sw", spec["cachedTarball"])

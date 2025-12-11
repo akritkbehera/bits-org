@@ -583,14 +583,29 @@ def parseDefaults(disable, defaultsGetter, log):
     overrides[f] = dict(**(v or {}))
   return (None, overrides, taps)
 
-def checkForFilename(taps, pkg, d):
-  filename = taps.get(pkg, "%s/%s.sh" % (d, pkg))
+def checkForFilename(taps, pkg, d, ext=".sh"):
+  filename = taps.get(pkg, "%s/%s%s" % (d, pkg, ext))
   if not exists(filename):
     if "/" in pkg:
       filename = taps.get(pkg, "%s/%s" % (d, pkg))
     else:
       filename = taps.get(pkg, "%s/%s/latest" % (d, pkg))
   return filename
+
+def resolveLocalPath(configDir, s):
+  """
+  Resolves a local path if it is a file://filename.
+  If the path is not a file://filename, it returns the string `s` as is.
+  Args:
+    configDir: The configuration directory.
+    s: The path to resolve.
+  Returns:
+    The resolved path.
+  """
+  if s.startswith("file://"):
+    return f"file:/" + os.path.abspath(resolveFilename({}, s.removeprefix("file://"), configDir, {}, ext="")[0])
+  else:
+    return s
 
 def getConfigPaths(configDir):
   configPath = os.environ.get("BITS_PATH")
@@ -601,12 +616,12 @@ def getConfigPaths(configDir):
         pkgDirs.append(d)
   return pkgDirs
 
-def resolveFilename(taps, pkg, configDir, generatedPackages):
+def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh"):
   for d in getConfigPaths(configDir):
     if d in generatedPackages and pkg in generatedPackages[d]:
       meta = generatedPackages[d][pkg]
       return ("generate:%s@%s" % (pkg, meta["version"]), meta["pkgdir"])
-    filename = checkForFilename(taps, pkg, d)
+    filename = checkForFilename(taps, pkg, d, ext=".sh")
     if exists(filename):
       return (filename, d)
   dieOnError(True, "Package %s not found in %s" % (pkg, configDir))

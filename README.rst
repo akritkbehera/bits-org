@@ -9,7 +9,7 @@ Instant gratification with::
  $ git clone git@github.com:bitsorg/bits.git; cd bits; export PATH=$PWD:$PATH; cd ..
  $ git clone git@github.com:bitsorg/alice.bits.git
  $ cd alice.bits
- $ git submodule update --init --recursive
+ $ git clone git@github.com:bitsorg/common.bits.git;
 
 Review and customise bits.rc file (in particular, sw_dir location where all output will be stored)::
 
@@ -20,7 +20,7 @@ Review and customise bits.rc file (in particular, sw_dir location where all outp
  pkg_prefix=VO_ALICE
  sw_dir=../sw
  repo_dir=.
- search_path=bits,general,simulation,hepmc,analysis,ml
+ search_path=common
 
 Then::
 
