@@ -25,7 +25,7 @@ Requires: %{requires}
 %build
 
 %install
-cp -a %{workdir}/%{path}/* %{buildroot}
+cp -a %{installroot}/* %{buildroot}
 
 %files
 /*
