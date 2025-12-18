@@ -18,6 +18,7 @@ from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
+from bits_helpers.dependency import RPMPackageManager
 try:
   from bits_helpers.resource_monitor import run_monitor_on_command
 except:
@@ -649,7 +650,8 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
       warning("Failed to gather build info: %s", exc)
 
     dieOnError(err, buildErrMsg.strip())
-
+  if args.generate_rpm and not spec["package"].startswith("defaults-"):
+    RPMPackageManager.check_dependencies(os.path.join(args.workDir, args.architecture, spec['package'], spec['version']+"-"+spec['revision']))
   doFinalSync(spec, specs, args, syncHelper)
 
 
@@ -1316,6 +1318,13 @@ def doBuild(args, parser):
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
     })
+    if args.generate_rpm:
+      from bits_helpers.utilities import getConfigPaths
+      configPath=getConfigPaths(args.configDir)
+      for f in configPath:
+        f = f + "/system-provides.spec"
+        if os.path.exists(f):
+          shutil.copyfile(f, scriptDir + "/system-provides.spec")
 
     # Define the environment so that it can be passed up to the
     # actual build script
@@ -1560,23 +1569,5 @@ def doBuild(args, parser):
     banner("Untracked files in the following directories resulted in a rebuild of "
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
 
-  if order and args.generate_rpm:
-      from bits_helpers.dependency import RPMPackageManager
-      first_spec = specs[order[0]]
-      indexer = RPMPackageManager(first_spec, args.configDir, args.workDir)
-      if not indexer.system_packages():
-          warning("Warning: Could not load system packages, dependency checking may be incomplete")
-      banner(f"Checking dependencies for {len(order)} packages...")
-      all_satisfied = True
-      for p in order:
-          if p.startswith("defaults-"):
-              continue
-          spec = specs[p]
-          success, missing = indexer.check_dependency(spec)
-          if not success:
-              all_satisfied = False
-              warning(f"✗ Package {p}: Missing dependencies")
-          else:
-              banner(f"✓ Package {p}: All dependencies satisfied")
   debug("Everything done")
 
