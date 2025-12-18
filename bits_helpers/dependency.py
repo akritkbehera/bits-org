@@ -66,6 +66,18 @@ class RPMPackageManager:
         
         if results['missing']:
             warning(f"Dependency Check Failed: {len(results['missing'])} missing dependencies found.")
+            warning("\n" + "="*60)
+            warning("❌ MISSING DEPENDENCIES")
+            warning("="*60)
+            for i, dep in enumerate(results['missing'], 1):
+                if isinstance(dep, dict):
+                    package = dep.get('package', 'Unknown')
+                    dependency = dep.get('dependency', 'Unknown')
+                    warning(f"\n{i}. 📦 {package}")
+                    warning(f"   └─ Requires: {dependency}")
+                else:
+                    warning(f"\n{i}. ❌ {dep}")
+            warning("="*60 + "\n")
         else:
             banner("Dependency Check Passed: All dependencies satisfied.")
     

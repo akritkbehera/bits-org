@@ -651,7 +651,7 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
 
     dieOnError(err, buildErrMsg.strip())
   if args.generate_rpm and not spec["package"].startswith("defaults-"):
-    RPMPackageManager.check_dependencies(os.path.join(args.workDir, args.architecture, spec['package'], spec['version']+"-"+spec['revision']))
+    RPMPackageManager.check_dependencies(os.path.join(args.workDir, args.architecture, spec['package'], spec['version']+"-"+spec['revision'], "etc"))
   doFinalSync(spec, specs, args, syncHelper)
 
 
