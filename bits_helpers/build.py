@@ -343,7 +343,7 @@ def better_tarball(spec, old, new):
   return old if hashes.index(old_hash) < hashes.index(new_hash) else new
 
 
-def generate_initdotsh(package, specs, architecture, post_build=False):
+def generate_initdotsh(package, specs, architecture, workDir="/sw", post_build=False):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
@@ -354,7 +354,11 @@ def generate_initdotsh(package, specs, architecture, post_build=False):
   # init.sh. This is useful for development off CVMFS, since we have a
   # slightly different directory hierarchy there.
   lines = [': "${BITS_ARCH_PREFIX:=%s}"' % architecture]
-
+  lines.extend([
+    'if [ -z "${WORK_DIR}" ]; then',
+    '    WORK_DIR=%s' % abspath(workDir),
+    'fi',
+  ])
   # Generate the part which sources the environment for all the dependencies.
   # We guarantee that a dependency is always sourced before the parts
   # depending on it, but we do not guarantee anything for the order in which
@@ -1310,8 +1314,8 @@ def doBuild(args, parser):
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
-      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, post_build=False),
-      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, post_build=True),
+      "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=args.workDir, post_build=False),
+      "initdotsh_full": generate_initdotsh(p, specs, args.architecture, workDir=args.workDir, post_build=True),
       "develPrefix": develPrefix,
       "workDir": workDir,
       "configDir": abspath(args.configDir),
