@@ -8,7 +8,7 @@ from collections import OrderedDict
 
 from sepolgen.refpolicy import print_tree
 
-from bits_helpers.log import dieOnError, debug, error
+from bits_helpers.log import dieOnError, debug, error, banner
 from bits_helpers.download import download, getUrlChecksum
 from bits_helpers.utilities import call_ignoring_oserrors, symlink, short_commit_hash
 
@@ -162,7 +162,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build, rem
       filename = s.rsplit("/", 1)[1]
       if remote and hasattr(remote, "fetch_sources_from_s3"):
         cached_src = remote.fetch_sources_from_s3(spec, getUrlChecksum(s), filename)
-        debug("Cached source: %s" % cached_src)
+        banner(f"Found cached source for {spec['package']} on remote store: {remote.remoteStore}")
       else:
         cached_src = None
       download(s, source_dir, work_dir, cached_source=cached_src)
