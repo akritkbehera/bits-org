@@ -1305,7 +1305,7 @@ def doBuild(args, parser):
       cachedTarball = spec["cachedTarball"]
 
     if not cachedTarball:
-      checkout_sources(spec, workDir, args.referenceSources, args.docker)
+      checkout_sources(spec, workDir, args.referenceSources, args.docker, remote=syncHelper)
 
     scriptDir = join(workDir, "SPECS", args.architecture, spec["package"],
                      spec["version"] + "-" + spec["revision"])
