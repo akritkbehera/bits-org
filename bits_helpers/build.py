@@ -343,7 +343,7 @@ def better_tarball(spec, old, new):
   return old if hashes.index(old_hash) < hashes.index(new_hash) else new
 
 
-def generate_initdotsh(package, specs, architecture, workDir="/sw", post_build=False):
+def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
