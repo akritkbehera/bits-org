@@ -561,7 +561,7 @@ def asDict(overrides_array):
 def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=None):
   defaultsMeta, defaultsBody = defaultsGetter()
   if architecture and configDir:
-    archDefaults = resolveDefaultsFilename(architecture, configDir)
+    archDefaults = resolveDefaultsFilename(architecture, configDir, failOnError=False)
     if archDefaults is not None and os.path.exists(archDefaults):
       defaultsArchMeta = {}
       err, defaultsArchMeta, archBody = parseRecipe(getRecipeReader(archDefaults, configDir))
@@ -643,7 +643,7 @@ def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh"):
       return (filename, d)
   dieOnError(True, "Package %s not found in %s" % (pkg, configDir))
 
-def resolveDefaultsFilename(defaults, configDir):
+def resolveDefaultsFilename(defaults, configDir, failOnError=True):
   configPath = os.environ.get("BITS_PATH")
   cfgDir = configDir
   pkgDirs = [cfgDir]
@@ -657,7 +657,8 @@ def resolveDefaultsFilename(defaults, configDir):
     if exists(filename):
       return(filename)
 
-  error("Default `%s' does not exists.\n" % (filename or "<no defaults specified>"))
+  if failOnError:
+    error("Default `%s' does not exists.\n" % (filename or "<no defaults specified>"))
 
   '''
   error("Default `%s' does not exists. Viable options:\n%s" %
