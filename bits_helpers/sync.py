@@ -745,7 +745,7 @@ class Boto3RemoteSync:
 
     self.s3.upload_file(Bucket=self.writeStore, Key=tar_path,
                         Filename=os.path.join(self.workdir, tar_path))
-
+                        
   def upload_sources_to_s3(self, spec, filename, checksum) -> None:
     if not self.writeStore:
       return
