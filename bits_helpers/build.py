@@ -17,7 +17,6 @@ from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
-from bits_helpers.script import GenerateScript
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:
   from bits_helpers.resource_monitor import run_monitor_on_command
@@ -355,13 +354,6 @@ def generate_initdotsh(package, specs, architecture, post_build=False):
   # init.sh. This is useful for development off CVMFS, since we have a
   # slightly different directory hierarchy there.
   lines = [': "${BITS_ARCH_PREFIX:=%s}"' % architecture]
-  
-  lines.extend([
-    'if [ -z "${WORK_DIR}" ]; then',
-    '    WORK_DIR=$(realpath "$0" | sed "s|/'"$BITS_ARCH_PREFIX"'.*||")',
-    '    export WORK_DIR',
-    'fi',
-  ])
 
   # Generate the part which sources the environment for all the dependencies.
   # We guarantee that a dependency is always sourced before the parts
@@ -1328,9 +1320,6 @@ def doBuild(args, parser):
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
     })
-    if args.generate_rpm and not spec["package"].startswith("defaults-"):
-      gs = GenerateScript(spec, os.path.join(dirname(realpath(__file__)), "spec.template"), specs)
-      gs.write(scriptDir, gs.generate_rpm_spec, str(spec["package"] + "_spec.sh"))
 
     # Define the environment so that it can be passed up to the
     # actual build script
@@ -1374,8 +1363,6 @@ def doBuild(args, parser):
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
-    if args.generate_rpm:
-        buildEnvironment.append(("BUILD_RPM", "1"))
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 

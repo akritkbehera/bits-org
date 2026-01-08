@@ -713,7 +713,8 @@ class Boto3RemoteSync:
       self.s3.put_object(Bucket=self.writeStore,
                          Key=link_key,
                          Body=os.fsencode(hash_path),
-                         WebsiteRedirectLocation="/"+ hash_path)
+                         ACL="public-read",
+                         WebsiteRedirectLocation=hash_path)
       return link_key
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
