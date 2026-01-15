@@ -342,7 +342,6 @@ def better_tarball(spec, old, new):
   hashes = spec["local_hashes" if old_is_local else "remote_hashes"]
   return old if hashes.index(old_hash) < hashes.index(new_hash) else new
 
-
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
@@ -437,7 +436,6 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # append that (and the obvious way to inesrt it into the build template is by
   # putting the "%(initdotsh_*)s" on its own line, which has the same effect).
   return "\n".join(lines)
-
 
 def create_provenance_info(package, specs, args):
   """Return a metadata record for storage in the package's install directory."""
@@ -1329,6 +1327,28 @@ def doBuild(args, parser):
       join(scriptDir, 'relocate-me.sh')
     )
 
+    def generate_modulefile(package, specs, args):
+      spec = specs[package]
+      try:
+        fp = open(dirname(realpath(__file__))+'/modulefile.jnj')
+        jnj = fp.read()
+        fp.close()
+      except:
+        from pkg_resources import resource_string
+        jnj = resource_string("bits_helpers", 'modulefile.jnj')
+
+      return SandboxedEnvironment(autoescape=False).from_string(jnj).render(
+          spec=spec,
+          specs=specs,
+          args=args,
+          asList=asList,
+          setenv="; ".join(generate_setenv(package, specs, args))
+      )
+    
+    # # Generate modulefile in the script directory
+    with open(join(scriptDir, 'modulefile'), 'w') as f:
+      f.write(generate_modulefile(spec["package"], specs, args))
+      
     # Define the environment so that it can be passed up to the
     # actual build script
     buildEnvironment = [
