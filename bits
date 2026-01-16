@@ -210,6 +210,7 @@ for ((i=0;i<$ARGC;i++)); do
 done
 
 configBits "$config_file"
+
 set -- "${new_args[@]}"
 
 for arg in $@
@@ -220,15 +221,11 @@ do
 	    exit $?
         ;;
     -h|--help|-d|--debug|-n|--dry-run)
-        configBits $config_file
         $BITSDIR/bitsBuild $@
 	    exit $?
         ;;
-    setenv)
-	break
-	;;
-	 *)
-	    shift
+        *)
+	    break
         ;;
   esac
 done
@@ -247,7 +244,18 @@ else
   EY=
   EZ=
 fi
-  
+
+# If out of bits build directory, invoke bitsenv
+
+if [ ! -f .bitsrc -a ! -f bits.rc ]
+then
+   bitsenv=`which bitsenv`
+   if [ ! -z $bitsenv ]
+   then
+      exec $bitsenv $@
+   fi
+fi
+
 # My operating system
 
 UNAME=$(uname)
