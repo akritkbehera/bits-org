@@ -247,14 +247,14 @@ fi
 
 # If out of bits build directory, invoke bitsenv
 
-if [ ! -f .bitsrc -a ! -f bits.rc ]
-then
-   bitsenv=`which bitsenv`
-   if [ ! -z $bitsenv ]
-   then
-      exec $bitsenv $@
-   fi
-fi
+#if [ ! -f .bitsrc -a ! -f bits.rc ]
+#then
+#   bitsenv=`which bitsenv`
+#   if [ ! -z $bitsenv ]
+#   then
+#      exec $bitsenv $@
+#   fi
+#fi
 
 # My operating system
 
