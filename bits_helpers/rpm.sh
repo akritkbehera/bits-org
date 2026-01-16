@@ -42,7 +42,6 @@ if [ -f "$RPM_FILE" ]; then
     RPM_DB_DIR="$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/rpm"
     mkdir -p "$RPM_DB_DIR"
 
-    rpm -qp --provides "$RPM_FILE" | python3 -c 'import sys, json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))' > "$RPM_DB_DIR/provides.json"
     rpm -qp --requires "$RPM_FILE" | python3 -c 'import sys, json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))' > "$RPM_DB_DIR/requires.json"
 
     # Manage global_provides.json
