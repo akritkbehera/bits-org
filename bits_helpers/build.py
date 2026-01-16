@@ -1359,6 +1359,7 @@ def doBuild(args, parser):
       ("FULL_REQUIRES", " ".join(spec["full_requires"])),
       ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
       ("BITS_SCRIPT_DIR", "/bits" if args.docker else bits_dir),
+      ("REQUESTED_PKG", " ".join(args.pkgname)),
     ]
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
