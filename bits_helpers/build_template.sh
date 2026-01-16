@@ -332,6 +332,11 @@ if [[ $BUILD_FAMILY ]]; then
   ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
 fi
 
+# Create RPM metadata if the package has an RPM
+if [[ $PKGNAME != defaults-* && ! -d "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/rpm" ]]; then
+  source "$BITS_SCRIPT_DIR/bits_helpers/rpm.sh"
+fi
+
 # When the package is definitely fully installed, install the file that marks
 # the package as successful.
 if [ -w "$WORK_DIR/$PKGPATH" ]; then

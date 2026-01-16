@@ -1327,6 +1327,7 @@ def doBuild(args, parser):
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
     })
+    shutil.copyfile(join(dirname(realpath(__file__)), "spec"), join(scriptDir, "{}.spec".format(spec["package"])))
 
     # Define the environment so that it can be passed up to the
     # actual build script
