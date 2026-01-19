@@ -13,11 +13,6 @@ check_rpm_dependencies() {
         return 1
     fi
 
-    if [ ! -f "$provides_path" ]; then
-        echo "Error: provides.json not found at $provides_path"
-        return 1
-    fi
-
     # Call the Python dependency checker
     python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$requires_path" "$provides_path"
     return $?
@@ -68,33 +63,36 @@ if [ -f "$RPM_FILE" ]; then
     mkdir -p "$RPM_DB_DIR"
 
     rpm -qp --requires "$RPM_FILE" | jq -R -n '[inputs | sub("^\\s+";"") | sub("\\s+$";"") | select(length > 0)]' > "$RPM_DB_DIR/requires.json"
+    rpm -qp --provides "$RPM_FILE" | jq -R -n '[inputs | sub("^\\s+";"") | sub("\\s+$";"") | select(length > 0)]' > "$RPM_DB_DIR/provides.json"
 
-    # Manage global_provides.json
-    GLOBAL_PROVIDES="$WORK_DIR/rpmbuild/global_provides.json"
-    CURRENT_PROVIDES=$(rpm -qp --provides "$RPM_FILE" | jq -R -n '[inputs | sub("^\\s+";"") | sub("\\s+$";"") | select(length > 0)]')
-    
-    if [ -f "$GLOBAL_PROVIDES" ]; then
-        # Copy global_provides, append current package's provides, save back
-        jq -n --argjson current "$CURRENT_PROVIDES" --slurpfile global "$GLOBAL_PROVIDES" '$global[0] + $current | unique' > "$RPM_DB_DIR/provides.json"
+    PROVIDES_FILES=""
+    if [ -f "$RPM_DB_DIR/provides.json" ]; then
+        PROVIDES_FILES="$RPM_DB_DIR/provides.json"
+    fi
+
+    for req in $REQUIRES; do
+        if [[ $req == defaults-* ]]; then
+            continue
+        fi
+        req_upper=$(echo "$req" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+        root_var="${req_upper}_ROOT"
+        pkg_root="${!root_var}"
+        if [ -n "$pkg_root" ] && [ -f "$pkg_root/etc/rpm/provides.json" ]; then
+            PROVIDES_FILES="$PROVIDES_FILES $pkg_root/etc/rpm/provides.json"
+        fi
+    done
+
+    if [ -n "$PROVIDES_FILES" ]; then
+        jq -s 'add' $PROVIDES_FILES > "$RPM_DB_DIR/all_provides.json"
     else
-        # No global_provides yet, create provides.json with current package's provides
-        echo "$CURRENT_PROVIDES" > "$RPM_DB_DIR/provides.json"
+        echo "[]" > "$RPM_DB_DIR/all_provides.json"
     fi
 
-    # Copy provides.json back to global_provides.json
-    cp "$RPM_DB_DIR/provides.json" "$GLOBAL_PROVIDES"
-
-    echo "Stored RPM json metadata in $RPM_DB_DIR"
-
-    # Cleanup global_provides.json if this is the requested package
-    if [[ " $REQUESTED_PKG " == *" $PKGNAME "* ]]; then
-        rm -f "$GLOBAL_PROVIDES"
-        echo "Cleaned up global_provides.json (requested package: $PKGNAME)"
-    fi
 else
     echo "Error: Expected RPM not found at $RPM_FILE"
     exit 1
 fi
-
-check_rpm_dependencies "$RPM_DB_DIR/requires.json" "$RPM_DB_DIR/provides.json"
+echo "Checking dependencies for $PKGNAME"
+echo "$PROVIDES_FILES"
+check_rpm_dependencies "$WORK_DIR" "$RPM_DB_DIR/requires.json" "$PROVIDES_FILES" 
 
