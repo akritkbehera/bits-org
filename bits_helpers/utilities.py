@@ -841,7 +841,11 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       if err:
         failedRequirements.update([spec["package"]])
         spec["version"] = "failed"
+        if output:
+          warning("System requirement check failed for %s:\n%s", spec["package"], output)
       else:
+        banner("System requirements satisfied for %s (%d platform seeds verified)",
+               spec["package"], len(seeds) if isinstance(seeds, list) else 1)
         disable.append(spec["package"])
 
     spec["disabled"] = list(disable)
