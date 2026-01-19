@@ -11,6 +11,9 @@ import sys
 import os
 import yaml
 
+# Add parent directory to path so bits_helpers can be imported when run as a script
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from bits_helpers.log import debug, info, banner, warning, dieOnError
 from bits_helpers.utilities import yamlLoad
 

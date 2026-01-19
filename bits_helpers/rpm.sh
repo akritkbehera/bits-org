@@ -2,17 +2,6 @@ check_rpm_dependencies() {
     local requires_path="$1"
     local provides_path="$2"
 
-    if [ -z "$requires_path" ] || [ -z "$provides_path" ]; then
-        echo "Error: Both requires.json and provides.json paths are required"
-        echo "Usage: check_rpm_dependencies <requires.json> <provides.json>"
-        return 1
-    fi
-
-    if [ ! -f "$requires_path" ]; then
-        echo "Error: requires.json not found at $requires_path"
-        return 1
-    fi
-
     # Call the Python dependency checker
     python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$requires_path" "$provides_path"
     return $?
