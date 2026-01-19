@@ -828,7 +828,12 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     dieOnError(("system_requirement" in spec) and recipe.strip("\n\t "),
                "System requirements %s cannot have a recipe" % spec["package"])
     if re.match(spec.get("system_requirement", "(?!.*)"), architecture):
-      cmd = spec.get("system_requirement_check", "false")
+      seeds = spec.get("platformSeeds", [])
+      seeds_str = " ".join(seeds) if isinstance(seeds, list) else seeds
+      cmd = "PLATFORM_SEEDS={seeds}\n{check}".format(
+          seeds=quote(seeds_str),
+          check=spec.get("system_requirement_check", "false"),
+      )
       if spec["package"] not in requirementsCache:
         requirementsCache[spec["package"]] = performRequirementCheck(spec, cmd.strip())
 
