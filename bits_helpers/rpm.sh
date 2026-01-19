@@ -1,3 +1,28 @@
+check_rpm_dependencies() {
+    local requires_path="$1"
+    local provides_path="$2"
+
+    if [ -z "$requires_path" ] || [ -z "$provides_path" ]; then
+        echo "Error: Both requires.json and provides.json paths are required"
+        echo "Usage: check_rpm_dependencies <requires.json> <provides.json>"
+        return 1
+    fi
+
+    if [ ! -f "$requires_path" ]; then
+        echo "Error: requires.json not found at $requires_path"
+        return 1
+    fi
+
+    if [ ! -f "$provides_path" ]; then
+        echo "Error: provides.json not found at $provides_path"
+        return 1
+    fi
+
+    # Call the Python dependency checker
+    python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$requires_path" "$provides_path"
+    return $?
+}
+
 mkdir -p "$WORK_DIR/rpmbuild"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
 chmod -R u+w "$WORK_DIR/rpmbuild"
 cp "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}.spec" "$WORK_DIR/rpmbuild/SPECS/"
@@ -77,4 +102,7 @@ with open('$RPM_DB_DIR/provides.json', 'w') as f:
 else
     echo "Error: Expected RPM not found at $RPM_FILE"
     exit 1
-fi 
+fi
+
+check_rpm_dependencies "$RPM_DB_DIR/requires.json" "$RPM_DB_DIR/provides.json"
+
