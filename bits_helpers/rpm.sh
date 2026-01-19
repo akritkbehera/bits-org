@@ -67,23 +67,15 @@ if [ -f "$RPM_FILE" ]; then
     RPM_DB_DIR="$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/rpm"
     mkdir -p "$RPM_DB_DIR"
 
-    rpm -qp --requires "$RPM_FILE" | python3 -c 'import sys, json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))' > "$RPM_DB_DIR/requires.json"
+    rpm -qp --requires "$RPM_FILE" | jq -R -n '[inputs | sub("^\\s+";"") | sub("\\s+$";"") | select(length > 0)]' > "$RPM_DB_DIR/requires.json"
 
     # Manage global_provides.json
     GLOBAL_PROVIDES="$WORK_DIR/rpmbuild/global_provides.json"
-    CURRENT_PROVIDES=$(rpm -qp --provides "$RPM_FILE" | python3 -c 'import sys, json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
-
+    CURRENT_PROVIDES=$(rpm -qp --provides "$RPM_FILE" | jq -R -n '[inputs | sub("^\\s+";"") | sub("\\s+$";"") | select(length > 0)]')
+    
     if [ -f "$GLOBAL_PROVIDES" ]; then
         # Copy global_provides, append current package's provides, save back
-        python3 -c "
-import json
-with open('$GLOBAL_PROVIDES') as f:
-    global_provides = json.load(f)
-current_provides = json.loads('$CURRENT_PROVIDES')
-merged = list(set(global_provides + current_provides))
-with open('$RPM_DB_DIR/provides.json', 'w') as f:
-    json.dump(merged, f)
-"
+        jq -n --argjson current "$CURRENT_PROVIDES" --slurpfile global "$GLOBAL_PROVIDES" '$global[0] + $current | unique' > "$RPM_DB_DIR/provides.json"
     else
         # No global_provides yet, create provides.json with current package's provides
         echo "$CURRENT_PROVIDES" > "$RPM_DB_DIR/provides.json"
