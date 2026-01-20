@@ -333,13 +333,16 @@ if [[ $BUILD_FAMILY ]]; then
 fi
 
 # Create RPM metadata if the package has an RPM
-if [[ $PKGNAME != defaults-* ]]; then
-  if [[ -n "$CACHED_TARBALL" && -d "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/rpm" ]]; then
-     export BITS_CREATE_RPM=false
-  else
-     export BITS_CREATE_RPM=true
+if [[ -n "$VALIDATE_DEPS" ]]; then
+  echo "Validating dependencies..."
+  if [[ $PKGNAME != defaults-* ]]; then
+    if [[ -n "$CACHED_TARBALL" && -d "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/rpm" ]]; then
+      export BITS_CREATE_RPM=false
+    else
+      export BITS_CREATE_RPM=true
+    fi
+    source "$BITS_SCRIPT_DIR/bits_helpers/rpm.sh"
   fi
-  source "$BITS_SCRIPT_DIR/bits_helpers/rpm.sh"
 fi
 
 # When the package is definitely fully installed, install the file that marks

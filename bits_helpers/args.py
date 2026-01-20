@@ -122,6 +122,8 @@ def doParseArgs():
                             help=("Use makeflow for paralle workflow execution. "))
   build_parser.add_argument("--only-deps", dest="onlyDeps", default=False, action="store_true",
                             help="Only build dependencies, not the main package (e.g. for caching)")
+  build_parser.add_argument("--validate-deps", dest="validateDeps", default=False, action="store_true",
+                            help="Generate RPMs to validate dependencies and ensure packages are installable.")
   build_parser.add_argument("--gcc-toolchain", dest="gccToolchain", default=None, metavar="PACKAGE", action="append",
                             help=("Override gcc toolchain version tag"))  
 
