@@ -214,4 +214,31 @@ def get_system_provides(configDir):
                                 global_provides_list.add(p)
     return list(global_provides_list)
 
-print(get_system_provides("/home/akbehera/Desktop/repositories/cms.bits"))
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print("Usage: check_dependencies.py <config_dir> <pkg_root> <dependency_provides>")
+        sys.exit(1)
+
+    config_dir = sys.argv[1]
+    pkg_root = sys.argv[2]
+    dependency_provides = sys.argv[3]
+
+    result = check_dependencies(config_dir, pkg_root, dependency_provides)
+
+    debug(f'Result: {result}')
+    banner(f'All dependencies satisfied: {result["satisfied"]}')
+    debug(f'Total requirements: {len(result["details"])}')
+    warning(f'Missing: {len(result["missing"])}')
+
+    if result['missing']:
+        for req in result['missing']:
+            warning(f'  - {req}')
+
+    debug('Detailed analysis:')
+    for detail in result['details']:
+        status = '✓' if detail['satisfied'] else '✗'
+        matched = f' (matched: {detail["matched_version"]})' if detail['matched_version'] else ''
+        debug(f'  {status} {detail["requirement"]}{matched}')
+
+    sys.exit(0 if result['satisfied'] else 1)

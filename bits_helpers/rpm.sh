@@ -1,9 +1,10 @@
 check_rpm_dependencies() {
-    local requires_path="$1"
-    local provides_path="$2"
+    local config_dir="$1"
+    local pkg_root="$2"
+    local dependency_provides="$3"
 
-    # Call the Python dependency checker
-    PYTHONPATH="${BITS_SCRIPT_DIR}:${PYTHONPATH} "python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$requires_path" "$provides_path"
+    # Set PYTHONPATH and call the Python dependency checker
+    PYTHONPATH="${BITS_SCRIPT_DIR}:${PYTHONPATH}" python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$config_dir" "$pkg_root" "$dependency_provides"
     return $?
 }
 
@@ -82,6 +83,8 @@ else
     exit 1
 fi
 echo "Checking dependencies for $PKGNAME"
+echo "$BITS_CONFIG_DIR"
+echo "$RPM_DB_DIR/requires.json"
 echo "$PROVIDES_FILES"
-check_rpm_dependencies "$WORK_DIR" "$RPM_DB_DIR/requires.json" "$PROVIDES_FILES" 
+check_rpm_dependencies "$BITS_CONFIG_DIR" "$RPM_DB_DIR" "$PROVIDES_FILES" 
 
