@@ -263,6 +263,10 @@ def storeHashes(package, specs, considerRelocation):
   if considerRelocation and "relocate_paths" in spec:
     h_all("relocate:"+" ".join(sorted(spec["relocate_paths"])))
 
+  # Only add validate_deps to hash when True (affects RPM dependency validation)
+  if spec.get("validate_deps"):
+    h_all("validate_deps:true")
+
   spec["deps_hash"] = dh.hexdigest()
   spec["remote_revision_hash"] = h_default.hexdigest()
   # Store hypothetical hashes of this spec if we were building it using other
@@ -679,15 +683,16 @@ def doFinalSync(spec, specs, args, syncHelper):
 
 
 def doBuild(args, parser):
-  get_system_provides(args.configDir, args.workDir)
-  banner("System provides generated")
-  banner("Checking system dependencies")
-  sys_req_script = os.path.join(args.workDir, "system_requirement_check.sh")
-  if os.path.exists(sys_req_script):
-      err, out = getstatusoutput(f"bash {sys_req_script}")
-      dieOnError(err, f"System requirement check failed:\n{out}")
-      if out:
-        banner("%s", out)
+  if args.validateDeps:
+    get_system_provides(args.configDir, args.workDir)
+    banner("System provides generated")
+    banner("Checking system dependencies")
+    sys_req_script = os.path.join(args.workDir, "system_requirement_check.sh")
+    if os.path.exists(sys_req_script):
+        err, out = getstatusoutput(f"bash {sys_req_script}")
+        dieOnError(err, f"System requirement check failed:\n{out}")
+        if out:
+          banner("%s", out)
 
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
                                args.workDir, getattr(args, "insecure", False))
@@ -834,6 +839,10 @@ def doBuild(args, parser):
     spec["is_devel_pkg"] = pkg in develPkgs
     if spec["is_devel_pkg"]:
       spec["source"] = str(Path.cwd() / pkg)
+
+    # Add validateDeps to spec if passed via args, unless explicitly set to False in recipe
+    if args.validateDeps and spec.get("validate_deps") is not False:
+      spec["validate_deps"] = True
 
     # Only initialize Sapling if it's in PATH and the repo uses it
     use_sapling = False
@@ -1371,6 +1380,7 @@ def doBuild(args, parser):
       ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
       ("BITS_SCRIPT_DIR", "/bits" if args.docker else bits_dir),
       ("REQUESTED_PKG", " ".join(args.pkgname)),
+      ("VALIDATE_DEPS", spec.get("validate_deps") and "1" or ""),
     ]
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
