@@ -18,6 +18,7 @@ from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
 from bits_helpers.sync import remote_from_url
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
+from bits_helpers.check_dependencies import get_system_provides
 try:
   from bits_helpers.resource_monitor import run_monitor_on_command
 except:
@@ -678,6 +679,16 @@ def doFinalSync(spec, specs, args, syncHelper):
 
 
 def doBuild(args, parser):
+  get_system_provides(args.configDir, args.workDir)
+  banner("System provides generated")
+  banner("Checking system dependencies")
+  sys_req_script = os.path.join(args.workDir, "system_requirement_check.sh")
+  if os.path.exists(sys_req_script):
+      err, out = getstatusoutput(f"bash {sys_req_script}")
+      dieOnError(err, f"System requirement check failed:\n{out}")
+      if out:
+        banner("%s", out)
+
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
                                args.workDir, getattr(args, "insecure", False))
 

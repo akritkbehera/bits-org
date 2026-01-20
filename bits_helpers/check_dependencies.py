@@ -10,6 +10,7 @@ import rpm
 import sys
 import os
 import yaml
+from shlex import quote
 
 # Add parent directory to path so bits_helpers can be imported when run as a script
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -110,7 +111,7 @@ def compare_versions(required_op, required_ver, provided_ver):
         return False
 
 
-def check_dependencies(global_provides_path, pkg_root, dependencies_root=None):
+def check_dependencies(config_dir, work_dir, pkg_root, dependencies_root=None):
     requires_path = os.path.join(pkg_root, "requires.json")
     with open(requires_path, 'r') as f:
         requires = json.load(f)
@@ -130,8 +131,11 @@ def check_dependencies(global_provides_path, pkg_root, dependencies_root=None):
         if path and os.path.exists(path):
             with open(path, 'r') as f:
                 all_provides.extend(json.load(f))
-    global_provs = get_system_provides(global_provides_path)
-    all_provides.extend(global_provs)
+    get_system_provides(config_dir, work_dir)
+    global_provs_path = os.path.join(work_dir, "system_provides.json")
+    if os.path.exists(global_provs_path):
+        with open(global_provs_path, 'r') as f:
+            all_provides.extend(json.load(f))
     provides_map = {}
     for provide in all_provides:
         name, _, version = parse_rpm_dependency(provide)
@@ -187,17 +191,35 @@ def check_dependencies(global_provides_path, pkg_root, dependencies_root=None):
         "details": details
     }
 
-def get_system_provides(configDir):
+def get_system_provides(configDir, work_dir):
     global_provides_list = set()
     file_tuple = resolveFilename({}, "bootstrap_provides", configDir, {})
-    # resolveFilename returns (filename, directory)
     file_path = file_tuple[0]
     ts = rpm.TransactionSet()
+    header = {}
+    cmd = ""
     with open(file_path, 'r') as reader:
         d = reader.read()
         header_content = d.split("---", 1)[0]
         if header_content:
             header = yamlLoad(header_content)
+            env_vars = []
+            for key, value in header.items():
+                if key == "system_requirement_check":
+                    continue
+                env_key = re.sub(r'(?<!^)(?=[A-Z])', '_', key).upper()
+                val_str = ""
+                if isinstance(value, list):
+                    val_str = " ".join(str(v) for v in value)
+                elif isinstance(value, (str, int, float, bool)):
+                    val_str = str(value)
+                else:
+                    continue
+                env_vars.append("{}={}".format(env_key, quote(val_str)))
+            cmd = "{env}\n{check}".format(
+                env="\n".join(env_vars),
+                check=header.get("system_requirement_check", "false"),
+            )
             seeds = header.get("platformSeeds", [])
             for seed in seeds:
                 if seed.startswith("/"):
@@ -212,7 +234,17 @@ def get_system_provides(configDir):
                         if h['provides']:
                             for p in h['provides']:
                                 global_provides_list.add(p)
-    return list(global_provides_list)
+                                
+    if work_dir and os.path.exists(work_dir):
+        try:
+            with open(os.path.join(work_dir, "system_provides.json"), 'w') as f:
+                json.dump(list(global_provides_list), f, indent=4)
+            with open(os.path.join(work_dir, "system_requirement_check.sh"), 'w') as f:
+                f.write(cmd)
+        except OSError as e:
+            warning("Failed to dump system files: {}".format(e))
+
+    return
 
 
 if __name__ == "__main__":
