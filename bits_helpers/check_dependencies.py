@@ -15,7 +15,7 @@ import yaml
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bits_helpers.log import debug, info, banner, warning, dieOnError
-from bits_helpers.utilities import yamlLoad
+from bits_helpers.utilities import yamlLoad, resolveFilename
 
 def parse_rpm_dependency(dep_string):
     """
@@ -130,7 +130,7 @@ def check_dependencies(global_provides_path, pkg_root, dependencies_root=None):
         if path and os.path.exists(path):
             with open(path, 'r') as f:
                 all_provides.extend(json.load(f))
-    global_provs = get_global_provides(get_global_provides_path)
+    global_provs = get_system_provides(global_provides_path)
     all_provides.extend(global_provs)
     provides_map = {}
     for provide in all_provides:
@@ -187,28 +187,31 @@ def check_dependencies(global_provides_path, pkg_root, dependencies_root=None):
         "details": details
     }
 
-def get_global_provides(path):
+def get_system_provides(configDir):
     global_provides_list = set()
-    file_path = os.path.join(path, "bootstrap_provides.sh")
-    if os.path.exists(file_path):
-        ts = rpm.TransactionSet()
-        with open(file_path, 'r') as reader:
-            d = reader.read()
-            header_content = d.split("---", 1)[0]
-            if header_content:
-                header = yamlLoad(header_content)
-                seeds = header.get("platformSeeds", [])
-                for seed in seeds:
-                    if seed.startswith("/"):
-                        mi = ts.dbMatch(rpm.RPMTAG_PROVIDENAME, seed)
-                        for h in mi:
-                            if h['provides']:
-                                for p in h['provides']:
-                                    global_provides_list.add(p)
-                    else:
-                        mi = ts.dbMatch('name', seed)
-                        for h in mi:
-                            if h['provides']:
-                                for p in h['provides']:
-                                    global_provides_list.add(p)
+    file_tuple = resolveFilename({}, "bootstrap_provides", configDir, {})
+    # resolveFilename returns (filename, directory)
+    file_path = file_tuple[0]
+    ts = rpm.TransactionSet()
+    with open(file_path, 'r') as reader:
+        d = reader.read()
+        header_content = d.split("---", 1)[0]
+        if header_content:
+            header = yamlLoad(header_content)
+            seeds = header.get("platformSeeds", [])
+            for seed in seeds:
+                if seed.startswith("/"):
+                    mi = ts.dbMatch(rpm.RPMTAG_PROVIDENAME, seed)
+                    for h in mi:
+                        if h['provides']:
+                            for p in h['provides']:
+                                global_provides_list.add(p)
+                else:
+                    mi = ts.dbMatch('name', seed)
+                    for h in mi:
+                        if h['provides']:
+                            for p in h['provides']:
+                                global_provides_list.add(p)
     return list(global_provides_list)
+
+print(get_system_provides("/home/akbehera/Desktop/repositories/cms.bits"))

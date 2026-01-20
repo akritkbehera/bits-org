@@ -3,7 +3,7 @@ check_rpm_dependencies() {
     local provides_path="$2"
 
     # Call the Python dependency checker
-    python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$requires_path" "$provides_path"
+    PYTHONPATH="${BITS_SCRIPT_DIR}:${PYTHONPATH} "python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$requires_path" "$provides_path"
     return $?
 }
 
