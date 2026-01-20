@@ -9,7 +9,6 @@ import re
 import rpm
 import sys
 import os
-import yaml
 from shlex import quote
 
 # Add parent directory to path so bits_helpers can be imported when run as a script
@@ -60,7 +59,7 @@ def split_evr(version_string):
     if not version_string:
         return ("", "", "")
 
-    epoch = ""
+    epoch = None
     version = version_string
     release = ""
     if ':' in version_string:
@@ -164,9 +163,12 @@ def check_dependencies(config_dir, work_dir, pkg_root, dependencies_root=None):
         if req_name_lower in provides_map:
             for prov_ver in provides_map[req_name_lower]:
                 if prov_ver is None:
-                    satisfied = True
-                    matched_version = "any"
-                    break
+                    # Unversioned provide only satisfies unversioned requirement
+                    if not req_ver:
+                        satisfied = True
+                        matched_version = "none"
+                        break
+                    # Else continue, unversioned provide cannot satisfy versioned requirement
                 elif compare_versions(req_op, req_ver, prov_ver):
                     satisfied = True
                     matched_version = prov_ver
@@ -234,6 +236,9 @@ def get_system_provides(configDir, work_dir):
                         if h['provides']:
                             for p in h['provides']:
                                 global_provides_list.add(p)
+            provides = header.get("provides", [])
+            for p in provides:
+                global_provides_list.add(p)
                                 
     if work_dir and os.path.exists(work_dir):
         try:
@@ -248,15 +253,16 @@ def get_system_provides(configDir, work_dir):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: check_dependencies.py <config_dir> <pkg_root> <dependency_provides>")
+    if len(sys.argv) != 5:
+        print("Usage: check_dependencies.py <config_dir> <work_dir> <pkg_root> <dependency_provides>")
         sys.exit(1)
 
     config_dir = sys.argv[1]
-    pkg_root = sys.argv[2]
-    dependency_provides = sys.argv[3]
+    work_dir = sys.argv[2]
+    pkg_root = sys.argv[3]
+    dependency_provides = sys.argv[4]
 
-    result = check_dependencies(config_dir, pkg_root, dependency_provides)
+    result = check_dependencies(config_dir, work_dir, pkg_root, dependency_provides)
 
     debug(f'Result: {result}')
     banner(f'All dependencies satisfied: {result["satisfied"]}')

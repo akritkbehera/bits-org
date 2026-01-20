@@ -1,10 +1,10 @@
 check_rpm_dependencies() {
     local config_dir="$1"
-    local pkg_root="$2"
-    local dependency_provides="$3"
-
+    local work_dir="$2"
+    local pkg_root="$3"
+    local dependency_provides="$4"
     # Set PYTHONPATH and call the Python dependency checker
-    PYTHONPATH="${BITS_SCRIPT_DIR}:${PYTHONPATH}" python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$config_dir" "$pkg_root" "$dependency_provides"
+    PYTHONPATH="${BITS_SCRIPT_DIR}:${PYTHONPATH}" python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$config_dir" "$work_dir" "$pkg_root" "$dependency_provides"
     return $?
 }
 
