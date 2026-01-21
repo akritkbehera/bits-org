@@ -226,6 +226,17 @@ EoF
 
 install "${BITS_SCRIPT_DIR}/bits_helpers/relocate-me.sh" "$INSTALLROOT/"
 
+# Add system_requirements.sh execution at the beginning of relocate-me.sh if validate_deps is enabled
+if [[ -n "$VALIDATE_DEPS" ]]; then
+  sed -i '4a\
+\
+# Execute system requirements script if it exists to ensure system dependencies are satisfied\
+if [[ -f "${THISDIR}/etc/system_requirements.sh" ]]; then\
+  source "${THISDIR}/etc/system_requirements.sh"\
+fi\
+' "$INSTALLROOT/relocate-me.sh"
+fi
+
 # Always relocate the modulefile (if present) so that it works also in devel mode.
 if [[ ! -s "$INSTALLROOT/etc/profile.d/.bits-relocate" && -f "$INSTALLROOT/etc/modulefiles/$PKGNAME" ]]; then
   echo "mv -f \$PP/etc/modulefiles/$PKGNAME \$PP/etc/modulefiles/${PKGNAME}.forced-relocation && sed -e \"s|[@][@]PKGREVISION[@]\$PH[@][@]|$PKGREVISION|g\" \$PP/etc/modulefiles/${PKGNAME}.forced-relocation > \$PP/etc/modulefiles/$PKGNAME" >> "$INSTALLROOT/relocate-me.sh"

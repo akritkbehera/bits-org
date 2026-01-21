@@ -12,7 +12,7 @@ Release: %{revision}
 Summary: %{summary}
 License: CMS
 
-%{full_requires}
+%{rpm_requires}
 
 %description
 CMS package for %{pkgname}

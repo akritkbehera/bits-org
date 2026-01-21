@@ -4,7 +4,9 @@ check_rpm_dependencies() {
     local pkg_root="$3"
     local dependency_provides="$4"
     # Set PYTHONPATH and call the Python dependency checker
-    PYTHONPATH="${BITS_SCRIPT_DIR}:${PYTHONPATH}" python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" "$config_dir" "$work_dir" "$pkg_root" "$dependency_provides"
+    PYTHONPATH="${BITS_SCRIPT_DIR}:${PYTHONPATH}" \
+        python3 "${BITS_SCRIPT_DIR}/bits_helpers/check_dependencies.py" \
+        "$config_dir" "$work_dir" "$pkg_root" "$dependency_provides"
     return $?
 }
 
@@ -12,8 +14,8 @@ create_rpm() {
     mkdir -p "$WORK_DIR/rpmbuild"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
     chmod -R u+w "$WORK_DIR/rpmbuild"
     cp "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/${PKGNAME}.spec" "$WORK_DIR/rpmbuild/SPECS/"
-    FULL_REQUIRES=""
-    for req in $REQUIRES; do
+    RPM_REQUIRES=""
+    for req in $RUNTIME_REQUIRES; do
         if [[ $req == defaults-* ]]; then
             continue
         fi
@@ -23,20 +25,20 @@ create_rpm() {
         # Convention: NAME_HASH-1-1.ARCH
         # Note: Using dot separator for architecture to match rpm_name definition below.
         dep_name="${req_upper}_${req_hash}-1-1.${ARCHITECTURE}"
-        if [ -z "$FULL_REQUIRES" ]; then
-            FULL_REQUIRES="Requires: ${dep_name}"
+        if [ -z "$RPM_REQUIRES" ]; then
+            RPM_REQUIRES="Requires: ${dep_name}"
         else
-            FULL_REQUIRES="${FULL_REQUIRES}, ${dep_name}"
+            RPM_REQUIRES="${RPM_REQUIRES}, ${dep_name}"
         fi
     done
 
-    if [ -z "$FULL_REQUIRES" ]; then
-        FULL_REQUIRES="%{nil}"
+    if [ -z "$RPM_REQUIRES" ]; then
+        RPM_REQUIRES="%{nil}"
     fi
 
     rpmbuild -bb \
         --define "rpm_name ${PKGNAME}_${PKGHASH}-1-1.${ARCHITECTURE}" \
-        --define "full_requires ${FULL_REQUIRES}" \
+        --define "rpm_requires ${RPM_REQUIRES}" \
         --define "version ${PKGVERSION}" \
         --define "revision ${PKGREVISION}" \
         --define "arch ${ARCHITECTURE}" \
@@ -83,6 +85,7 @@ create_rpm() {
         echo "Error: Expected RPM not found at $RPM_FILE"
         exit 1
     fi
+    cp "${WORK_DIR}/system_requirement_check.sh" "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/system_requirement.sh"
 }
 
 if [ "$BITS_CREATE_RPM" = "true" ]; then
@@ -107,5 +110,6 @@ else
     done
 fi
 echo "Checking dependencies for $PKGNAME"
-check_rpm_dependencies "$BITS_CONFIG_DIR" "$WORK_DIR" "$RPM_DB_DIR" "$PROVIDES_FILES" 
+check_rpm_dependencies "$BITS_CONFIG_DIR" "$WORK_DIR" "$RPM_DB_DIR" "$PROVIDES_FILES"
+
 
