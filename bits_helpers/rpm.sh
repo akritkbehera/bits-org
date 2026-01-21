@@ -37,7 +37,7 @@ create_rpm() {
     fi
 
     rpmbuild -bb \
-        --define "rpm_name ${PKGNAME}_${PKGHASH}-1-1.${ARCHITECTURE}" \
+        --define "rpm_name ${PKGNAME,,}_${PKGHASH}-1-1.${ARCHITECTURE}" \
         --define "rpm_requires ${RPM_REQUIRES}" \
         --define "version ${PKGVERSION}" \
         --define "revision ${PKGREVISION}" \
@@ -49,7 +49,7 @@ create_rpm() {
         --define "buildroot $WORK_DIR/rpmbuild/BUILDROOT/${PKGNAME}" \
         "$WORK_DIR/rpmbuild/SPECS/${PKGNAME}.spec" || exit 1
 
-    RPM_FILE="$WORK_DIR/rpmbuild/RPMS/${PKGNAME}_${PKGHASH}-1-1.${ARCHITECTURE}.rpm"
+    RPM_FILE="$WORK_DIR/rpmbuild/RPMS/${PKGNAME,,}_${PKGHASH}-1-1.${ARCHITECTURE}.rpm"
 
     if [ -f "$RPM_FILE" ]; then
         RPM_DB_DIR="$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/rpm"
@@ -63,7 +63,7 @@ create_rpm() {
             PROVIDES_FILES="$RPM_DB_DIR/provides.json"
         fi
 
-        for req in $REQUIRES; do
+        for req in $RUNTIME_REQUIRES; do
             if [[ $req == defaults-* ]]; then
                 continue
             fi
@@ -85,7 +85,6 @@ create_rpm() {
         echo "Error: Expected RPM not found at $RPM_FILE"
         exit 1
     fi
-    cp "${WORK_DIR}/system_requirement_check.sh" "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/system_requirement.sh"
 }
 
 if [ "$BITS_CREATE_RPM" = "true" ]; then
@@ -97,7 +96,7 @@ else
         PROVIDES_FILES="$RPM_DB_DIR/provides.json"
     fi
 
-    for req in $REQUIRES; do
+    for req in $RUNTIME_REQUIRES; do
         if [[ $req == defaults-* ]]; then
             continue
         fi

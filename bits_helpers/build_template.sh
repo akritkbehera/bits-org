@@ -331,10 +331,7 @@ cd "$WORK_DIR"
 if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
   bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
-# Run the post-relocate script if it was created.
-if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh" ]; then
-  bash -ex "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh"
-fi
+
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 
@@ -346,7 +343,7 @@ fi
 # Create RPM metadata if the package has an RPM
 if [[ -n "$VALIDATE_DEPS" ]]; then
   echo "Validating dependencies..."
-  if [[ $PKGNAME != defaults-* ]]; then
+  if [[ $PKGNAME != defaults-* && $PKGNAME != bootstrap-provides ]]; then
     if [[ -n "$CACHED_TARBALL" && -d "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/rpm" ]]; then
       export BITS_CREATE_RPM=false
     else

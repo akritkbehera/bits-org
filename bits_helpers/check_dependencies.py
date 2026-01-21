@@ -11,9 +11,6 @@ import sys
 import os
 from shlex import quote
 
-from bits_helpers.log import debug, info, banner, warning, dieOnError
-from bits_helpers.utilities import yamlLoad, resolveFilename
-
 def parse_rpm_dependency(dep_string):
     """
     Parse an RPM dependency string into components.
@@ -56,7 +53,7 @@ def split_evr(version_string):
     if not version_string:
         return ("", "", "")
 
-    epoch = None
+    epoch = ""
     version = version_string
     release = ""
     if ':' in version_string:
@@ -127,7 +124,6 @@ def check_dependencies(config_dir, work_dir, pkg_root, dependencies_root=None):
         if path and os.path.exists(path):
             with open(path, 'r') as f:
                 all_provides.extend(json.load(f))
-    get_system_provides(config_dir, work_dir)
     global_provs_path = os.path.join(work_dir, "system_provides.json")
     if os.path.exists(global_provs_path):
         with open(global_provs_path, 'r') as f:
@@ -160,12 +156,10 @@ def check_dependencies(config_dir, work_dir, pkg_root, dependencies_root=None):
         if req_name_lower in provides_map:
             for prov_ver in provides_map[req_name_lower]:
                 if prov_ver is None:
-                    # Unversioned provide only satisfies unversioned requirement
-                    if not req_ver:
-                        satisfied = True
-                        matched_version = "none"
-                        break
-                    # Else continue, unversioned provide cannot satisfy versioned requirement
+                    # Unversioned provide satisfies any requirement for this capability
+                    satisfied = True
+                    matched_version = "unversioned"
+                    break
                 elif compare_versions(req_op, req_ver, prov_ver):
                     satisfied = True
                     matched_version = prov_ver
@@ -190,65 +184,6 @@ def check_dependencies(config_dir, work_dir, pkg_root, dependencies_root=None):
         "details": details
     }
 
-def get_system_provides(configDir, work_dir):
-    global_provides_list = set()
-    file_tuple = resolveFilename({}, "bootstrap_provides", configDir, {})
-    file_path = file_tuple[0]
-    ts = rpm.TransactionSet()
-    header = {}
-    cmd = ""
-    with open(file_path, 'r') as reader:
-        d = reader.read()
-        header_content = d.split("---", 1)[0]
-        if header_content:
-            header = yamlLoad(header_content)
-            env_vars = []
-            for key, value in header.items():
-                if key == "system_requirement_check":
-                    continue
-                env_key = re.sub(r'(?<!^)(?=[A-Z])', '_', key).upper()
-                val_str = ""
-                if isinstance(value, list):
-                    val_str = " ".join(str(v) for v in value)
-                elif isinstance(value, (str, int, float, bool)):
-                    val_str = str(value)
-                else:
-                    continue
-                env_vars.append("{}={}".format(env_key, quote(val_str)))
-            cmd = "{env}\n{check}".format(
-                env="\n".join(env_vars),
-                check=header.get("system_requirement_check", "false"),
-            )
-            seeds = header.get("platformSeeds", [])
-            for seed in seeds:
-                if seed.startswith("/"):
-                    mi = ts.dbMatch(rpm.RPMTAG_PROVIDENAME, seed)
-                    for h in mi:
-                        if h['provides']:
-                            for p in h['provides']:
-                                global_provides_list.add(p)
-                else:
-                    mi = ts.dbMatch('name', seed)
-                    for h in mi:
-                        if h['provides']:
-                            for p in h['provides']:
-                                global_provides_list.add(p)
-            provides = header.get("provides", [])
-            for p in provides:
-                global_provides_list.add(p)
-                                
-    if work_dir and os.path.exists(work_dir):
-        try:
-            with open(os.path.join(work_dir, "system_provides.json"), 'w') as f:
-                json.dump(list(global_provides_list), f, indent=4)
-            with open(os.path.join(work_dir, "system_requirement_check.sh"), 'w') as f:
-                f.write(cmd)
-        except OSError as e:
-            warning("Failed to dump system files: {}".format(e))
-
-    return
-
-
 if __name__ == "__main__":
     if len(sys.argv) != 5:
         print("Usage: check_dependencies.py <config_dir> <work_dir> <pkg_root> <dependency_provides>")
@@ -261,19 +196,19 @@ if __name__ == "__main__":
 
     result = check_dependencies(config_dir, work_dir, pkg_root, dependency_provides)
 
-    debug(f'Result: {result}')
-    banner(f'All dependencies satisfied: {result["satisfied"]}')
-    debug(f'Total requirements: {len(result["details"])}')
-    warning(f'Missing: {len(result["missing"])}')
+    print(f'Result: {result}')
+    print(f'All dependencies satisfied: {result["satisfied"]}')
+    print(f'Total requirements: {len(result["details"])}')
+    print(f'Missing: {len(result["missing"])}')
 
     if result['missing']:
         for req in result['missing']:
-            warning(f'  - {req}')
+            print(f'  - {req}')
 
-    debug('Detailed analysis:')
+    print('Detailed analysis:')
     for detail in result['details']:
         status = '✓' if detail['satisfied'] else '✗'
         matched = f' (matched: {detail["matched_version"]})' if detail['matched_version'] else ''
-        debug(f'  {status} {detail["requirement"]}{matched}')
+        print(f'  {status} {detail["requirement"]}{matched}')
 
     sys.exit(0 if result['satisfied'] else 1)
