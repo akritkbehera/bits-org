@@ -4,6 +4,35 @@ BITS_START_TIMESTAMP=$(date +%%s)
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
 
+  get_file() {
+      local file="$1"
+      local base_dir path_entry search_path
+      # If BITS_PATH is not set, use BITS_CONFIG_DIR directly
+      if [[ -z "$BITS_PATH" ]]; then
+          if [[ -f "$BITS_CONFIG_DIR/$file" ]]; then
+              echo "$BITS_CONFIG_DIR/$file"
+              return 0
+          fi
+          return 1
+      fi
+      # BITS_PATH is set - search in each path.bits directory
+      base_dir=$(dirname "$BITS_CONFIG_DIR")
+      IFS=',' read -ra paths <<< "$BITS_PATH"
+      for path_entry in "${paths[@]}"; do
+          path_entry="${path_entry## }"
+          path_entry="${path_entry%% }"
+
+          search_path="$base_dir/${path_entry}.bits/$file"
+
+          if [[ -f "$search_path" ]]; then
+              echo "$search_path"
+              return 0
+          fi
+      done
+
+      return 1
+  }
+
 cleanup() {
   local exit_code=$?
   BITS_END_TIMESTAMP=$(date +%%s)
@@ -287,6 +316,21 @@ cat "$INSTALLROOT/relocate-me.sh"
 fi
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
 
+# Create RPM metadata if the package has an RPM
+if [[ -n "$VALIDATE_DEPS" && "$skip_validate_deps" != "True" ]]; then
+  if [[ $PKGNAME != defaults-* ]]; then
+    if [[ -z "$CACHED_TARBALL" ]]; then
+      export BITS_CREATE_RPM=true
+    elif [[ -d "$INSTALLROOT/etc/rpm" ]]; then
+      export BITS_CREATE_RPM=false
+    else
+      echo "ERROR: RPM metadata missing in cached tarball for $PKGNAME" >&2
+      exit 1
+    fi
+    source $(get_file "$VALIDATE_DEPS")
+  fi
+fi
+
 # Archive creation
 HASHPREFIX=`echo $PKGHASH | cut -b1,2`
 HASH_PATH=$ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
@@ -320,10 +364,7 @@ cd "$WORK_DIR"
 if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
   bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
-# Run the post-relocate script if it was created.
-if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh" ]; then
-  bash -ex "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh"
-fi
+
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 

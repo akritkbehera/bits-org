@@ -1376,6 +1376,7 @@ def doBuild(args, parser):
 
     # Add the computed track_env environment
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
+    buildEnvironment += [(key, value) for key, value in spec.get("pkg_env", {}).items()]
 
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
