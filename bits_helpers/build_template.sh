@@ -4,6 +4,35 @@ BITS_START_TIMESTAMP=$(date +%%s)
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
 
+  get_file() {
+      local file="$1"
+      local base_dir path_entry search_path
+      # If BITS_PATH is not set, use BITS_CONFIG_DIR directly
+      if [[ -z "$BITS_PATH" ]]; then
+          if [[ -f "$BITS_CONFIG_DIR/$file" ]]; then
+              echo "$BITS_CONFIG_DIR/$file"
+              return 0
+          fi
+          return 1
+      fi
+      # BITS_PATH is set - search in each path.bits directory
+      base_dir=$(dirname "$BITS_CONFIG_DIR")
+      IFS=',' read -ra paths <<< "$BITS_PATH"
+      for path_entry in "${paths[@]}"; do
+          path_entry="${path_entry## }"
+          path_entry="${path_entry%% }"
+
+          search_path="$base_dir/${path_entry}.bits/$file"
+
+          if [[ -f "$search_path" ]]; then
+              echo "$search_path"
+              return 0
+          fi
+      done
+
+      return 1
+  }
+
 cleanup() {
   local exit_code=$?
   BITS_END_TIMESTAMP=$(date +%%s)
@@ -341,15 +370,14 @@ if [[ $BUILD_FAMILY ]]; then
 fi
 
 # Create RPM metadata if the package has an RPM
-if [[ -n "$VALIDATE_DEPS" ]]; then
-  echo "Validating dependencies..."
-  if [[ $PKGNAME != defaults-* && $PKGNAME != bootstrap-provides ]]; then
-    if [[ -n "$CACHED_TARBALL" && -d "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/rpm" ]]; then
+if [[ -n "$VALIDATE_DEPS" && "$skip_validate_deps" != "True" ]]; then
+  if [[ $PKGNAME != defaults-* ]]; then
+    if [[ -n "$CACHED_TARBALL" && -d "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/$VALIDATE_DEPS" ]]; then
       export BITS_CREATE_RPM=false
     else
       export BITS_CREATE_RPM=true
     fi
-    source "$BITS_SCRIPT_DIR/bits_helpers/rpm.sh"
+    source $(get_file "$VALIDATE_DEPS")
   fi
 fi
 

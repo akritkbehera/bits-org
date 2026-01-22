@@ -1368,10 +1368,6 @@ def doBuild(args, parser):
       ("FULL_REQUIRES", " ".join(spec["full_requires"])),
       ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
       ("BITS_SCRIPT_DIR", "/bits" if args.docker else bits_dir),
-      ("REQUESTED_PKG", " ".join(args.pkgname)),
-      ("VALIDATE_DEPS", spec.get("validate_deps") and "1" or ""),
-      ("PLATFORM_SEEDS", " ".join(spec.get("platformSeeds", []))),
-      ("PROVIDES", " ".join(spec.get("provides", []))),
     ]
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
@@ -1390,6 +1386,7 @@ def doBuild(args, parser):
 
     # Add the computed track_env environment
     buildEnvironment += [(key, value) for key, value in spec.get("track_env", {}).items()]
+    buildEnvironment += [(key, value) for key, value in spec.get("pkg_env", {}).items()]
 
     # In case the --docker options is passed, we setup a docker container which
     # will perform the actual build. Otherwise build as usual using bash.
