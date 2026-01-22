@@ -262,10 +262,6 @@ def storeHashes(package, specs, considerRelocation):
   if considerRelocation and "relocate_paths" in spec:
     h_all("relocate:"+" ".join(sorted(spec["relocate_paths"])))
 
-  # Only add validate_deps to hash when True (affects RPM dependency validation)
-  if spec.get("validate_deps"):
-    h_all("validate_deps:true")
-
   spec["deps_hash"] = dh.hexdigest()
   spec["remote_revision_hash"] = h_default.hexdigest()
   # Store hypothetical hashes of this spec if we were building it using other
