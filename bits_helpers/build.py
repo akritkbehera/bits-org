@@ -682,7 +682,6 @@ def doFinalSync(spec, specs, args, syncHelper):
 
 
 def doBuild(args, parser):
-
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
                                args.workDir, getattr(args, "insecure", False))
 
@@ -828,10 +827,6 @@ def doBuild(args, parser):
     spec["is_devel_pkg"] = pkg in develPkgs
     if spec["is_devel_pkg"]:
       spec["source"] = str(Path.cwd() / pkg)
-
-    # Add validateDeps to spec if passed via args, unless explicitly set to False in recipe
-    if args.validateDeps and spec.get("validate_deps") is not False:
-      spec["validate_deps"] = True
 
     # Only initialize Sapling if it's in PATH and the repo uses it
     use_sapling = False
@@ -1336,7 +1331,6 @@ def doBuild(args, parser):
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
     })
-    shutil.copyfile(join(dirname(realpath(__file__)), "spec"), join(scriptDir, "{}.spec".format(spec["package"])))
 
     # Define the environment so that it can be passed up to the
     # actual build script
