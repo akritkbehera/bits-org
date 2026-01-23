@@ -137,19 +137,23 @@ def storeHooks(package, specs, defaults_name) -> bool:
 
   if not defaults_hooks or spec.get("hooks") == "None":
     spec["hooks"] = {}
+    spec["hook_params"] = {}
     return False
 
   if "hooks" not in spec:
-    spec["hooks"] = defaults_hooks
+    spec["hooks"] = {k: v for k, v in defaults_hooks.items() if k != "hook_params"}
+    spec["hook_params"] = defaults_hooks.get("hook_params", {})
     return True
 
   pkg_hooks = spec["hooks"]
+  spec["hook_params"] = pkg_hooks.pop("hook_params", {})
   for hook_name, hook_value in pkg_hooks.items():
     dieOnError(hook_name not in defaults_hooks,
       "Package %s references hook '%s' not defined in %s." % (package, hook_name, defaults_key))
     allowed = [v.strip() for v in str(defaults_hooks[hook_name]).split(",")]
-    dieOnError(hook_value not in allowed,
-      "Package %s hook '%s: %s' not in allowed: %s" % (package, hook_name, hook_value, ", ".join(allowed)))
+    for v in [x.strip() for x in str(hook_value).split(",")]:
+      dieOnError(v not in allowed,
+        "Package %s hook '%s: %s' not in allowed: %s" % (package, hook_name, v, ", ".join(allowed)))
   spec["hooks"] = pkg_hooks
   return True
 
@@ -1345,6 +1349,9 @@ def doBuild(args, parser):
     init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
+    hook_params_locals = "\n  ".join(
+      'local %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
+    )
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False),
@@ -1356,6 +1363,7 @@ def doBuild(args, parser):
       "requires": " ".join(spec["requires"]),
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
+      "BITS_HOOK_PARAMS": hook_params_locals,
     })
 
     # Define the environment so that it can be passed up to the
