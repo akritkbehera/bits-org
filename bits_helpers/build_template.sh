@@ -14,6 +14,7 @@ get_file_from_configDir() {
 
 run_hooks() {
   local hook_type="$1"
+  %(BITS_HOOK_PARAMS)s
   local hooks_list
   local skip_list
   eval "hooks_list=\"\${${hook_type}_HOOKS}\""
