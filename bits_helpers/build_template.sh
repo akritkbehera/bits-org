@@ -14,13 +14,11 @@ get_file_from_configDir() {
 
 run_hooks() {
   local hook_type="$1"
+  %(BITS_HOOKS)s
   local hooks_list
-  local skip_list
-  eval "hooks_list=\"\${${hook_type}_HOOKS}\""
-  eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
-  [ -z "$hooks_list" ] || [ "$skip_list" == "true" ] && return
+  eval "hooks_list=\"\${${hook_type}}\""
+  [ -z "$hooks_list" ] && return
   for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
-    [[ ",$skip_list," == *",$hook,"* ]] && continue
     hook_script=$(get_file_from_configDir "$hook") || continue
     source "$hook_script"
   done

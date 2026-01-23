@@ -140,16 +140,17 @@ def storeHooks(package, specs, defaults_name) -> bool:
     return False
 
   if "hooks" not in spec:
-    spec["hooks"] = defaults_hooks
+    spec["hooks"] = dict(defaults_hooks)
     return True
 
   pkg_hooks = spec["hooks"]
   for hook_name, hook_value in pkg_hooks.items():
-    dieOnError(hook_name not in defaults_hooks,
-      "Package %s references hook '%s' not defined in %s." % (package, hook_name, defaults_key))
+    if hook_name not in defaults_hooks:
+      continue  # extra variables, not validated, not hashed
     allowed = [v.strip() for v in str(defaults_hooks[hook_name]).split(",")]
-    dieOnError(hook_value not in allowed,
-      "Package %s hook '%s: %s' not in allowed: %s" % (package, hook_name, hook_value, ", ".join(allowed)))
+    for v in [x.strip() for x in str(hook_value).split(",")]:
+      dieOnError(v not in allowed,
+        "Package %s hook '%s: %s' not in allowed: %s" % (package, hook_name, v, ", ".join(allowed)))
   spec["hooks"] = pkg_hooks
   return True
 
@@ -265,8 +266,10 @@ def storeHashes(package, specs, considerRelocation, defaults_name=None):
         patch_content = "".join(ref.readlines())
         h_all(patch_content)
 
+  defaults_hooks = specs.get("defaults-" + defaults_name, {}).get("hooks", {}) if defaults_name else {}
   for hook_name in sorted(spec.get("hooks", {})):
-    h_all("hook:" + hook_name + "=" + str(spec["hooks"][hook_name]))
+    if hook_name in defaults_hooks:
+      h_all("hook:" + hook_name + "=" + str(spec["hooks"][hook_name]))
 
   dh = Hasher()
   for dep in spec.get("requires", []):
@@ -1345,6 +1348,9 @@ def doBuild(args, parser):
     init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
+    hooks_locals = "\n  ".join(
+      'local %s="%s"' % (k, v) for k, v in spec.get("hooks", {}).items()
+    )
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False),
@@ -1356,6 +1362,7 @@ def doBuild(args, parser):
       "requires": " ".join(spec["requires"]),
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
+      "BITS_HOOKS": hooks_locals,
     })
 
     # Define the environment so that it can be passed up to the
@@ -1401,10 +1408,6 @@ def doBuild(args, parser):
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
-    # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
-    for hook_name, hook_value in spec.get("hooks", {}).items():
-      buildEnvironment.append((hook_name + "_HOOKS", hook_value))
-
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 
