@@ -3,7 +3,6 @@ BITS_START_TIMESTAMP=$(date +%%s)
 # Automatically generated build script
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
-
 get_file_from_configDir() {
   local repo_dir=$(dirname $BITS_CONFIG_DIR)
   for d in ${BITS_PATH//,/ } $(basename $BITS_CONFIG_DIR | sed 's|.bits$||') ; do
@@ -26,7 +25,7 @@ run_hooks() {
     [[ ",$skip_list," == *",$hook,"* ]] && continue
     hook_script=$(get_file_from_configDir "hooks/$hook")
     echo "bits: running hook $hook ($hook_script)"
-    /bin/bash -ex "$hook_script"
+    bash -ex "$hook_script"
   done
 }
 
@@ -349,6 +348,7 @@ cd "$WORK_DIR"
 if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
   /bin/bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
+
 
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest

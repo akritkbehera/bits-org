@@ -132,26 +132,26 @@ def storeHook(package, specs, defaults) -> bool:
     spec = specs.get(package)
     if not spec or package == f"defaults-{defaults}":
         return False
-    
+
     defaults_key = f"defaults-{defaults}"
     default_spec = specs.get(defaults_key, {})
     default_hook = default_spec.get("hook", {})
     default_params = default_spec.get("hook_params", {})
-    
+
     pkg_hook = spec.get("hook")
-    
+
     # Handle disabled hooks
     if type(pkg_hook) is str and pkg_hook == "disable":
         spec["hook"] = {}
         spec["hook_params"] = {}
         return False
-    
+
     # Set hook (inherit from defaults if package has none)
     spec["hook"] = pkg_hook if pkg_hook else default_hook.copy() if default_hook else {}
-    
+
     # Merge params (package params override defaults)
     spec["hook_params"] = {**default_params, **spec.get("hook_params", {})}
-    
+
     return bool(spec["hook"])
 
 def storeHashes(package, specs, considerRelocation):
@@ -160,6 +160,7 @@ def storeHashes(package, specs, considerRelocation):
   Assumes that all dependencies of the package already have a definitive hash.
   """
   spec = specs[package]
+  "If hooks are used, store them as part of package spec so we can include them in the hash."
 
   if "remote_revision_hash" in spec and "local_revision_hash" in spec:
     # We've already calculated these hashes before, so no need to do it again.
@@ -262,8 +263,7 @@ def storeHashes(package, specs, considerRelocation):
       with open(os.path.join(spec["pkgdir"], "patches", patch)) as ref:
         patch_content = "".join(ref.readlines())
         h_all(patch_content)
-
-  # Skip hooks for defaults packages - they provide hooks to others but shouldn't include them in their own hash
+  
   if not package.startswith("defaults-"):
     for hook_name in sorted(spec.get("hook", {})):
       h_all("hook:" + hook_name + "=" + str(spec["hook"][hook_name]))
@@ -764,10 +764,10 @@ def doBuild(args, parser):
 
   install_wrapper_script("git", workDir)
 
-  extra_env = {"BITS_CONFIG_DIR": "/pkgdist" if args.docker else os.path.abspath(args.configDir)}
+  extra_env = {"BITS_CONFIG_DIR": "/pkgdist.bits" if args.docker else os.path.abspath(args.configDir)}
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
 
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist:ro"] if args.docker else []) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/pkgdist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
@@ -1423,11 +1423,11 @@ def doBuild(args, parser):
     if args.docker:
       build_command = (
         "docker run --rm --entrypoint= --user $(id -u):$(id -g) "
-        "-v {workdir}:{container_workDir} -v{configDir}:/pkgdist:ro "
+        "-v {workdir}:{container_workDir} -v{configDir}:/pkgdist.bits:ro "
         "-v {scriptDir}/build.sh:/build.sh:ro "
         "-v {bits_dir}:/bits "
         "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
-        "-e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist {extraArgs} {image} bash -ex /build.sh"
+        "-e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
       ).format(
         image=quote(args.dockerImage),
         workdir=quote(abspath(args.workDir)),
