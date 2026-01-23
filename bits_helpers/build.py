@@ -128,13 +128,52 @@ def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
       .format(arch=args.architecture, short_hash=specs[pkg]["hash"][:2], **specs[pkg])
     symlink(dep_tarball, target_dir)
 
+def storeHooks(package, specs, defaults) -> bool:
+    """Resolve hooks for a package from defaults. Returns False if no hooks apply."""
+    defaults_key = f"defaults-{defaults}"
+    default_hooks = specs.get(defaults_key, {}).get("hooks", {}).copy()
+    default_params = specs.get(defaults_key, {}).get("hook_params", {}).copy()
+    
+    if package == defaults_key:
+        return False  # Avoid self-referencing
+    
+    spec = specs.get(package)
+    if not spec:
+        return False
+    
+    pkg_hooks = spec.get("hooks")
+    if type(pkg_hooks) is str and pkg_hooks == "disable":
+        spec["hooks"] = {}
+        spec["hook_params"] = {}
+        return False
+    
+    # If package has no hooks, try to inherit from defaults
+    if not pkg_hooks:
+        if not default_hooks:
+            spec["hooks"] = {}
+            spec["hook_params"] = {}
+            return False
+        spec["hooks"] = default_hooks
+        # Merge params: Package params take precedence over default params
+        merged_params = default_params.copy()
+        merged_params.update(spec.get("hook_params", {}))
+        spec["hook_params"] = merged_params
+        return True
+    
+    # If package has its own hooks, just merge the params
+    merged_params = default_params.copy()
+    merged_params.update(spec.get("hook_params", {}))
+    spec["hook_params"] = merged_params
+    return True
 
-def storeHashes(package, specs, considerRelocation):
+def storeHashes(package, specs, considerRelocation, defaults):
   """Calculate various hashes for package, and store them in specs[package].
 
   Assumes that all dependencies of the package already have a definitive hash.
   """
   spec = specs[package]
+  "If hooks are used, store them as part of package spec so we can include them in the hash."
+  storeHooks(package, specs, defaults)
 
   if "remote_revision_hash" in spec and "local_revision_hash" in spec:
     # We've already calculated these hashes before, so no need to do it again.
@@ -237,6 +276,9 @@ def storeHashes(package, specs, considerRelocation):
       with open(os.path.join(spec["pkgdir"], "patches", patch)) as ref:
         patch_content = "".join(ref.readlines())
         h_all(patch_content)
+
+  for hook_name in sorted(spec.get("hooks", {})):
+    h_all("hook:" + hook_name + "=" + str(spec["hooks"][hook_name]))
 
   dh = Hasher()
   for dep in spec.get("requires", []):
@@ -1030,7 +1072,7 @@ def doBuild(args, parser):
     debug("Calculating hash.")
     debug("spec = %r", spec)
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
-    storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"))
+    storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"), defaults=args.defaults[0])
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
 
@@ -1315,6 +1357,9 @@ def doBuild(args, parser):
     init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
+    hook_params_locals = "\n  ".join(
+      'export %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
+    )
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False),
@@ -1326,6 +1371,7 @@ def doBuild(args, parser):
       "requires": " ".join(spec["requires"]),
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
+      "BITS_HOOK_PARAMS": hook_params_locals,
     })
 
     # Define the environment so that it can be passed up to the
@@ -1371,6 +1417,10 @@ def doBuild(args, parser):
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
+    # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
+    for hook_name, hook_value in spec.get("hooks", {}).items():
+      buildEnvironment.append((hook_name + "_HOOKS", hook_value))
+
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 
