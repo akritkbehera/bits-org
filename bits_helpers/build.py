@@ -129,12 +129,40 @@ def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
     symlink(dep_tarball, target_dir)
 
 
-def storeHashes(package, specs, considerRelocation):
+def storeHooks(package, specs, defaults_name) -> bool:
+  """Resolve hooks for a package from defaults. Returns False if no hooks apply."""
+  spec = specs[package]
+  defaults_key = "defaults-" + defaults_name
+  defaults_hooks = specs.get(defaults_key, {}).get("hooks")
+
+  if not defaults_hooks or spec.get("hooks") == "None":
+    spec["hooks"] = {}
+    return False
+
+  if "hooks" not in spec:
+    spec["hooks"] = defaults_hooks
+    return True
+
+  pkg_hooks = spec["hooks"]
+  for hook_name, hook_value in pkg_hooks.items():
+    dieOnError(hook_name not in defaults_hooks,
+      "Package %s references hook '%s' not defined in %s." % (package, hook_name, defaults_key))
+    allowed = [v.strip() for v in str(defaults_hooks[hook_name]).split(",")]
+    for v in [x.strip() for x in str(hook_value).split(",")]:
+      dieOnError(v not in allowed,
+        "Package %s hook '%s: %s' not in allowed: %s" % (package, hook_name, v, ", ".join(allowed)))
+  spec["hooks"] = pkg_hooks
+  return True
+
+
+def storeHashes(package, specs, considerRelocation, defaults_name=None):
   """Calculate various hashes for package, and store them in specs[package].
 
   Assumes that all dependencies of the package already have a definitive hash.
   """
   spec = specs[package]
+  if defaults_name:
+    storeHooks(package, specs, defaults_name)
 
   if "remote_revision_hash" in spec and "local_revision_hash" in spec:
     # We've already calculated these hashes before, so no need to do it again.
@@ -237,6 +265,9 @@ def storeHashes(package, specs, considerRelocation):
       with open(os.path.join(spec["pkgdir"], "patches", patch)) as ref:
         patch_content = "".join(ref.readlines())
         h_all(patch_content)
+
+  for hook_name in sorted(spec.get("hooks", {})):
+    h_all("hook:" + hook_name + "=" + str(spec["hooks"][hook_name]))
 
   dh = Hasher()
   for dep in spec.get("requires", []):
@@ -1030,7 +1061,7 @@ def doBuild(args, parser):
     debug("Calculating hash.")
     debug("spec = %r", spec)
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
-    storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"))
+    storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"), defaults_name=args.defaults[0])
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
 
@@ -1371,6 +1402,10 @@ def doBuild(args, parser):
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
+    # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
+    for hook_name, hook_value in spec.get("hooks", {}).items():
+      buildEnvironment.append((hook_name + "_HOOKS", hook_value))
+
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 
@@ -1576,4 +1611,3 @@ def doBuild(args, parser):
     banner("Untracked files in the following directories resulted in a rebuild of "
            "the associated package and its dependencies:\n%s\n\nPlease commit or remove them to avoid useless rebuilds.", "\n".join(untrackedFilesDirectories))
   debug("Everything done")
-

@@ -5,30 +5,23 @@ unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
 
 get_file_from_configDir() {
-  [[ -n $BITS_PATH ]] && for bits in ${BITS_PATH//,/ }; do
-    [[ -f "$(dirname "$BITS_CONFIG_DIR")/${bits}.bits${1:+/$1}" ]] && printf "%s\n" "$(dirname "$BITS_CONFIG_DIR")/${bits}.bits${1:+/$1}" && return
+  local repo_dir=$(dirname $BITS_CONFIG_DIR)
+  for d in ${BITS_PATH//,/ } $(basename $BITS_CONFIG_DIR | sed 's|.bits$||') ; do
+    [ -f ${repo_dir}/${d}.bits/$1 ] && echo "${repo_dir}/${d}.bits/$1" && return 0
   done
-  printf "%s\n" "$BITS_CONFIG_DIR/$1"
+  return 1
 }
 
 run_hooks() {
   local hook_type="$1"
-  local hooks_var="${hook_type}_HOOKS"
-  local skip_var="SKIP_${hook_type}_HOOKS"
-  local hooks_list="${!hooks_var}"
-  local skip_list="${!skip_var}"
-
-  [[ -z "$hooks_list" ]] && return 0
-
-  IFS=',' read -ra hooks <<< "$hooks_list"
-  for hook in "${hooks[@]}"; do
-    hook="${hook## }"; hook="${hook%% }"
-
-    [[ "$skip_list" == "true" ]] && continue
+  local hooks_list
+  local skip_list
+  eval "hooks_list=\"\${${hook_type}_HOOKS}\""
+  eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
+  [ -z "$hooks_list" ] || [ "$skip_list" == "true" ] && return
+  for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
     [[ ",$skip_list," == *",$hook,"* ]] && continue
-
-    hook_script=$(get_file_from_configDir "$hook" 2>/dev/null) || continue
-    echo "bits: running $hook_type hook: $hook"
+    hook_script=$(get_file_from_configDir "$hook") || continue
     source "$hook_script"
   done
 }
