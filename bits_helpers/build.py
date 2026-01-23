@@ -129,30 +129,42 @@ def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
     symlink(dep_tarball, target_dir)
 
 def storeHook(package, specs, defaults) -> bool:
+    """Resolve hook for a package from defaults. Returns False if no hook applies."""
+    defaults_key = f"defaults-{defaults}"
+    default_hook = specs.get(defaults_key, {}).get("hook", {}).copy()
+    default_params = specs.get(defaults_key, {}).get("hook_params", {}).copy()
+    
+    if package == defaults_key:
+        return False  # Avoid self-referencing
+    
     spec = specs.get(package)
-    if not spec or package == f"defaults-{defaults}":
+    if not spec:
         return False
 
-    defaults_key = f"defaults-{defaults}"
-    default_spec = specs.get(defaults_key, {})
-    default_hook = default_spec.get("hook", {})
-    default_params = default_spec.get("hook_params", {})
-
     pkg_hook = spec.get("hook")
-
-    # Handle disabled hooks
     if type(pkg_hook) is str and pkg_hook == "disable":
         spec["hook"] = {}
         spec["hook_params"] = {}
         return False
-
-    # Set hook (inherit from defaults if package has none)
-    spec["hook"] = pkg_hook if pkg_hook else default_hook.copy() if default_hook else {}
-
-    # Merge params (package params override defaults)
-    spec["hook_params"] = {**default_params, **spec.get("hook_params", {})}
-
-    return bool(spec["hook"])
+    
+    # If package has no hooks, try to inherit from defaults
+    if not pkg_hook:
+        if not default_hook:
+            spec["hook"] = {}
+            spec["hook_params"] = {}
+            return False
+        spec["hook"] = default_hook
+        # Merge params: Package params take precedence over default params
+        merged_params = default_params.copy()
+        merged_params.update(spec.get("hook_params", {}))
+        spec["hook_params"] = merged_params
+        return True
+    
+    # If package has its own hooks, just merge the params
+    merged_params = default_params.copy()
+    merged_params.update(spec.get("hook_params", {}))
+    spec["hook_params"] = merged_params
+    return True
 
 def storeHashes(package, specs, considerRelocation):
   """Calculate various hashes for package, and store them in specs[package].
@@ -269,6 +281,9 @@ def storeHashes(package, specs, considerRelocation):
       h_all("hook:" + hook_name + "=" + str(spec["hook"][hook_name]))
     for hook_name in sorted(spec.get("hook_params", {})):
       h_all("hook_params:" + hook_name + "=" + str(spec["hook_params"][hook_name]))
+
+  for hook_name in sorted(spec.get("hook", {})):
+    h_all("hook:" + hook_name + "=" + str(spec["hook"][hook_name]))
 
   dh = Hasher()
   for dep in spec.get("requires", []):

@@ -29,6 +29,32 @@ run_hooks() {
   done
 }
 
+get_file_from_configDir() {
+  local repo_dir=$(dirname $BITS_CONFIG_DIR)
+  for d in ${BITS_PATH//,/ } $(basename $BITS_CONFIG_DIR | sed 's|.bits$||') ; do
+    [ -f ${repo_dir}/${d}.bits/$1 ] && echo "${repo_dir}/${d}.bits/$1" && return 0
+  done
+  return 1
+}
+
+run_hooks() {
+  export hook_type="$1"
+  %(BITS_HOOK_PARAMS)s
+  export hooks_list
+  export skip_list
+  eval "hooks_list=\"\${${hook_type}_HOOKS}\""
+  eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
+  if [[ "$PKGREVISION" != local* ]]; then
+    [ -n "$skip_list" ] && echo "bits: skipping hooks if enabled not allowed while uploading. Aborting." && exit 1
+  fi
+  for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
+    [[ ",$skip_list," == *",$hook,"* ]] && continue
+    hook_script=$(get_file_from_configDir "hooks/$hook")
+    echo "bits: running hook $hook ($hook_script)"
+    bash -ex "$hook_script"
+  done
+}
+
 cleanup() {
   local exit_code=$?
   BITS_END_TIMESTAMP=$(date +%%s)
