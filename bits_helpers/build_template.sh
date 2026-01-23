@@ -4,34 +4,27 @@ BITS_START_TIMESTAMP=$(date +%%s)
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
 
-  get_file() {
-      local file="$1"
-      local base_dir path_entry search_path
-      # If BITS_PATH is not set, use BITS_CONFIG_DIR directly
-      if [[ -z "$BITS_PATH" ]]; then
-          if [[ -f "$BITS_CONFIG_DIR/$file" ]]; then
-              echo "$BITS_CONFIG_DIR/$file"
-              return 0
-          fi
-          return 1
-      fi
-      # BITS_PATH is set - search in each path.bits directory
-      base_dir=$(dirname "$BITS_CONFIG_DIR")
-      IFS=',' read -ra paths <<< "$BITS_PATH"
-      for path_entry in "${paths[@]}"; do
-          path_entry="${path_entry## }"
-          path_entry="${path_entry%% }"
+get_file_from_configDir() {
+  local repo_dir=$(dirname $BITS_CONFIG_DIR)
+  for d in ${BITS_PATH//,/ } $(basename $BITS_CONFIG_DIR | sed 's|.bits$||') ; do
+    [ -f ${repo_dir}/${d}.bits/$1 ] && echo "${repo_dir}/${d}.bits/$1" && return 0
+  done
+  return 1
+}
 
-          search_path="$base_dir/${path_entry}.bits/$file"
-
-          if [[ -f "$search_path" ]]; then
-              echo "$search_path"
-              return 0
-          fi
-      done
-
-      return 1
-  }
+run_hooks() {
+  local hook_type="$1"
+  local hooks_list
+  local skip_list
+  eval "hooks_list=\"\${${hook_type}_HOOKS}\""
+  eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
+  [ -z "$hooks_list" ] || [ "$skip_list" == "true" ] && return
+  for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
+    [[ ",$skip_list," == *",$hook,"* ]] && continue
+    hook_script=$(get_file_from_configDir "$hook") || continue
+    source "$hook_script"
+  done
+}
 
 cleanup() {
   local exit_code=$?
@@ -316,6 +309,11 @@ cat "$INSTALLROOT/relocate-me.sh"
 fi
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
 
+# Run post-install hooks
+if [[ $PKGNAME != defaults-* ]]; then
+  run_hooks "POST_INSTALL"
+fi
+
 # Archive creation
 HASHPREFIX=`echo $PKGHASH | cut -b1,2`
 HASH_PATH=$ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
@@ -358,18 +356,6 @@ if [[ $BUILD_FAMILY ]]; then
   ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
 fi
 
-# Create RPM metadata if the package has an RPM
-if [[ -n "$VALIDATE_DEPS" && "$skip_validate_deps" != "True" ]]; then
-  if [[ $PKGNAME != defaults-* ]]; then
-    if [[ -n "$CACHED_TARBALL" && -d "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/$VALIDATE_DEPS" ]]; then
-      export BITS_CREATE_RPM=false
-    else
-      export BITS_CREATE_RPM=true
-    fi
-    source $(get_file "$VALIDATE_DEPS")
-  fi
-fi
-
 # When the package is definitely fully installed, install the file that marks
 # the package as successful.
 if [ -w "$WORK_DIR/$PKGPATH" ]; then
@@ -378,3 +364,4 @@ fi
 # Mark the build as successful with a placeholder. Allows running incremental
 # recipe in case the package is in development mode.
 echo "${DEVEL_HASH}${DEPS_HASH}" > "$BUILDDIR/.build_succeeded"
+
