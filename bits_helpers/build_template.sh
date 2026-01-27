@@ -110,7 +110,9 @@ export PKG_NAME="$PKGNAME"
 export PKG_VERSION="$PKGVERSION"
 export PKG_BUILDNUM="$PKGREVISION"
 
-export PKGPATH=${ARCHITECTURE}/${PKGNAME}/${PKGVERSION}-${PKGREVISION}
+# Use FORCE_REVISION for install directory if set, otherwise PKGREVISION
+export INSTALL_REVISION="${FORCE_REVISION:-$PKGREVISION}"
+export PKGPATH=${ARCHITECTURE}/${PKGNAME}/${PKGVERSION}-${INSTALL_REVISION}
 mkdir -p "$WORK_DIR/BUILD" "$WORK_DIR/SOURCES" "$WORK_DIR/TARS" \
          "$WORK_DIR/SPECS" "$WORK_DIR/INSTALLROOT"
 # If we are in development mode, then install directly in $WORK_DIR/$PKGPATH,
@@ -147,10 +149,6 @@ EOF
 # Add "source" command for dependencies to init.sh.
 # Install init.sh now, so that it is available for debugging in case the build fails.
 mkdir -p "$INSTALLROOT/etc/profile.d"
-if [[ -n "$FORCE_REVISION" ]]; then
-  echo "FORCE_REVISION is set to $FORCE_REVISION"
-  echo "$PKGHASH" > "$INSTALLROOT/etc/profile.d/.hash"
-fi
 rm -f "$INSTALLROOT/etc/profile.d/init.sh"
 cat <<\EOF > "$INSTALLROOT/etc/profile.d/init.sh"
 %(initdotsh_deps)s
@@ -375,23 +373,17 @@ wait "$rsync_pid"
 
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
-if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
-<<<<<<< HEAD
-  /bin/bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
-fi
-
-
-=======
-  bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
+if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$INSTALL_REVISION" ]; then
+  bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$INSTALL_REVISION/relocate-me.sh"
 fi
 
 >>>>>>> cf9933b (Post_relocate_changes)
 # Last package built gets a "latest" mark.
-ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
+ln -snf $PKGVERSION-$INSTALL_REVISION $ARCHITECTURE/$PKGNAME/latest
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
+  ln -snf $PKGVERSION-$INSTALL_REVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
 fi
 
 # When the package is definitely fully installed, install the file that marks
