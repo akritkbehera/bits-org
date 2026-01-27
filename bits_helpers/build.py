@@ -175,7 +175,7 @@ def storeHashes(package, specs, considerRelocation):
   if spec.get("force_rebuild", False):
     h_all(str(time.time()))
 
-  for key in ("recipe", "version", "package"):
+  for key in ("recipe", "version", "package", "force_revision"):
     h_all(spec.get(key, "none"))
 
   # commit_hash could be a commit hash (if we're not building a tag, but
@@ -407,7 +407,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       arch_expr=arch_expr,
       package=quote(specs[dep]["package"]),
       version=quote(specs[dep]["version"]),
-      revision=quote(specs[dep].get("force_revision", specs[dep]["revision"])),
+      revision=(lambda r: ("-" + quote(r)) if r else "")(specs[dep].get("force_revision", specs[dep]["revision"])),
     ))
 
   if post_build:
@@ -420,7 +420,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       arch_expr='$BITS_ARCH_PREFIX' if spec.get("architecture") == architecture else spec.get("architecture"),
       package=quote(spec["package"]),
       version=quote(spec["version"]),
-      revision=quote(spec.get("force_revision", spec["revision"])),
+      revision=(lambda r: ("-" + quote(r)) if r else "")(spec.get("force_revision", spec["revision"])),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
@@ -1218,10 +1218,10 @@ def doBuild(args, parser):
         # exist (if this is the first run through the loop). On the second run
         # through, the path should have been created by the build process.
         symlink_revision = spec.get("force_revision", spec["revision"])
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               "{wd}/{arch}/{package}/latest-{build_family}".format(wd=workDir, arch=pkg_arch, **spec))
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               "{wd}/{arch}/{package}/latest".format(wd=workDir, arch=pkg_arch, **spec))
+        call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + symlink_revision) if symlink_revision else ""),
+                               "{wd}/{architecture}/{package}/latest-{build_family}".format(wd=workDir, **spec))
+        call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + symlink_revision) if symlink_revision else ""),
+                               "{wd}/{architecture}/{package}/latest".format(wd=workDir, **spec))
 
     # Now we know whether we're using a local or remote package, so we can set
     # the proper hash and tarball directory.
@@ -1254,12 +1254,12 @@ def doBuild(args, parser):
       # Last package built gets a "latest" mark.
       # Use force_revision for symlink target if set, otherwise revision
       devel_symlink_revision = spec.get("force_revision", spec["revision"])
-      call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], devel_symlink_revision),
+      call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + devel_symlink_revision) if devel_symlink_revision else ""),
                              join(workDir, pkg_arch, spec["package"], "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
-        call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], devel_symlink_revision),
-                               join(workDir, pkg_arch, spec["package"], "latest-" + spec["build_family"]))
+        call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + devel_symlink_revision) if devel_symlink_revision else ""),
+                               join(workDir, pkg_arch spec["package"], "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
@@ -1276,7 +1276,7 @@ def doBuild(args, parser):
                                   pkg_arch,
                                   spec["package"],
                                   spec["version"],
-                                  install_revision)
+                                  ("-" + install_revision) if install_revision else "")
     hashFile = hashPath + "/.build-hash"
     # If the folder is a symlink, we consider it to be to CVMFS and
     # take the hash for good.
@@ -1401,7 +1401,6 @@ def doBuild(args, parser):
       ("PKGNAME", spec["package"]),
       ("PKGDIR", spec["pkgdir"]),
       ("PKGREVISION", spec["revision"]),
-      ("FORCE_REVISION", spec.get("force_revision", "")),
       ("PKGVERSION", spec["version"]),
       ("RELOCATE_PATHS", " ".join(spec.get("relocate_paths", []))),
       ("REQUIRES", " ".join(spec["requires"])),
@@ -1428,6 +1427,8 @@ def doBuild(args, parser):
     for hook_name, hook_value in spec.get("hook", {}).items():
       buildEnvironment.append((hook_name + "_HOOKS", hook_value))
 
+    if "force_revision" in spec:
+      buildEnvironment.append(("FORCE_REVISION", spec["force_revision"]))
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 
