@@ -1227,9 +1227,11 @@ def doBuild(args, parser):
         # Ignore errors here, because the path we're linking to might not
         # exist (if this is the first run through the loop). On the second run
         # through, the path should have been created by the build process.
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+        # Use force_revision for symlink target if set, otherwise revision
+        symlink_revision = spec.get("force_revision", spec["revision"])
+        call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], symlink_revision),
                                "{wd}/{arch}/{package}/latest-{build_family}".format(wd=workDir, arch=args.architecture, **spec))
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+        call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], symlink_revision),
                                "{wd}/{arch}/{package}/latest".format(wd=workDir, arch=args.architecture, **spec))
 
     # Now we know whether we're using a local or remote package, so we can set
@@ -1261,11 +1263,13 @@ def doBuild(args, parser):
       if develPrefix:
         call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
       # Last package built gets a "latest" mark.
-      call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+      # Use force_revision for symlink target if set, otherwise revision
+      devel_symlink_revision = spec.get("force_revision", spec["revision"])
+      call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], devel_symlink_revision),
                              join(workDir, args.architecture, spec["package"], "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+        call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], devel_symlink_revision),
                                join(workDir, args.architecture, spec["package"], "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
@@ -1277,11 +1281,13 @@ def doBuild(args, parser):
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
+    # Use force_revision for the install directory path if set, otherwise use revision
+    install_revision = spec.get("force_revision", spec["revision"])
     hashPath= "{}/{}/{}/{}-{}".format(workDir,
                                   args.architecture,
                                   spec["package"],
                                   spec["version"],
-                                  spec["revision"])
+                                  install_revision)
     hashFile = hashPath + "/.build-hash"
     # If the folder is a symlink, we consider it to be to CVMFS and
     # take the hash for good.
