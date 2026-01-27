@@ -870,6 +870,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     spec["recipe"] = recipe.strip("\n")
     if spec["package"] in force_rebuild:
       spec["force_rebuild"] = True
+    if "force_revision" in spec:
+      spec["force_revision"] = str(spec["force_revision"])
+      log("Package %s using force_revision: %s", spec["package"], spec["force_revision"])
     specs[spec["package"]] = spec
     packages += spec["requires"]
   return (systemPackages, ownPackages, failedRequirements, validDefaults)
@@ -949,3 +952,30 @@ class Hasher:
     new_hasher = Hasher()
     new_hasher.h = self.h.copy()
     return new_hasher
+
+def getPastHash(spec, architecture, workDir):
+  """Read the stored hash from a force_revision directory.
+
+  For every force_revision, we create a hidden file that contains the hash of the package.
+  This is used to determine if the package has changed since the last build.
+
+  Args:
+      spec: The package spec containing package, version, force_revision
+      architecture: The build architecture (e.g., "slc9_x86-64")
+      workDir: The working directory (e.g., "sw")
+
+  Returns:
+      The stored hash string if found, or None if no hash file exists.
+  """
+  hash_file = os.path.join(
+    workDir, architecture, spec["package"],
+    f"{spec['version']}-{spec['force_revision']}",
+    "etc", "profile.d", ".hash"
+  )
+  if os.path.exists(hash_file):
+    with open(hash_file, "r") as f:
+      return f.read().strip()
+  else:
+    # This is the first build for this force_revision
+    return None
+  

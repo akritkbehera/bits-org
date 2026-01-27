@@ -425,7 +425,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     bigpackage=dep.upper().replace("-", "_"),
     package=quote(specs[dep]["package"]),
     version=quote(specs[dep]["version"]),
-    revision=quote(specs[dep]["revision"]),
+    revision=quote(specs[dep].get("force_revision", specs[dep]["revision"])),
   ) for dep in spec.get("requires", ()))
 
   if post_build:
@@ -437,7 +437,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       bigpackage=bigpackage,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
-      revision=quote(spec["revision"]),
+      revision=quote(spec.get("force_revision", spec["revision"])),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
@@ -1406,6 +1406,7 @@ def doBuild(args, parser):
       ("PKGNAME", spec["package"]),
       ("PKGDIR", spec["pkgdir"]),
       ("PKGREVISION", spec["revision"]),
+      ("FORCE_REVISION", spec.get("force_revision", "")),
       ("PKGVERSION", spec["version"]),
       ("RELOCATE_PATHS", " ".join(spec.get("relocate_paths", []))),
       ("REQUIRES", " ".join(spec["requires"])),
