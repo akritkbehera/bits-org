@@ -147,6 +147,10 @@ EOF
 # Add "source" command for dependencies to init.sh.
 # Install init.sh now, so that it is available for debugging in case the build fails.
 mkdir -p "$INSTALLROOT/etc/profile.d"
+if [[ -n "$FORCE_REVISION" ]]; then
+  echo "FORCE_REVISION is set to $FORCE_REVISION"
+  echo "$PKGHASH" > "$INSTALLROOT/etc/profile.d/.hash"
+fi
 rm -f "$INSTALLROOT/etc/profile.d/init.sh"
 cat <<\EOF > "$INSTALLROOT/etc/profile.d/init.sh"
 %(initdotsh_deps)s
