@@ -4,35 +4,6 @@ BITS_START_TIMESTAMP=$(date +%%s)
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
 
-  get_file() {
-      local file="$1"
-      local base_dir path_entry search_path
-      # If BITS_PATH is not set, use BITS_CONFIG_DIR directly
-      if [[ -z "$BITS_PATH" ]]; then
-          if [[ -f "$BITS_CONFIG_DIR/$file" ]]; then
-              echo "$BITS_CONFIG_DIR/$file"
-              return 0
-          fi
-          return 1
-      fi
-      # BITS_PATH is set - search in each path.bits directory
-      base_dir=$(dirname "$BITS_CONFIG_DIR")
-      IFS=',' read -ra paths <<< "$BITS_PATH"
-      for path_entry in "${paths[@]}"; do
-          path_entry="${path_entry## }"
-          path_entry="${path_entry%% }"
-
-          search_path="$base_dir/${path_entry}.bits/$file"
-
-          if [[ -f "$search_path" ]]; then
-              echo "$search_path"
-              return 0
-          fi
-      done
-
-      return 1
-  }
-
 cleanup() {
   local exit_code=$?
   BITS_END_TIMESTAMP=$(date +%%s)
@@ -364,7 +335,10 @@ cd "$WORK_DIR"
 if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
   bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
-
+# Run the post-relocate script if it was created.
+if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh" ]; then
+  bash -ex "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh"
+fi
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 

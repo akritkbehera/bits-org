@@ -11,8 +11,3 @@ fi
 sed -i.unrelocated -e "s|^PKG_DIR=.*|PKG_DIR="${INSTALL_BASE}"|" "$THISDIR/etc/profile.d/.bits-pkginfo"
 rm -f "$THISDIR/etc/profile.d/.bits-pkginfo.unrelocated"
 
-# Run the post-relocate script if it was created.
-if [ -f "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh" ]; then
-  bash -ex "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh"
-fi
-
