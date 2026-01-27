@@ -150,7 +150,7 @@ def storeHashes(package, specs, considerRelocation):
   if spec.get("force_rebuild", False):
     h_all(str(time.time()))
 
-  for key in ("recipe", "version", "package"):
+  for key in ("recipe", "version", "package", "force_revision"):
     h_all(spec.get(key, "none"))
 
   # commit_hash could be a commit hash (if we're not building a tag, but
@@ -367,12 +367,12 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # generate them.
   lines.extend((
     '[ -n "${{{bigpackage}_REVISION}}" ] || '
-    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}/etc/profile.d/init.sh'
+    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}{revision}/etc/profile.d/init.sh'
   ).format(
     bigpackage=dep.upper().replace("-", "_"),
     package=quote(specs[dep]["package"]),
     version=quote(specs[dep]["version"]),
-    revision=quote(specs[dep].get("force_revision", specs[dep]["revision"])),
+    revision=(lambda r: ("-" + quote(r)) if r else "")(specs[dep].get("force_revision", specs[dep]["revision"])),
   ) for dep in spec.get("requires", ()))
 
   if post_build:
@@ -384,11 +384,11 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       bigpackage=bigpackage,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
-      revision=quote(spec.get("force_revision", spec["revision"])),
+      revision=(lambda r: ("-" + quote(r)) if r else "")(spec.get("force_revision", spec["revision"])),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}',
+      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}{revision}',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -1176,9 +1176,9 @@ def doBuild(args, parser):
         # through, the path should have been created by the build process.
         # Use force_revision for symlink target if set, otherwise revision
         symlink_revision = spec.get("force_revision", spec["revision"])
-        call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], symlink_revision),
+        call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + symlink_revision) if symlink_revision else ""),
                                "{wd}/{arch}/{package}/latest-{build_family}".format(wd=workDir, arch=args.architecture, **spec))
-        call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], symlink_revision),
+        call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + symlink_revision) if symlink_revision else ""),
                                "{wd}/{arch}/{package}/latest".format(wd=workDir, arch=args.architecture, **spec))
 
     # Now we know whether we're using a local or remote package, so we can set
@@ -1212,11 +1212,11 @@ def doBuild(args, parser):
       # Last package built gets a "latest" mark.
       # Use force_revision for symlink target if set, otherwise revision
       devel_symlink_revision = spec.get("force_revision", spec["revision"])
-      call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], devel_symlink_revision),
+      call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + devel_symlink_revision) if devel_symlink_revision else ""),
                              join(workDir, args.architecture, spec["package"], "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
-        call_ignoring_oserrors(symlink, "{}-{}".format(spec["version"], devel_symlink_revision),
+        call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + devel_symlink_revision) if devel_symlink_revision else ""),
                                join(workDir, args.architecture, spec["package"], "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
@@ -1230,11 +1230,11 @@ def doBuild(args, parser):
     # check if it wasn't built / unpacked already.
     # Use force_revision for the install directory path if set, otherwise use revision
     install_revision = spec.get("force_revision", spec["revision"])
-    hashPath= "{}/{}/{}/{}-{}".format(workDir,
+    hashPath= "{}/{}/{}/{}{}".format(workDir,
                                   args.architecture,
                                   spec["package"],
                                   spec["version"],
-                                  install_revision)
+                                  ("-" + install_revision) if install_revision else "")
     hashFile = hashPath + "/.build-hash"
     # If the folder is a symlink, we consider it to be to CVMFS and
     # take the hash for good.
@@ -1355,7 +1355,6 @@ def doBuild(args, parser):
       ("PKGNAME", spec["package"]),
       ("PKGDIR", spec["pkgdir"]),
       ("PKGREVISION", spec["revision"]),
-      ("FORCE_REVISION", spec.get("force_revision", "")),
       ("PKGVERSION", spec["version"]),
       ("RELOCATE_PATHS", " ".join(spec.get("relocate_paths", []))),
       ("REQUIRES", " ".join(spec["requires"])),
@@ -1378,6 +1377,8 @@ def doBuild(args, parser):
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
+    if "force_revision" in spec:
+      buildEnvironment.append(("FORCE_REVISION", spec["force_revision"]))
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 
