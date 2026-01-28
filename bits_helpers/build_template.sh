@@ -13,17 +13,20 @@ get_file_from_configDir() {
 }
 
 run_hooks() {
-  local hook_type="$1"
+  export hook_type="$1"
   %(BITS_HOOK_PARAMS)s
-  local hooks_list
-  local skip_list
+  export hooks_list
+  export skip_list
   eval "hooks_list=\"\${${hook_type}_HOOKS}\""
   eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
-  [ -z "$hooks_list" ] || [ "$skip_list" == "true" ] && return
+  if [[ "$PKGREVISION" != local* ]]; then
+    [ -n "$skip_list" ] && echo "bits: skipping hooks if enabled not allowed while uploading. Aborting." && exit 1
+  fi
   for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
     [[ ",$skip_list," == *",$hook,"* ]] && continue
-    hook_script=$(get_file_from_configDir "$hook") || continue
-    source "$hook_script"
+    hook_script=$(get_file_from_configDir "hooks/$hook")
+    echo "bits: running hook $hook ($hook_script)"
+    bash -ex "$hook_script"
   done
 }
 

@@ -128,63 +128,52 @@ def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
       .format(arch=args.architecture, short_hash=specs[pkg]["hash"][:2], **specs[pkg])
     symlink(dep_tarball, target_dir)
 
-def storeHooks(package, specs, defaults_name) -> bool:
+def storeHooks(package, specs, defaults) -> bool:
     """Resolve hooks for a package from defaults. Returns False if no hooks apply."""
-    spec = specs[package]
-    defaults_key = "defaults-" + defaults_name
-    defaults_hooks = specs.get(defaults_key, {}).get("hooks", {})
-
-    # 1. SPECIAL CASE: If this IS the defaults package, store hook_params separately
+    defaults_key = f"defaults-{defaults}"
+    default_hooks = specs.get(defaults_key, {}).get("hooks", {}).copy()
+    default_params = specs.get(defaults_key, {}).get("hook_params", {}).copy()
+    
     if package == defaults_key:
-        spec["default_hook_params"] = defaults_hooks.get("hook_params", {})
-        return True
-
-    # Get the global default params we just stored (if they exist)
-    global_default_params = specs.get(defaults_key, {}).get("default_hook_params", {})
-
-    if not defaults_hooks or spec.get("hooks") == "None":
+        return False  # Avoid self-referencing
+    
+    spec = specs.get(package)
+    if not spec:
+        return False
+    
+    pkg_hooks = spec.get("hooks")
+    if type(pkg_hooks) is str and pkg_hooks == "disable":
         spec["hooks"] = {}
         spec["hook_params"] = {}
         return False
-
-    if "hooks" not in spec:
-        # 2. Inherit everything from defaults if package has no hooks defined
-        spec["hooks"] = {k: v for k, v in defaults_hooks.items() if k != "hook_params"}
-        spec["hook_params"] = global_default_params.copy()
+    
+    # If package has no hooks, try to inherit from defaults
+    if not pkg_hooks:
+        if not default_hooks:
+            spec["hooks"] = {}
+            spec["hook_params"] = {}
+            return False
+        spec["hooks"] = default_hooks
+        # Merge params: Package params take precedence over default params
+        merged_params = default_params.copy()
+        merged_params.update(spec.get("hook_params", {}))
+        spec["hook_params"] = merged_params
         return True
-
-    # 3. Handle specific package hooks and parameter merging
-    pkg_hooks = spec["hooks"]
     
-    # Extract local params from the package spec
-    local_params = pkg_hooks.pop("hook_params", {})
-    
-    # Merge Logic: Start with global defaults, then override with local package params
-    merged_params = global_default_params.copy()
-    merged_params.update(local_params)
+    # If package has its own hooks, just merge the params
+    merged_params = default_params.copy()
+    merged_params.update(spec.get("hook_params", {}))
     spec["hook_params"] = merged_params
-
-    # Validation logic
-    for hook_name, hook_value in pkg_hooks.items():
-        dieOnError(hook_name not in defaults_hooks,
-                   "Package %s references hook '%s' not defined in %s." % (package, hook_name, defaults_key))
-        
-        allowed = [v.strip() for v in str(defaults_hooks[hook_name]).split(",")]
-        for v in [x.strip() for x in str(hook_value).split(",")]:
-            dieOnError(v not in allowed,
-                       "Package %s hook '%s: %s' not in allowed: %s" % (package, hook_name, v, ", ".join(allowed)))
-    
-    spec["hooks"] = pkg_hooks
     return True
 
-def storeHashes(package, specs, considerRelocation, defaults_name=None):
+def storeHashes(package, specs, considerRelocation, defaults):
   """Calculate various hashes for package, and store them in specs[package].
 
   Assumes that all dependencies of the package already have a definitive hash.
   """
   spec = specs[package]
-  if defaults_name:
-    storeHooks(package, specs, defaults_name)
+  "If hooks are used, store them as part of package spec so we can include them in the hash."
+  storeHooks(package, specs, defaults)
 
   if "remote_revision_hash" in spec and "local_revision_hash" in spec:
     # We've already calculated these hashes before, so no need to do it again.
@@ -1083,7 +1072,7 @@ def doBuild(args, parser):
     debug("Calculating hash.")
     debug("spec = %r", spec)
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
-    storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"), defaults_name=args.defaults[0])
+    storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"), defaults=args.defaults[0])
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
 
@@ -1369,7 +1358,7 @@ def doBuild(args, parser):
     makedirs(scriptDir, exist_ok=True)
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
     hook_params_locals = "\n  ".join(
-      'local %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
+      'export %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
     )
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
