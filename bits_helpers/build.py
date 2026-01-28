@@ -282,8 +282,10 @@ def storeHashes(package, specs, considerRelocation):
     for hook_name in sorted(spec.get("hook_params", {})):
       h_all("hook_params:" + hook_name + "=" + str(spec["hook_params"][hook_name]))
 
-  for hook_name in sorted(spec.get("hook", {})):
-    h_all("hook:" + hook_name + "=" + str(spec["hook"][hook_name]))
+  # Skip hooks for defaults packages - they provide hooks to others but shouldn't include them in their own hash
+  if not package.startswith("defaults-"):
+    for hook_name in sorted(spec.get("hook", {})):
+      h_all("hook:" + hook_name + "=" + str(spec["hook"][hook_name]))
 
   dh = Hasher()
   for dep in spec.get("requires", []):
