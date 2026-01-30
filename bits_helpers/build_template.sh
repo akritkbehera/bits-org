@@ -372,10 +372,16 @@ wait "$rsync_pid"
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
 if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
+<<<<<<< HEAD
   /bin/bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
 
 
+=======
+  bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
+fi
+
+>>>>>>> cf9933b (Post_relocate_changes)
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 
