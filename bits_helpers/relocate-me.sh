@@ -11,3 +11,7 @@ fi
 sed -i.unrelocated -e "s|^PKG_DIR=.*|PKG_DIR="${INSTALL_BASE}"|" "$THISDIR/etc/profile.d/.bits-pkginfo"
 rm -f "$THISDIR/etc/profile.d/.bits-pkginfo.unrelocated"
 
+if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh" ]; then
+  export PP
+  bash -ex "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh"
+fi
