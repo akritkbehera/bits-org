@@ -201,7 +201,7 @@ else
   mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/$PKGNAME/$PKGVERSION-* $INSTALLROOT
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
     if [ -w "$INSTALLROOT" ]; then
-      WORK_DIR=$WORK_DIR/INSTALLROOT/$PKGHASH bash -ex $INSTALLROOT/relocate-me.sh
+      WORK_DIR=$WORK_DIR bash -ex $INSTALLROOT/relocate-me.sh
     fi
   popd
   find $INSTALLROOT -name "*.unrelocated" -delete
