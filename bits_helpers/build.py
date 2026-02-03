@@ -175,8 +175,11 @@ def storeHashes(package, specs, considerRelocation):
   if spec.get("force_rebuild", False):
     h_all(str(time.time()))
 
-  for key in ("recipe", "version", "package", "force_revision"):
+  for key in ("recipe", "version", "package"):
     h_all(spec.get(key, "none"))
+
+  if "force_revision" in spec:
+    h_all(spec["force_revision"])
 
   # commit_hash could be a commit hash (if we're not building a tag, but
   # instead e.g. a branch or particular commit specified by its hash), or it
@@ -398,10 +401,11 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # These variables are also required during the build itself, so always
   # generate them.
   for dep in spec.get("requires", ()):
-    arch_expr = specs[dep].get("architecture") if specs[dep].get("architecture") != architecture else '$BITS_ARCH_PREFIX'
+    dep_arch = specs[dep].get("architecture", architecture)
+    arch_expr = '$BITS_ARCH_PREFIX' if dep_arch == architecture else dep_arch
     lines.append((
       '[ -n "${{{bigpackage}_REVISION}}" ] || '
-      '. "$WORK_DIR/{arch_expr}"/{package}/{version}-{revision}/etc/profile.d/init.sh'
+      '. "$WORK_DIR/{arch_expr}"/{package}/{version}{revision}/etc/profile.d/init.sh'
     ).format(
       bigpackage=dep.upper().replace("-", "_"),
       arch_expr=arch_expr,
@@ -415,16 +419,19 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
 
     # Set standard variables related to the package itself. These should only
     # be set once the build has actually completed.
+    pkg_arch = spec.get("architecture", architecture)
+    raw_revision = spec.get("force_revision", spec["revision"])
     lines.extend(line.format(
       bigpackage=bigpackage,
-      arch_expr='$BITS_ARCH_PREFIX' if spec.get("architecture") == architecture else spec.get("architecture"),
+      arch_expr='$BITS_ARCH_PREFIX' if pkg_arch == architecture else pkg_arch,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
-      revision=(lambda r: ("-" + quote(r)) if r else "")(spec.get("force_revision", spec["revision"])),
+      revision_path=(("-" + quote(raw_revision)) if raw_revision else ""),
+      revision=quote(raw_revision),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      "export {bigpackage}_ROOT=$WORK_DIR/{arch_expr}/{package}/{version}-{revision}",
+      "export {bigpackage}_ROOT=$WORK_DIR/{arch_expr}/{package}/{version}{revision_path}",
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -1259,7 +1266,7 @@ def doBuild(args, parser):
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
         call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + devel_symlink_revision) if devel_symlink_revision else ""),
-                               join(workDir, pkg_arch spec["package"], "latest-" + spec["build_family"]))
+                               join(workDir, pkg_arch, spec["package"], "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
@@ -1272,7 +1279,7 @@ def doBuild(args, parser):
     # check if it wasn't built / unpacked already.
     # Use force_revision for the install directory path if set, otherwise use revision
     install_revision = spec.get("force_revision", spec["revision"])
-    hashPath= "{}/{}/{}/{}-{}".format(workDir,
+    hashPath= "{}/{}/{}/{}{}".format(workDir,
                                   pkg_arch,
                                   spec["package"],
                                   spec["version"],
