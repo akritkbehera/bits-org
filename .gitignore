@@ -14,3 +14,6 @@ build.log
 .tox
 # For setuptools_scm
 bits_helpers/_version.py
+CLAUDE.md
+feature.md
+force_architecture.md

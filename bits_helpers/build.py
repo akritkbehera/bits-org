@@ -120,12 +120,12 @@ def update_git_repos(args, specs, buildOrder):
 def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
   # At the point we call this function, spec has a single, definitive hash.
   target_dir = "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{version}-{revision}" \
-    .format(work_dir=args.workDir, arch=args.architecture, repo=repoType, **spec)
+    .format(work_dir=args.workDir, arch=spec["architecture"], repo=repoType, **spec)
   shutil.rmtree(target_dir.encode("utf-8"), ignore_errors=True)
   makedirs(target_dir, exist_ok=True)
   for pkg in [spec["package"]] + list(spec[requiresType]):
     dep_tarball = "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{version}-{revision}.{arch}.tar.gz" \
-      .format(arch=args.architecture, short_hash=specs[pkg]["hash"][:2], **specs[pkg])
+      .format(arch=specs[pkg]["architecture"], short_hash=specs[pkg]["hash"][:2], **specs[pkg])
     symlink(dep_tarball, target_dir)
 
 def storeHook(package, specs, defaults) -> bool:
@@ -403,15 +403,18 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # unrelated components are activated.
   # These variables are also required during the build itself, so always
   # generate them.
-  lines.extend((
-    '[ -n "${{{bigpackage}_REVISION}}" ] || '
-    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}/etc/profile.d/init.sh'
-  ).format(
-    bigpackage=dep.upper().replace("-", "_"),
-    package=quote(specs[dep]["package"]),
-    version=quote(specs[dep]["version"]),
-    revision=quote(specs[dep]["revision"]),
-  ) for dep in spec.get("requires", ()))
+  for dep in spec.get("requires", ()):
+    arch_expr = specs[dep].get("architecture") if specs[dep].get("architecture") != architecture else '$BITS_ARCH_PREFIX'
+    lines.append((
+      '[ -n "${{{bigpackage}_REVISION}}" ] || '
+      '. "$WORK_DIR/{arch_expr}"/{package}/{version}-{revision}/etc/profile.d/init.sh'
+    ).format(
+      bigpackage=dep.upper().replace("-", "_"),
+      arch_expr=arch_expr,
+      package=quote(specs[dep]["package"]),
+      version=quote(specs[dep]["version"]),
+      revision=quote(specs[dep]["revision"]),
+    ))
 
   if post_build:
     bigpackage = package.upper().replace("-", "_")
@@ -420,13 +423,14 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # be set once the build has actually completed.
     lines.extend(line.format(
       bigpackage=bigpackage,
+      arch_expr='$BITS_ARCH_PREFIX' if spec.get("architecture") == architecture else spec.get("architecture"),
       package=quote(spec["package"]),
       version=quote(spec["version"]),
       revision=quote(spec["revision"]),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}',
+      "export {bigpackage}_ROOT=$WORK_DIR/{arch_expr}/{package}/{version}-{revision}",
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -499,7 +503,7 @@ def create_provenance_info(package, specs, args):
     "dist": {
       "commit": os.environ["BITS_DIST_HASH"],
     },
-    "architecture": args.architecture,
+    "architecture": specs[package]["architecture"],
     "defaults": args.defaults,
     "package": spec_info(specs[package]),
     "dependencies": {
@@ -876,6 +880,11 @@ def doBuild(args, parser):
       spec["reference"] = reference_repo
   del develPkgs
 
+  # Inject per-package architecture: use force_architecture from the spec
+  # if declared, otherwise fall back to the global args.architecture.
+  for p in specs:
+    specs[p]["architecture"] = specs[p].get("force_architecture", args.architecture)
+
   # Clone/update repos
   update_git_repos(args, specs, buildOrder)
   # This is the list of packages which have untracked files in their
@@ -1059,6 +1068,7 @@ def doBuild(args, parser):
   while buildOrder:
     p = buildOrder.pop(0)
     spec = specs[p]
+    pkg_arch = spec["architecture"]
     log_current_package(p, mainPackage, specs, getattr(args, "develPrefix", None))
 
     # Calculate the hashes. We do this in build order so that we can guarantee
@@ -1109,9 +1119,9 @@ def doBuild(args, parser):
     links_regex = re.compile(r"{package}-{version}-(?:local)?[0-9]+\.{arch}\.tar\.gz".format(
       package=re.escape(spec["package"]),
       version=re.escape(spec["version"]),
-      arch=re.escape(args.architecture),
+      arch=re.escape(pkg_arch),
     ))
-    symlink_dir = join(workDir, "TARS", args.architecture, spec["package"])
+    symlink_dir = join(workDir, "TARS", pkg_arch, spec["package"])
     try:
       packages = [join(symlink_dir, symlink_path)
                   for symlink_path in os.listdir(symlink_dir)
@@ -1158,7 +1168,7 @@ def doBuild(args, parser):
     for symlink_path in packages:
       realPath = readlink(symlink_path)
       matcher = "../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/{package}-{version}-((?:local)?[0-9]+).{arch}.tar.gz$" \
-        .format(arch=args.architecture, **spec)
+        .format(arch=pkg_arch, **spec)
       match = re.match(matcher, realPath)
       if not match:
         warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
@@ -1214,9 +1224,9 @@ def doBuild(args, parser):
         # exist (if this is the first run through the loop). On the second run
         # through, the path should have been created by the build process.
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               "{wd}/{arch}/{package}/latest-{build_family}".format(wd=workDir, arch=args.architecture, **spec))
+                               "{wd}/{arch}/{package}/latest-{build_family}".format(wd=workDir, arch=pkg_arch, **spec))
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               "{wd}/{arch}/{package}/latest".format(wd=workDir, arch=args.architecture, **spec))
+                               "{wd}/{arch}/{package}/latest".format(wd=workDir, arch=pkg_arch, **spec))
 
     # Now we know whether we're using a local or remote package, so we can set
     # the proper hash and tarball directory.
@@ -1248,11 +1258,11 @@ def doBuild(args, parser):
         call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
       # Last package built gets a "latest" mark.
       call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                             join(workDir, args.architecture, spec["package"], "latest"))
+                             join(workDir, pkg_arch, spec["package"], "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(workDir, args.architecture, spec["package"], "latest-" + spec["build_family"]))
+                               join(workDir, pkg_arch, spec["package"], "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
@@ -1264,7 +1274,7 @@ def doBuild(args, parser):
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
     hashPath= "{}/{}/{}/{}-{}".format(workDir,
-                                  args.architecture,
+                                  pkg_arch,
                                   spec["package"],
                                   spec["version"],
                                   spec["revision"])
@@ -1321,7 +1331,7 @@ def doBuild(args, parser):
     # directory contains files with non-ASCII names, e.g. Golang/Boost.
     shutil.rmtree(dirname(hashFile).encode("utf-8"), True)
 
-    tar_hash_dir = os.path.join(workDir, resolve_store_path(args.architecture, spec["hash"]))
+    tar_hash_dir = os.path.join(workDir, resolve_store_path(pkg_arch, spec["hash"]))
     debug("Looking for cached tarball in %s", tar_hash_dir)
     spec["cachedTarball"] = ""
     if not spec["is_devel_pkg"]:
@@ -1348,7 +1358,7 @@ def doBuild(args, parser):
     if not cachedTarball:
       checkout_sources(spec, workDir, args.referenceSources, args.docker)
 
-    scriptDir = join(workDir, "SPECS", args.architecture, spec["package"],
+    scriptDir = join(workDir, "SPECS", pkg_arch, spec["package"],
                      spec["version"] + "-" + spec["revision"])
 
     init_workDir = container_workDir if args.docker else args.workDir
@@ -1375,7 +1385,7 @@ def doBuild(args, parser):
     # actual build script
     bits_dir = dirname(dirname(realpath(__file__)))
     buildEnvironment = [
-      ("ARCHITECTURE", args.architecture),
+      ("ARCHITECTURE", spec.get("architecture")),
       ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
       ("CACHED_TARBALL", cachedTarball),
       ("CAN_DELETE", args.aggressiveCleanup and "1" or ""),
