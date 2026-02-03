@@ -223,7 +223,7 @@ else
   tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
   mkdir -p $(dirname $INSTALLROOT)
   rm -rf $INSTALLROOT
-  mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/$PKGNAME/$PKGVERSION-* $INSTALLROOT
+  mv "$WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/$PKGNAME/$PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION}" "$INSTALLROOT"
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
   if [ -w "$INSTALLROOT" ]; then
       WORK_DIR=$WORK_DIR /bin/bash -ex $INSTALLROOT/relocate-me.sh
@@ -373,17 +373,17 @@ wait "$rsync_pid"
 
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
-if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$INSTALL_REVISION" ]; then
-  bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$INSTALL_REVISION/relocate-me.sh"
+if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION}" ]; then
+  bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION}/relocate-me.sh"
 fi
 
 >>>>>>> cf9933b (Post_relocate_changes)
 # Last package built gets a "latest" mark.
-ln -snf $PKGVERSION-$INSTALL_REVISION $ARCHITECTURE/$PKGNAME/latest
+ln -snf $PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION} $ARCHITECTURE/$PKGNAME/latest
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf $PKGVERSION-$INSTALL_REVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
+  ln -snf $PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION} $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
 fi
 
 # When the package is definitely fully installed, install the file that marks

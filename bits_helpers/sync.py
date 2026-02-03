@@ -141,7 +141,7 @@ class HttpRemoteSync:
     return None
 
   def fetch_tarball(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     # Check for any existing tarballs we can use instead of fetching new ones.
     for pkg_hash in spec["remote_hashes"]:
       try:
@@ -189,7 +189,7 @@ class HttpRemoteSync:
         progress.end("done")
 
   def fetch_symlinks(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     links_path = resolve_links_path(arch, spec["package"])
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
@@ -251,7 +251,7 @@ class RsyncRemoteSync:
     self.workdir = workdir
 
   def fetch_tarball(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     info("Downloading tarball for %s@%s, if available", spec["package"], spec["version"])
     debug("Updating remote store for package %s with hashes %s", spec["package"],
           ", ".join(spec["remote_hashes"]))
@@ -280,7 +280,7 @@ class RsyncRemoteSync:
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
   def fetch_symlinks(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     links_path = resolve_links_path(arch, spec["package"])
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
     err = execute("rsync -rlvW --delete {remote_store}/{links_path}/ {workdir}/{links_path}/".format(
@@ -293,7 +293,7 @@ class RsyncRemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     dieOnError(execute("""\
     set -e
     cd {workdir}
@@ -331,7 +331,7 @@ class CVMFSRemoteSync:
     self.workdir = workdir
 
   def fetch_tarball(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     info("Downloading tarball for %s@%s-%s, if available", spec["package"], spec["version"], spec["revision"])
     # If we already have a tarball with any equivalent hash, don't check S3.
     for pkg_hash in spec["remote_hashes"] + spec["local_hashes"]:
@@ -344,7 +344,7 @@ class CVMFSRemoteSync:
          spec["package"], spec["version"], spec["revision"])
 
   def fetch_symlinks(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     # When using CVMFS, we create the symlinks grass by reading the .
     info("Fetching available build hashes for %s, from %s", spec["package"], self.remoteStore)
     links_path = resolve_links_path(arch, spec["package"])
@@ -399,7 +399,7 @@ class S3RemoteSync:
     self.workdir = workdir
 
   def fetch_tarball(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     info("Downloading tarball for %s@%s, if available", spec["package"], spec["version"])
     debug("Updating remote store for package %s with hashes %s",
           spec["package"], ", ".join(spec["remote_hashes"]))
@@ -423,7 +423,7 @@ class S3RemoteSync:
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
   def fetch_symlinks(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     err = execute("""\
     mkdir -p "{workDir}/{linksPath}"
     find "{workDir}/{linksPath}" -type l -delete
@@ -448,7 +448,7 @@ class S3RemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     dieOnError(execute("""\
     set -e
     put () {{
@@ -556,7 +556,7 @@ class Boto3RemoteSync:
     return True
 
   def fetch_tarball(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     debug("Updating remote store for package %s with hashes %s", spec["package"],
           ", ".join(spec["remote_hashes"]))
 
@@ -595,7 +595,7 @@ class Boto3RemoteSync:
           ", ".join(spec["remote_hashes"]))
 
   def fetch_symlinks(self, spec) -> None:
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
     from botocore.exceptions import ClientError
     links_path = resolve_links_path(arch, spec["package"])
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
@@ -644,7 +644,7 @@ class Boto3RemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
-    arch = spec["architecture"] if spec["architecture"] is not None else self.architecture
+    arch = spec.get("architecture") or self.architecture
 
     dist_symlinks = {}
     for link_dir in ("dist", "dist-direct", "dist-runtime"):
@@ -680,8 +680,8 @@ class Boto3RemoteSync:
 
       dist_symlinks[link_dir] = symlinks
 
-    tarball = "{package}-{version}-{revision}.{architecture}.tar.gz" \
-      .format(**spec)
+    tarball = "{package}-{version}-{revision}.{arch}.tar.gz" \
+      .format(arch=arch, **spec)
     tar_path = os.path.join(resolve_store_path(arch, spec["hash"]),
                             tarball)
     link_path = os.path.join(resolve_links_path(arch, spec["package"]),
