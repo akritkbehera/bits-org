@@ -812,10 +812,12 @@ class SwiftRemoteSync:
         sys.exit(1)
     
     try:
-        self.swift = Connection(
-            preauthurl="https://s3.cern.ch/",
-            preauthtoken=os.environ["AWS_ACCESS_KEY_ID"] + ":" + os.environ["AWS_SECRET_ACCESS_KEY"]
-        )
+      self.swift = Connection(
+        authurl="https://keystone.cern.ch/v3",
+        application_credential_id=os.environ["AWS_ACCESS_KEY_ID"],
+        application_credential_secret=os.environ["AWS_SECRET_ACCESS_KEY"],
+        auth_version="3",
+      )
     except KeyError:
         error("you must pass the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env "
               "variables to bits in order to use the Swift remote store")
