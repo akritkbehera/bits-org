@@ -162,7 +162,6 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build, rem
       filename = s.rsplit("/", 1)[1]
       if remote and hasattr(remote, "fetch_sources_from_s3"):
         cached_src = remote.fetch_sources_from_s3(spec, getUrlChecksum(s), filename)
-        banner(f"Found cached source for {spec['package']} on remote store: {remote.remoteStore}")
       else:
         cached_src = None
       download(s, source_dir, work_dir, cached_source=cached_src)
