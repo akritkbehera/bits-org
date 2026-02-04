@@ -12,7 +12,7 @@ from requests.exceptions import RequestException
 from urllib.parse import quote
 
 from bits_helpers.cmd import execute
-from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint
+from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint, banner
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink
 
 
@@ -24,6 +24,8 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False)
     return S3RemoteSync(read_url, write_url, architecture, work_dir)
   if read_url.startswith("b3://"):
     return Boto3RemoteSync(read_url, write_url, architecture, work_dir)
+  if read_url.startswith("o3://"):
+    return SwiftRemoteSync(read_url, write_url, architecture, work_dir)
   if read_url.startswith("cvmfs://"):
     return CVMFSRemoteSync(read_url, None, architecture, work_dir)
   if read_url:
@@ -792,4 +794,276 @@ class Boto3RemoteSync:
       return url
     except Exception as e:
       debug("Failed to generate download URL for %s: %s", spec["package"], e)
+      return None
+
+class SwiftRemoteSync:
+  def __init__(self, remoteStore, writeStore, architecture, workdir):
+    self.remoteStore = re.sub(r"^o3://", "", remoteStore)
+    self.writeStore = re.sub(r"^o3://", "", writeStore)
+    self.architecture = architecture
+    self.workdir = workdir
+    self._o3_init()
+
+  def _o3_init(self) -> None:
+    try:
+        from swiftclient import Connection, ClientException
+    except ImportError:
+        error("python-swiftclient must be installed to use %s", SwiftRemoteSync)
+        sys.exit(1)
+    
+    try:
+        self.swift = Connection(
+            preauthurl="https://s3.cern.ch/",
+            preauthtoken=os.environ["AWS_ACCESS_KEY_ID"] + ":" + os.environ["AWS_SECRET_ACCESS_KEY"]
+        )
+    except KeyError:
+        error("you must pass the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env "
+              "variables to bits in order to use the Swift remote store")
+        sys.exit(1)
+
+  def _swift_key_exists(self, container, key):
+    """Return whether the given key exists in the container."""
+    try:
+      self.swift.head_object(container, key)
+      return True
+    except Exception:
+      return False
+
+  def _swift_listdir(self, container, prefix):
+    """List object names under prefix in the container."""
+    _, objects = self.swift.get_container(container, prefix=prefix.rstrip("/") + "/",
+                                         delimiter="/")
+    return [obj["name"] for obj in objects if "name" in obj]
+
+  def upload_symlinks_and_tarball(self, spec):
+    if not self.writeStore:
+      return
+    arch = spec.get("architecture") or self.architecture
+
+    dist_symlinks = {}
+    for link_dir in ("dist", "dist-direct", "dist-runtime"):
+      link_dir = "TARS/{arch}/{link_dir}/{package}/{package}-{version}-{revision}" \
+        .format(arch=arch, link_dir=link_dir, **spec)
+
+      debug("Comparing dist symlinks against Swift from %s", link_dir)
+
+      symlinks = []
+      for fname in os.listdir(os.path.join(self.workdir, link_dir)):
+        link_key = os.path.join(link_dir, fname)
+        path = os.path.join(self.workdir, link_key)
+        if os.path.islink(path):
+          hash_path = re.sub(r"^(\.\./)*", "", os.readlink(path))
+          symlinks.append((link_key, hash_path))
+
+      symlinks_existing = frozenset(self._swift_listdir(self.remoteStore, link_dir))
+
+      if all(link_key in symlinks_existing for link_key, _ in symlinks):
+        debug("All %s symlinks already exist on Swift, skipping upload", link_dir)
+        continue
+
+      dieOnError(symlinks_existing,
+                 "Conflicts detected in %s on Swift; aborting: %s" %
+                 (link_dir, ", ".join(sorted(symlinks_existing))))
+
+      dist_symlinks[link_dir] = symlinks
+
+    tarball = "{package}-{version}-{revision}.{arch}.tar.gz" \
+      .format(arch=arch, **spec)
+    tar_path = os.path.join(resolve_store_path(arch, spec["hash"]),
+                            tarball)
+    link_path = os.path.join(resolve_links_path(arch, spec["package"]),
+                             tarball)
+    tar_exists = self._swift_key_exists(self.writeStore, tar_path)
+    link_exists = self._swift_key_exists(self.writeStore, link_path)
+    if tar_exists and link_exists:
+      debug("%s exists on Swift already, not uploading", tarball)
+      return
+    dieOnError(tar_exists or link_exists,
+               "%s already exists on Swift but %s does not, aborting!" %
+               (tar_path if tar_exists else link_path,
+                link_path if tar_exists else tar_path))
+
+    debug("Uploading tarball and symlinks for %s %s-%s (%s) to Swift",
+          spec["package"], spec["version"], spec["revision"], spec["hash"])
+
+    # Upload the package link as a Swift static symlink to the store path.
+    self.swift.put_object(self.writeStore, link_path, "",
+                          headers={"X-Symlink-Target": "%s/%s" % (self.writeStore, tar_path)})
+
+    # Upload dist symlinks using Swift static symlinks.
+    start_time = time.time()
+    total_symlinks = 0
+
+    def _upload_single_symlink(link_key, hash_path):
+      self.swift.put_object(self.writeStore, link_key, "",
+                            headers={"X-Symlink-Target": "%s/%s" % (self.writeStore, hash_path)})
+      return link_key
+
+    with ThreadPoolExecutor(max_workers=min(32, (len(dist_symlinks) * 10) or 1)) as executor:
+      future_to_info = {}
+      for link_dir, symlinks in dist_symlinks.items():
+        for link_key, hash_path in symlinks:
+          future = executor.submit(_upload_single_symlink, link_key, hash_path)
+          future_to_info[future] = (link_dir, link_key)
+          total_symlinks += 1
+
+      dir_counts = {link_dir: 0 for link_dir in dist_symlinks.keys()}
+      for future in as_completed(future_to_info):
+        link_dir, link_key = future_to_info[future]
+        try:
+          future.result()
+          dir_counts[link_dir] += 1
+        except Exception as e:
+          error("Failed to upload symlink %s: %s", link_key, e)
+          raise
+
+      for link_dir, count in dir_counts.items():
+        if count > 0:
+          debug("Uploaded %d dist symlinks to Swift from %s", count, link_dir)
+
+    end_time = time.time()
+    debug("Uploaded %d dist symlinks in %.2f seconds",
+          total_symlinks, end_time - start_time)
+
+    # Upload the actual tarball last.
+    with open(os.path.join(self.workdir, tar_path), "rb") as f:
+      self.swift.put_object(self.writeStore, tar_path, f)
+
+  def fetch_symlinks(self, spec) -> None:
+    arch = spec.get("architecture") or self.architecture
+    links_path = resolve_links_path(arch, spec["package"])
+    os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
+
+    # Remove existing symlinks: we'll fetch the ones from the remote next.
+    parent = os.path.join(self.workdir, links_path)
+    for fname in os.listdir(parent):
+      path = os.path.join(parent, fname)
+      if os.path.islink(path):
+        os.unlink(path)
+
+    # List all objects in the links directory and recreate local symlinks.
+    # Swift symlinks have X-Symlink-Target headers; non-symlink objects
+    # (from older uploads) store the target path as their body.
+    debug("Fetching symlinks for %s from Swift", spec["package"])
+    n_symlinks = 0
+    for link_key in self._swift_listdir(self.remoteStore, links_path):
+      link_path = os.path.join(self.workdir, link_key)
+      if os.path.islink(link_path):
+        continue
+      try:
+        # query_string='symlink=get' returns the symlink's own metadata
+        # instead of following it to the target.
+        headers = self.swift.head_object(self.remoteStore, link_key,
+                                         query_string="symlink=get")
+        symlink_target = headers.get("x-symlink-target", "")
+        if symlink_target:
+          # Swift symlink: header is "container/TARS/arch/store/...",
+          # strip the container prefix and the leading "TARS/" since local
+          # symlinks use "../../arch/store/..." (../../ already exits TARS/).
+          target = symlink_target.split("/", 1)[1] if "/" in symlink_target else symlink_target
+          if target.startswith("TARS/"):
+            target = target[5:]
+        else:
+          # Not a symlink — this is a real object (e.g. an actual tarball). Skip it.
+          debug("Skipping %s: not a symlink", link_key)
+          continue
+        if not target.startswith("../../"):
+          target = "../../" + target
+        symlink(target, link_path)
+        n_symlinks += 1
+      except Exception as e:
+        debug("Failed to fetch symlink %s: %s", link_key, e)
+
+    debug("Fetched %d symlinks for %s from Swift", n_symlinks, spec["package"])
+
+  def fetch_tarball(self, spec) -> None:
+    arch = spec.get("architecture") or self.architecture
+    debug("Updating remote store for package %s with hashes %s", spec["package"],
+          ", ".join(spec["remote_hashes"]))
+
+    # If we already have a tarball with any equivalent hash, don't check Swift.
+    for pkg_hash in spec["remote_hashes"]:
+      store_path = resolve_store_path(arch, pkg_hash)
+      if glob.glob(os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])):
+        debug("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
+        return
+
+    for pkg_hash in spec["remote_hashes"]:
+      store_path = resolve_store_path(arch, pkg_hash)
+
+      # Download the first existing tarball from the remote.
+      for obj_name in self._swift_listdir(self.remoteStore, store_path):
+        debug("Fetching tarball %s", obj_name)
+        progress = ProgressPrint("Downloading tarball for %s@%s" %
+                                 (spec["package"], spec["version"]), min_interval=5.0)
+        progress("[0%%] Starting download of %s", obj_name)
+        os.makedirs(os.path.join(self.workdir, store_path), exist_ok=True)
+        headers, body = self.swift.get_object(self.remoteStore, obj_name)
+        local_path = os.path.join(self.workdir, store_path, os.path.basename(obj_name))
+        with open(local_path, "wb") as f:
+          f.write(body)
+        progress.end("done")
+        return
+
+    debug("Remote has no tarballs for %s with hashes %s", spec["package"],
+          ", ".join(spec["remote_hashes"]))
+    
+  def upload_sources_to_swift(self, spec, filename, checksum) -> None:
+    if not self.writeStore:
+      return
+    cache_rel_path = os.path.join("cache", checksum[0:2], checksum, filename)
+    local_file_path = os.path.join(self.workdir, "SOURCES", cache_rel_path)
+    symlink_key = os.path.join(
+        "SOURCES", 
+        spec["package"], 
+        f"{spec['version']}-{spec['revision']}", 
+        filename
+    )
+    remote_cache_key = os.path.join("SOURCES", cache_rel_path)
+    debug("Uploading source for %s to Swift: %s", spec["package"], remote_cache_key)
+    try:
+        with open(local_file_path, 'rb') as fp:
+            self.swift.put_object(
+                container=self.writeStore,
+                obj=remote_cache_key,
+                contents=fp,
+                content_type='application/octet-stream'
+            )
+        self.swift.put_object(
+            container=self.writeStore,
+            obj=symlink_key,
+            contents='',
+            headers={
+                'X-Symlink-Target': f"{self.writeStore}/{remote_cache_key}"
+            }
+        )
+        debug("Successfully uploaded %s and created symlink at %s", filename, symlink_key)
+    except ClientException as e:
+        error("Swift upload failed for %s: %s", spec["package"], e)
+    except FileNotFoundError:
+        error("Local file not found: %s", local_file_path)
+  
+  def fetch_sources_from_swift(self, spec, checksum, filename):
+    from swiftclient.exceptions import ClientException
+    cache_rel_path = os.path.join("cache", checksum[0:2], checksum, filename)
+    remote_source_key = os.path.join("SOURCES", cache_rel_path)
+    local_cache_dir = os.path.join(self.workdir, "SOURCES", "cache", checksum[0:2], checksum)
+    local_file = os.path.join(local_cache_dir, filename)
+    if os.path.exists(local_file):
+      banner("Source for %s already in local cache", spec["package"])
+      return local_file
+    debug("Checking Swift for cached source %s: %s", spec["package"], remote_source_key)
+    try:
+      self.swift.head_object(self.remoteStore, remote_source_key)
+      os.makedirs(local_cache_dir, exist_ok=True)
+      _, body = self.swift.get_object(self.remoteStore, remote_source_key)
+      with open(local_file, "wb") as f:
+        f.write(body)
+      debug("Downloaded cached source for %s from Swift", spec["package"])
+      return local_file
+    except ClientException as e:
+      if e.http_status == 404:
+        debug("Source not found in Swift cache: %s", remote_source_key)
+      else:
+        error("Swift error checking for %s: %s", spec["package"], e)
       return None
