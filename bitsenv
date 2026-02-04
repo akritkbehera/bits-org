@@ -1,5 +1,16 @@
 #!/bin/bash
 
+
+function Help() {
+  cat<<EOF
+  Usage: bitsenv [-m <modules directory>] [-p <platform>] [-h]
+                 <checkenv|printenv|enter> <package/version>[,<package/version>...]
+                 setenv> <package/version>[,<package/version>...] -c <command>
+                 <query|q>
+EOF
+  exit 0 
+}
+    
 version=3.2.10
 
 prog=`readlink $0 2>/dev/null`
@@ -23,129 +34,7 @@ Eval(){
    eval $ret
 }
 
-os_release=/etc/os-release
-
-which lsb_release > /dev/null 2>&1
-
-if [[ $? == 0 ]] ; then
-  distro_name=`lsb_release -i | sed -e 's/.*://' -e 's/[ \t]*//g'`
-  distro_release=`lsb_release -r | awk '{print $NF}'`
-elif [[ -r "$os_release" ]] ; then
-  distro_name=`source "$os_release" ; echo $NAME`
-  distro_release=`source "$os_release" ; echo $VERSION_ID`
-else
-  distro_name='<unknown>'
-  distro_release='<unknown>'
-fi
-
-[ x$BITSENV_DEBUG == x1 ] && printf "distro_name=$distro_name\ndistro_release=$distro_release\n" >&2
-
-case $distro_name in
-     Scientific*|CentOS*|Rocky*|Alma*|RedHatEnterprise*|'Red Hat Enterprise'*)
-        distro_dir="Scientific"
-        uname_m=`uname -m`
-        arch=${uname_m}-2.6-gnu-4.1.2
-        case $distro_release in
-           5.*)
-              distro_xrelease=5.x
-              platform=el5
-              ;;
-           6.*)
-              distro_xrelease=6.x
-              platform=el6
-              ;;
-           7*)
-              distro_xrelease=6.x
-              platform=el7
-              ;;
-           8*)
-              distro_xrelease=8.x
-              platform=el8
-              ;;
-           9*)
-              distro_xrelease=8.x
-              platform=el9
-              ;;
-        esac
-        ;;
-     Fedora*)
-        distro_dir="Scientific"
-        uname_m=`uname -m`
-        arch=${uname_m}-2.6-gnu-4.1.2
-        case $distro_release in
-           17|18)
-              distro_xrelease=6.x
-              platform=el6
-              ;;
-           19|20|21)
-              distro_xrelease=6.x
-              platform=el7
-              ;;
-           *)
-              distro_xrelease=6.x
-              ;;
-        esac
-        ;;
-     SUSE*)
-        distro_dir="Scientific"
-        uname_m=`uname -m`
-        arch=${uname_m}-2.6-gnu-4.1.2
-        case $distro_release in
-           11) # Titan
-              distro_xrelease=6.x
-              platform=suse11
-              ;;
-           *)
-              distro_xrelease=6.x
-              ;;
-        esac
-        ;;
-     Debian*)
-        distro_dir="Scientific"
-        uname_m=`uname -m`
-        arch=${uname_m}-2.6-gnu-4.1.2
-        case $distro_release in
-           6.*|6|7.*|7)
-              distro_xrelease=6.x
-              ;;
-           8.*|8)
-              # Required from system: apt install libx11-6 environment-modules
-              distro_xrelease=
-              platform=ubuntu1404
-              ;;
-           9.*|9)
-              # Required from system: apt install libx11-6 environment-modules
-              distro_xrelease=
-              platform=ubuntu1604
-              ;;
-        esac
-        ;;
-     Ubuntu*)
-        distro_dir="Scientific"
-        uname_m=`uname -m`
-        arch=${uname_m}-2.6-gnu-4.1.2
-        case $distro_release in
-           13.*)
-              distro_xrelease=6.x
-              ;;
-           14.*|15.*)
-              distro_xrelease=6.x
-              platform=ubuntu1404
-              ;;
-           16.*|17.*|18.*|2?.*)
-              # Required from system: apt install libx11-6 environment-modules
-              distro_xrelease=
-              platform=ubuntu1604
-              ;;
-        esac
-        ;;
-     *)
-      echo "Unknown distribution: $distro_name $distro_release"
-      exit 1
-     ;;
-esac
-
-[ -f .bitsenv ] && source .bitsenv
+[ -f .bitsenv ] && source .bitsenv && [ x$BITSENV_DEBUG == x1 ] && printf "found .bitsenv"
 
 argc=$#
 argv=("$@")
@@ -159,10 +48,24 @@ do
      -p|-?platform)
 	 platform="${argv[j+1]}"
 	 ;;
+     -h)
+	 Help
+	 ;;
      *)
 	 ;; 
    esac
 done
+
+if [ -z $platform ]
+then
+    if [[ "$BITS_PLATFORM" != "" ]]
+    then
+	printf "WARNING: overriding detected platform ($platform) with $BITS_PLATFORM\n" >&2;
+	platform=$BITS_PLATFORM;
+    else
+	platform=$(bits architecture)
+    fi	
+fi
 
 if [ -z $moduledir ]
 then
@@ -184,22 +87,16 @@ then
    exit 1
 fi
 
-[ x$BITSENV_DEBUG == x1 ] && printf "moduledir=$moduledir\n" >&2
-
-[[ "$BITS_PLATFORM" != "" ]] && { printf "WARNING: overriding detected platform ($platform) with $BITS_PLATFORM\n" >&2; platform=$BITS_PLATFORM; }
-
-[ x$BITSENV_DEBUG == x1 ] && printf "distro_dir=$distro_dir\nuname_m=$uname_m\narch=$arch\ndistro_xrelease=$distro_xrelease\nplatform=$platform\n" >&2
-
 if [ -w . -a ! -f bits.rc -a  ! -f .bitsrc ]
 then
-   printf "moduledir=$moduledir\nplatform=$platform\n" > .bitsenv
+  printf "moduledir=$moduledir\nplatform=$platform\n" > .bitsenv
 fi
 
-modules=$moduledir/$arch/Modules
+modules=$moduledir/$platform/Modules
 
 if [  ! -d $modules ]
 then
-   echo "Platform $distro_dir,$arch not supported"
+   echo "$modules directory not found"
    exit 1
 fi
 
@@ -316,7 +213,7 @@ for ARG in "$@"; do
   fi
 done
 
-export MODULEPATH="$moduledir/etc/toolchain/modulefiles/$platform-$uname_m:$moduledir/$platform-$uname_m/Modules/modulefiles"
+export MODULEPATH="$moduledir/etc/toolchain/modulefiles/$platform:$moduledir/$platform/Modules/modulefiles"
 
 [ x$BITSENV_DEBUG == x1 ] && printf "MODULEPATH=$MODULEPATH\n" >&2
 
@@ -383,7 +280,7 @@ do
      -m|-?modules|-?mdir|-?moduledir)
        shift 2
        ;;
-     -p|-?platform)
+     -p|--platform)
        shift 2
        ;;
      -print)
@@ -399,6 +296,9 @@ do
      -c)
        shift; COMMAND_IN_ENV=("$@");
        exec "${COMMAND_IN_ENV[@]}"
+       ;;
+     -h)
+       Help
        ;;
      q|query)
        $moduleenv $modulecmd bash -t avail  2>&1 | grep -v -e : -e "^$"
