@@ -26,7 +26,7 @@ run_hooks() {
     [[ ",$skip_list," == *",$hook,"* ]] && continue
     hook_script=$(get_file_from_configDir "hooks/$hook")
     echo "bits: running hook $hook ($hook_script)"
-    bash -ex "$hook_script"
+    /bin/bash -ex "$hook_script"
   done
 }
 
@@ -200,9 +200,9 @@ else
   rm -rf $INSTALLROOT
   mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/$PKGNAME/$PKGVERSION-* $INSTALLROOT
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
-    if [ -w "$INSTALLROOT" ]; then
-      WORK_DIR=$WORK_DIR bash -ex $INSTALLROOT/relocate-me.sh
-    fi
+  if [ -w "$INSTALLROOT" ]; then
+      WORK_DIR=$WORK_DIR /bin/bash -ex $INSTALLROOT/relocate-me.sh
+  fi
   popd
   find $INSTALLROOT -name "*.unrelocated" -delete
   rm -rf $WORK_DIR/TMP/$PKGHASH
@@ -349,7 +349,7 @@ wait "$rsync_pid"
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
 if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
-  bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
+  /bin/bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
 
 # Last package built gets a "latest" mark.

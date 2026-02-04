@@ -1,6 +1,6 @@
 #!/bin/bash -e
 THISDIR="$(cd -P "$(dirname "$0")" && pwd)"
-source ${THISDIR}/etc/profile.d/.bits-pkginfo
+. ${THISDIR}/etc/profile.d/.bits-pkginfo
 INSTALL_BASE=$(echo $THISDIR | sed "s|/$PP$||")
 if [[ -s ${THISDIR}/etc/profile.d/.bits-relocate ]] ; then
   for f in $(cat ${THISDIR}/etc/profile.d/.bits-relocate) ; do
@@ -11,7 +11,14 @@ fi
 sed -i.unrelocated -e "s|^PKG_DIR=.*|PKG_DIR="${INSTALL_BASE}"|" "$THISDIR/etc/profile.d/.bits-pkginfo"
 rm -f "$THISDIR/etc/profile.d/.bits-pkginfo.unrelocated"
 
-if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh" ]; then
-  export PP
-  bash -ex "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh"
-fi
+case "$PKGNAME" in
+    defaults-*)
+    ;;
+    *)
+    if [ -f "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh" ]
+    then
+      export PP
+      bash -ex "$WORK_DIR/$PP/etc/profile.d/post-relocate.sh"
+    fi
+    ;;
+esac    
