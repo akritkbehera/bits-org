@@ -4,6 +4,32 @@ BITS_START_TIMESTAMP=$(date +%%s)
 unset DYLD_LIBRARY_PATH
 echo "bits: start building $PKGNAME-$PKGVERSION-$PKGREVISION at $BITS_START_TIMESTAMP"
 
+get_file_from_configDir() {
+  local repo_dir=$(dirname $BITS_CONFIG_DIR)
+  for d in ${BITS_PATH//,/ } $(basename $BITS_CONFIG_DIR | sed 's|.bits$||') ; do
+    [ -f ${repo_dir}/${d}.bits/$1 ] && echo "${repo_dir}/${d}.bits/$1" && return 0
+  done
+  return 1
+}
+
+run_hooks() {
+  export hook_type="$1"
+  %(BITS_HOOK_PARAMS)s
+  export hooks_list
+  export skip_list
+  eval "hooks_list=\"\${${hook_type}_HOOKS}\""
+  eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
+  if [[ "$PKGREVISION" != local* ]]; then
+    [ -n "$skip_list" ] && echo "bits: skipping hooks if enabled not allowed while uploading. Aborting." && exit 1
+  fi
+  for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
+    [[ ",$skip_list," == *",$hook,"* ]] && continue
+    hook_script=$(get_file_from_configDir "hooks/$hook")
+    echo "bits: running hook $hook ($hook_script)"
+    bash -ex "$hook_script"
+  done
+}
+
 cleanup() {
   local exit_code=$?
   BITS_END_TIMESTAMP=$(date +%%s)
@@ -175,7 +201,7 @@ else
   mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/$PKGNAME/$PKGVERSION-* $INSTALLROOT
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
     if [ -w "$INSTALLROOT" ]; then
-      WORK_DIR=$WORK_DIR/INSTALLROOT/$PKGHASH bash -ex $INSTALLROOT/relocate-me.sh
+      WORK_DIR=$WORK_DIR bash -ex $INSTALLROOT/relocate-me.sh
     fi
   popd
   find $INSTALLROOT -name "*.unrelocated" -delete
@@ -287,6 +313,11 @@ cat "$INSTALLROOT/relocate-me.sh"
 fi
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH"
 
+# Run post-install hooks
+if [[ $PKGNAME != defaults-* ]]; then
+  run_hooks "POST_INSTALL"
+fi
+
 # Archive creation
 HASHPREFIX=`echo $PKGHASH | cut -b1,2`
 HASH_PATH=$ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
@@ -320,10 +351,7 @@ cd "$WORK_DIR"
 if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
   bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
-# Run the post-relocate script if it was created.
-if [ "$PKGNAME" != defaults-* ] && [ -f "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh" ]; then
-  bash -ex "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/etc/profile.d/post-relocate.sh"
-fi
+
 # Last package built gets a "latest" mark.
 ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
 
@@ -340,3 +368,4 @@ fi
 # Mark the build as successful with a placeholder. Allows running incremental
 # recipe in case the package is in development mode.
 echo "${DEVEL_HASH}${DEPS_HASH}" > "$BUILDDIR/.build_succeeded"
+

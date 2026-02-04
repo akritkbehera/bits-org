@@ -128,6 +128,31 @@ def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
       .format(arch=args.architecture, short_hash=specs[pkg]["hash"][:2], **specs[pkg])
     symlink(dep_tarball, target_dir)
 
+def storeHook(package, specs, defaults) -> bool:
+    spec = specs.get(package)
+    if not spec or package == f"defaults-{defaults}":
+        return False
+    
+    defaults_key = f"defaults-{defaults}"
+    default_spec = specs.get(defaults_key, {})
+    default_hook = default_spec.get("hook", {})
+    default_params = default_spec.get("hook_params", {})
+    
+    pkg_hook = spec.get("hook")
+    
+    # Handle disabled hooks
+    if type(pkg_hook) is str and pkg_hook == "disable":
+        spec["hook"] = {}
+        spec["hook_params"] = {}
+        return False
+    
+    # Set hook (inherit from defaults if package has none)
+    spec["hook"] = pkg_hook if pkg_hook else default_hook.copy() if default_hook else {}
+    
+    # Merge params (package params override defaults)
+    spec["hook_params"] = {**default_params, **spec.get("hook_params", {})}
+    
+    return bool(spec["hook"])
 
 def storeHashes(package, specs, considerRelocation):
   """Calculate various hashes for package, and store them in specs[package].
@@ -237,6 +262,13 @@ def storeHashes(package, specs, considerRelocation):
       with open(os.path.join(spec["pkgdir"], "patches", patch)) as ref:
         patch_content = "".join(ref.readlines())
         h_all(patch_content)
+
+  # Skip hooks for defaults packages - they provide hooks to others but shouldn't include them in their own hash
+  if not package.startswith("defaults-"):
+    for hook_name in sorted(spec.get("hook", {})):
+      h_all("hook:" + hook_name + "=" + str(spec["hook"][hook_name]))
+    for hook_name in sorted(spec.get("hook_params", {})):
+      h_all("hook_params:" + hook_name + "=" + str(spec["hook_params"][hook_name]))
 
   dh = Hasher()
   for dep in spec.get("requires", []):
@@ -1030,6 +1062,7 @@ def doBuild(args, parser):
     debug("Calculating hash.")
     debug("spec = %r", spec)
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
+    storeHook(p, specs, args.defaults[0])
     storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"))
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
@@ -1315,6 +1348,9 @@ def doBuild(args, parser):
     init_workDir = container_workDir if args.docker else args.workDir
     makedirs(scriptDir, exist_ok=True)
     writeAll("{}/{}.sh".format(scriptDir, spec["package"]), spec["recipe"])
+    hook_params_locals = "\n  ".join(
+      'export %s="%s"' % (k, v) for k, v in spec.get("hook_params", {}).items()
+    )
     writeAll("%s/build.sh" % scriptDir, cmd_raw % {
       "provenance": create_provenance_info(spec["package"], specs, args),
       "initdotsh_deps": generate_initdotsh(p, specs, args.architecture, workDir=init_workDir, post_build=False),
@@ -1326,6 +1362,7 @@ def doBuild(args, parser):
       "requires": " ".join(spec["requires"]),
       "build_requires": " ".join(spec["build_requires"]),
       "runtime_requires": " ".join(spec["runtime_requires"]),
+      "BITS_HOOK_PARAMS": hook_params_locals,
     })
 
     # Define the environment so that it can be passed up to the
@@ -1371,6 +1408,10 @@ def doBuild(args, parser):
       buildEnvironment.append(("PATCH_COUNT", str(len(spec["patches"]))))
     else:
       buildEnvironment.append(("PATCH_COUNT", "0"))
+    # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
+    for hook_name, hook_value in spec.get("hook", {}).items():
+      buildEnvironment.append((hook_name + "_HOOKS", hook_value))
+
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
 
