@@ -582,7 +582,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
   # defaultsMeta["disable"] = asDict(defaultsMeta.get("disable", OrderedDict()))
 
   defaultsDisable = asList(defaultsMeta.get("disable", []))
-   
+
   for x in defaultsDisable:
     log("Package %s has been disabled by current default.", x)
   disable.extend(defaultsDisable)
@@ -595,12 +595,22 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
   overrides, taps = OrderedDict(), {}
   commonEnv = {"env": defaultsMeta["env"]} if "env" in defaultsMeta else {}
   overrides["defaults-release"] = commonEnv
+
+  # Extract default package_family from defaults metadata
+  defaultPackageFamily = defaultsMeta.get("package_family", "")
+
   for k, v in defaultsMeta.get("overrides", {}).items():
     f = k.split("@", 1)[0].lower()
     if "@" in k:
       taps[f] = "dist:"+k
-    overrides[f] = dict(**(v or {}))
-  return (None, overrides, taps)
+    override_dict = dict(**(v or {}))
+    # If no package_family specified in override but there's a default, apply it
+    # To opt out, set package_family: ~ (null) or package_family: "" in override
+    if defaultPackageFamily and "package_family" not in override_dict:
+      override_dict["package_family"] = defaultPackageFamily
+    overrides[f] = override_dict
+
+  return (None, overrides, taps, defaultPackageFamily)
 
 def checkForFilename(taps, pkg, d, ext=".sh"):
   filename = taps.get(pkg, "{}/{}{}".format(d, pkg, ext))
@@ -671,7 +681,8 @@ def resolveDefaultsFilename(defaults, configDir, failOnError=True):
 
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
-                   performValidateDefaults, overrides, taps, log, force_rebuild=()):
+                   performValidateDefaults, overrides, taps, log, force_rebuild=(),
+                   defaultPackageFamily=""):
   systemPackages = set()
   ownPackages = set()
   failedRequirements = set()
@@ -873,6 +884,17 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     if "force_revision" in spec:
       spec["force_revision"] = str(spec["force_revision"])
       log("Package %s using force_revision: %s", spec["package"], spec["force_revision"])
+    # Apply package_family: use spec value, then override value (already merged), then default
+    # Don't apply package_family to defaults-release itself
+    # To opt out of default family, set package_family: ~ (null) or package_family: "" in recipe/override
+    if spec["package"] != "defaults-release":
+      if "package_family" not in spec and defaultPackageFamily:
+        spec["package_family"] = defaultPackageFamily
+      # Normalize None to empty string for consistent handling
+      if spec.get("package_family") is None:
+        spec["package_family"] = ""
+      if spec.get("package_family"):
+        log("Package %s using package_family: %s", spec["package"], spec["package_family"])
     specs[spec["package"]] = spec
     packages += spec["requires"]
   return (systemPackages, ownPackages, failedRequirements, validDefaults)

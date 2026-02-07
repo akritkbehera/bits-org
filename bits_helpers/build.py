@@ -178,6 +178,10 @@ def storeHashes(package, specs, considerRelocation):
   for key in ("recipe", "version", "package"):
     h_all(spec.get(key, "none"))
 
+  # Include package_family in hash if set (affects installation path)
+  if spec.get("package_family"):
+    h_all("package_family:" + spec["package_family"])
+
   if "force_revision" in spec:
     h_all(spec["force_revision"])
 
@@ -403,12 +407,16 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   for dep in spec.get("requires", ()):
     dep_arch = specs[dep].get("architecture", architecture)
     arch_expr = '$BITS_ARCH_PREFIX' if dep_arch == architecture else dep_arch
+    # Include package_family in path if set for the dependency
+    dep_family = specs[dep].get("package_family", "")
+    family_path = "/" + dep_family if dep_family else ""
     lines.append((
       '[ -n "${{{bigpackage}_REVISION}}" ] || '
-      '. "$WORK_DIR/{arch_expr}"/{package}/{version}{revision}/etc/profile.d/init.sh'
+      '. "$WORK_DIR/{arch_expr}{family_path}/{package}/{version}{revision}/etc/profile.d/init.sh"'
     ).format(
       bigpackage=dep.upper().replace("-", "_"),
       arch_expr=arch_expr,
+      family_path=family_path,
       package=quote(specs[dep]["package"]),
       version=quote(specs[dep]["version"]),
       revision=(lambda r: ("-" + quote(r)) if r else "")(specs[dep].get("force_revision", specs[dep]["revision"])),
@@ -421,9 +429,13 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # be set once the build has actually completed.
     pkg_arch = spec.get("architecture", architecture)
     raw_revision = spec.get("force_revision", spec["revision"])
+    # Include package_family in path if set
+    pkg_family = spec.get("package_family", "")
+    family_path = "/" + pkg_family if pkg_family else ""
     lines.extend(line.format(
       bigpackage=bigpackage,
       arch_expr='$BITS_ARCH_PREFIX' if pkg_arch == architecture else pkg_arch,
+      family_path=family_path,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
       revision_path=(("-" + quote(raw_revision)) if raw_revision else ""),
@@ -431,7 +443,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      "export {bigpackage}_ROOT=$WORK_DIR/{arch_expr}/{package}/{version}{revision_path}",
+      "export {bigpackage}_ROOT=$WORK_DIR/{arch_expr}{family_path}/{package}/{version}{revision_path}",
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -746,9 +758,11 @@ def doBuild(args, parser):
     branch_stream = ""
 
   defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-  (err, overrides, taps) = parseDefaults(args.disable,
+  (err, overrides, taps, defaultPackageFamily) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
+  if defaultPackageFamily:
+    debug("Default package family: %s", defaultPackageFamily)
   makedirs(join(workDir, "SPECS"), exist_ok=True)
 
   # If the bits workdir contains a .sl directory (or .git/sl for git repos
@@ -798,7 +812,8 @@ def doBuild(args, parser):
                      performValidateDefaults = lambda spec: validateDefaults(spec, args.defaults),
                      overrides               = overrides,
                      taps                    = taps,
-                     log                     = debug)
+                     log                     = debug,
+                     defaultPackageFamily    = defaultPackageFamily)
 
   dieOnError(validDefaults and any(d not in validDefaults for d in args.defaults),
              "Specified default `%s' is not compatible with the packages you want to build.\n"
@@ -1225,10 +1240,12 @@ def doBuild(args, parser):
         # exist (if this is the first run through the loop). On the second run
         # through, the path should have been created by the build process.
         symlink_revision = spec.get("force_revision", spec["revision"])
+        # Include package_family in symlink path if set
+        pkg_family_path = "/" + spec.get("package_family", "") if spec.get("package_family") else ""
         call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + symlink_revision) if symlink_revision else ""),
-                               "{wd}/{architecture}/{package}/latest-{build_family}".format(wd=workDir, **spec))
+                               "{wd}/{architecture}{family}/{package}/latest-{build_family}".format(wd=workDir, family=pkg_family_path, **spec))
         call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + symlink_revision) if symlink_revision else ""),
-                               "{wd}/{architecture}/{package}/latest".format(wd=workDir, **spec))
+                               "{wd}/{architecture}{family}/{package}/latest".format(wd=workDir, family=pkg_family_path, **spec))
 
     # Now we know whether we're using a local or remote package, so we can set
     # the proper hash and tarball directory.
@@ -1261,12 +1278,15 @@ def doBuild(args, parser):
       # Last package built gets a "latest" mark.
       # Use force_revision for symlink target if set, otherwise revision
       devel_symlink_revision = spec.get("force_revision", spec["revision"])
+      # Include package_family in symlink path if set
+      devel_family = spec.get("package_family", "")
+      devel_family_parts = [pkg_arch, devel_family, spec["package"]] if devel_family else [pkg_arch, spec["package"]]
       call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + devel_symlink_revision) if devel_symlink_revision else ""),
-                             join(workDir, pkg_arch, spec["package"], "latest"))
+                             join(workDir, *devel_family_parts, "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
         call_ignoring_oserrors(symlink, "{}{}".format(spec["version"], ("-" + devel_symlink_revision) if devel_symlink_revision else ""),
-                               join(workDir, pkg_arch, spec["package"], "latest-" + spec["build_family"]))
+                               join(workDir, *devel_family_parts, "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
@@ -1279,8 +1299,12 @@ def doBuild(args, parser):
     # check if it wasn't built / unpacked already.
     # Use force_revision for the install directory path if set, otherwise use revision
     install_revision = spec.get("force_revision", spec["revision"])
-    hashPath= "{}/{}/{}/{}{}".format(workDir,
+    # Include package_family in path if set
+    pkg_family = spec.get("package_family", "")
+    family_path = "/" + pkg_family if pkg_family else ""
+    hashPath= "{}/{}{}/{}/{}{}".format(workDir,
                                   pkg_arch,
+                                  family_path,
                                   spec["package"],
                                   spec["version"],
                                   ("-" + install_revision) if install_revision else "")
@@ -1400,6 +1424,7 @@ def doBuild(args, parser):
       ("DEVEL_HASH", spec.get("devel_hash", "")),
       ("DEVEL_PREFIX", develPrefix),
       ("BUILD_FAMILY", spec["build_family"]),
+      ("PKGFAMILY", spec.get("package_family", "")),
       ("GIT_COMMITTER_NAME", "unknown"),
       ("GIT_COMMITTER_EMAIL", "unknown"),
       ("INCREMENTAL_BUILD_HASH", spec.get("incremental_hash", "0")),

@@ -99,7 +99,7 @@ class TestRecipes(unittest.TestCase):
 
   def test_parseDefaults(self) -> None:
     disable = ["bar"]
-    err, overrides, taps = parseDefaults(disable,
+    err, overrides, taps, defaultPackageFamily = parseDefaults(disable,
                                         lambda: ({ "disable": "foo",
                                                    "overrides": OrderedDict({"ROOT@master": {"requires": "GCC"}})},
                                                  ""),
@@ -107,6 +107,18 @@ class TestRecipes(unittest.TestCase):
     self.assertEqual(disable, ["bar", "foo"])
     self.assertEqual(overrides, {'defaults-release': {}, 'root': {'requires': 'GCC'}})
     self.assertEqual(taps, {'root': 'dist:ROOT@master'})
+    self.assertEqual(defaultPackageFamily, "")
+
+  def test_parseDefaultsWithPackageFamily(self) -> None:
+    disable = []
+    err, overrides, taps, defaultPackageFamily = parseDefaults(disable,
+                                        lambda: ({ "package_family": "cms",
+                                                   "overrides": OrderedDict({"ROOT": {"version": "6.0"}})},
+                                                 ""),
+                                        Recoder())
+    self.assertEqual(defaultPackageFamily, "cms")
+    # Check that default family is applied to overrides without explicit family
+    self.assertEqual(overrides["root"]["package_family"], "cms")
 
   def test_validateDefault(self) -> None:
     ok, out, validDefaults = validateDefaults({"something": True}, "release")

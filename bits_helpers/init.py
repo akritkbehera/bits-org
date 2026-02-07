@@ -46,7 +46,7 @@ def doInit(args):
   # and system packages as they are irrelevant in this context
   specs = {}
   defaultsReader = lambda: readDefaults(args.configDir, args.defaults, lambda msg: error("%s", msg), args.architecture)
-  (err, overrides, taps) = parseDefaults([], defaultsReader, debug)
+  (err, overrides, taps, defaultPackageFamily) = parseDefaults([], defaultsReader, debug)
   (_,_,_,validDefaults) = getPackageList(packages=[ p["name"] for p in pkgs ],
                                          specs=specs,
                                          configDir=args.configDir,
@@ -57,6 +57,7 @@ def doInit(args):
                                          defaults=args.defaults,
                                          performPreferCheck=lambda pkg, cmd: getstatusoutput(["bash", "-c", cmd]),
                                          performRequirementCheck=lambda *x, **y: (0, ""),
+                                         defaultPackageFamily=defaultPackageFamily,
                                          performValidateDefaults=lambda spec : validateDefaults(spec, args.defaults),
                                          overrides=overrides,
                                          taps=taps,

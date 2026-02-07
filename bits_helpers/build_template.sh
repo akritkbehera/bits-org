@@ -87,7 +87,12 @@ export PKG_BUILDNUM="$PKGREVISION"
 
 # Use FORCE_REVISION for install directory if set, otherwise PKGREVISION
 export INSTALL_REVISION="${FORCE_REVISION-$PKGREVISION}"
-export PKGPATH=${ARCHITECTURE}/${PKGNAME}/${PKGVERSION}${INSTALL_REVISION:+-$INSTALL_REVISION}
+# Include PKGFAMILY in path if set: $ARCHITECTURE/$PKGFAMILY/$PKGNAME/$PKGVERSION
+if [ -n "$PKGFAMILY" ]; then
+  export PKGPATH=${ARCHITECTURE}/${PKGFAMILY}/${PKGNAME}/${PKGVERSION}${INSTALL_REVISION:+-$INSTALL_REVISION}
+else
+  export PKGPATH=${ARCHITECTURE}/${PKGNAME}/${PKGVERSION}${INSTALL_REVISION:+-$INSTALL_REVISION}
+fi
 mkdir -p "$WORK_DIR/BUILD" "$WORK_DIR/SOURCES" "$WORK_DIR/TARS" \
          "$WORK_DIR/SPECS" "$WORK_DIR/INSTALLROOT"
 # If we are in development mode, then install directly in $WORK_DIR/$PKGPATH,
@@ -200,7 +205,8 @@ else
   tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
   mkdir -p $(dirname $INSTALLROOT)
   rm -rf $INSTALLROOT
-  mv "$WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/$PKGNAME/$PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION}" "$INSTALLROOT"
+  # Use PKGPATH which includes family if set
+  mv "$WORK_DIR/TMP/$PKGHASH/$PKGPATH" "$INSTALLROOT"
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
     if [ -w "$INSTALLROOT" ]; then
       WORK_DIR=$WORK_DIR bash -ex $INSTALLROOT/relocate-me.sh
@@ -249,6 +255,7 @@ cat > "$INSTALLROOT/etc/profile.d/.bits-pkginfo" <<EoF
 OP=${PKGPATH}
 PP=\${PKGPATH:-${PKGPATH}}
 PH=${PKGHASH}
+PF=${PKGFAMILY:-}
 PKG_DIR="$WORK_DIR"
 EoF
 
@@ -350,16 +357,23 @@ wait "$rsync_pid"
 
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
-if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION}" ]; then
-  bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION}/relocate-me.sh"
+if [ -w "$WORK_DIR/$PKGPATH" ]; then
+  bash -ex "$PKGPATH/relocate-me.sh"
+fi
+
+# Construct the base path for symlinks (includes family if set)
+if [ -n "$PKGFAMILY" ]; then
+  SYMLINK_BASE="${ARCHITECTURE}/${PKGFAMILY}/${PKGNAME}"
+else
+  SYMLINK_BASE="${ARCHITECTURE}/${PKGNAME}"
 fi
 
 # Last package built gets a "latest" mark.
-ln -snf $PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION} $ARCHITECTURE/$PKGNAME/latest
+ln -snf $PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION} $SYMLINK_BASE/latest
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf $PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION} $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
+  ln -snf $PKGVERSION${INSTALL_REVISION:+-$INSTALL_REVISION} $SYMLINK_BASE/latest-$BUILD_FAMILY
 fi
 
 # When the package is definitely fully installed, install the file that marks
