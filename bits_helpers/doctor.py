@@ -86,10 +86,10 @@ def doDoctor(args, parser):
   # that we do not get spurious messages on linux
   homebrew_replacement = ""
 
-  extra_env = {"BITS_CONFIG_DIR": "/alidist" if args.docker else os.path.abspath(args.configDir)}
+  extra_env = {"BITS_CONFIG_DIR": "/alidist.bits" if args.docker else os.path.abspath(args.configDir)}
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
 
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/alidist:ro"] if args.docker else []) as getstatusoutput_docker:
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/alidist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
     err, output = getstatusoutput_docker("type c++")
   if err:
     warning("Unable to find system compiler.\n"
@@ -146,10 +146,10 @@ def doDoctor(args, parser):
       error("%s", msg)
     return (ok,msg,valid)
 
-  extra_env = {"BITS_CONFIG_DIR": "/alidist" if args.docker else os.path.abspath(args.configDir)}
+  extra_env = {"BITS_CONFIG_DIR": "/alidist.bits" if args.docker else os.path.abspath(args.configDir)}
   extra_env.update(dict([e.partition('=')[::2] for e in args.environment]))
-  
-  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/alidist:ro"] if args.docker else []) as getstatusoutput_docker:
+
+  with DockerRunner(args.dockerImage, args.docker_extra_args, extra_env=extra_env, extra_volumes=[f"{os.path.abspath(args.configDir)}:/alidist.bits:ro"] if args.docker else []) as getstatusoutput_docker:
     fromSystem, own, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
