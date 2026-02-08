@@ -177,19 +177,17 @@ if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   set -o pipefail
   set -x;
   unset DYLD_LIBRARY_PATH;
-  source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" 2>&1 | tee "$BUILDROOT/log"
-  Run $* 2>&1  | tee -a "$BUILDROOT/log"
-  [ $? -ne 0 ] && exit 1  
+  source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" 2>&1 > tee "$BUILDROOT/log"
+  Run $* 2>&1  | tee -a "$BUILDROOT/log" || exit 1
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
   set -o pipefail
-  (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log"
-  [ $? -ne 0 ] && exit 1  
+  (%(incremental_recipe)s) 2>&1 | tee "$BUILDROOT/log" || exit 1
 elif [[ "$CACHED_TARBALL" == "" ]]; then
   set -o pipefail
   set -x;
-  unset DYLD_LIBRARY_PATH; source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" 2>&1 | tee "$BUILDROOT/log"
-  Run $* 2>&1 | tee -a "$BUILDROOT/log"
-  [ $? -ne 0 ] && exit 1  
+  unset DYLD_LIBRARY_PATH
+  source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" 2>&1 > tee "$BUILDROOT/log"
+  Run $* 2>&1 | tee -a "$BUILDROOT/log" || exit 1
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
   # files.
