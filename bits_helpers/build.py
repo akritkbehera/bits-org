@@ -154,6 +154,18 @@ def storeHook(package, specs, defaults) -> bool:
 
     return bool(spec["hook"])
 
+def get_package_family(pkg_name, specs):
+  """Get the family for a package from defaults-release package_family.
+
+  Transforms {family: [packages]} format and looks up the package.
+  Falls back to 'defaults' key if package not explicitly listed.
+  """
+  raw_package_family = specs.get("defaults-release", {}).get("package_family", {})
+  for family, pkgs in raw_package_family.items():
+    if isinstance(pkgs, list) and pkg_name in pkgs:
+      return family
+  return raw_package_family.get("defaults", "")
+
 def storeHashes(package, specs, considerRelocation):
   """Calculate various hashes for package, and store them in specs[package].
 
@@ -178,6 +190,13 @@ def storeHashes(package, specs, considerRelocation):
 
   for key in ("recipe", "version", "package"):
     h_all(spec.get(key, "none"))
+  if "package_family" in spec and spec["package"] == "defaults-release":
+    h_all(str(sorted(
+        (pkg, family)
+        for family, pkgs in spec["package_family"].items()
+        if isinstance(pkgs, list)
+        for pkg in pkgs
+    )))
 
   # commit_hash could be a commit hash (if we're not building a tag, but
   # instead e.g. a branch or particular commit specified by its hash), or it
@@ -382,6 +401,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   itself; else, only generate variables pointing at it dependencies.
   """
   spec = specs[package]
+
   # Allow users to override BITS_ARCH_PREFIX if they manually source
   # init.sh. This is useful for development off CVMFS, since we have a
   # slightly different directory hierarchy there.
@@ -391,6 +411,14 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     '    WORK_DIR=%s' % abspath(workDir),
     'fi',
   ])
+
+  def get_package_path(pkg_name):
+    """Get the path prefix for a package, including family if defined."""
+    family = get_package_family(pkg_name, specs)
+    if family:
+      return "{family}/{package}".format(family=quote(family), package=quote(specs[pkg_name]["package"]))
+    return quote(specs[pkg_name]["package"])
+
   # Generate the part which sources the environment for all the dependencies.
   # We guarantee that a dependency is always sourced before the parts
   # depending on it, but we do not guarantee anything for the order in which
@@ -399,10 +427,10 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # generate them.
   lines.extend((
     '[ -n "${{{bigpackage}_REVISION}}" ] || '
-    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}/etc/profile.d/init.sh'
+    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package_path}/{version}-{revision}/etc/profile.d/init.sh'
   ).format(
     bigpackage=dep.upper().replace("-", "_"),
-    package=quote(specs[dep]["package"]),
+    package_path=get_package_path(dep),
     version=quote(specs[dep]["version"]),
     revision=quote(specs[dep]["revision"]),
   ) for dep in spec.get("requires", ()))
@@ -414,13 +442,13 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # be set once the build has actually completed.
     lines.extend(line.format(
       bigpackage=bigpackage,
-      package=quote(spec["package"]),
+      package_path=get_package_path(package),
       version=quote(spec["version"]),
       revision=quote(spec["revision"]),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}',
+      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package_path}/{version}-{revision}',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -708,7 +736,6 @@ def doFinalSync(spec, specs, args, syncHelper):
   if not spec["revision"].startswith("local"):
     syncHelper.upload_symlinks_and_tarball(spec)
 
-
 def doBuild(args, parser):
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
                                args.workDir, getattr(args, "insecure", False))
@@ -735,8 +762,7 @@ def doBuild(args, parser):
     branch_stream = ""
 
   defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-  (err, overrides, taps) = parseDefaults(args.disable,
-                                        defaultsReader, debug, args.architecture, args.configDir)
+  (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
   makedirs(join(workDir, "SPECS"), exist_ok=True)
 
@@ -1387,6 +1413,7 @@ def doBuild(args, parser):
       ("PKGDIR", spec["pkgdir"]),
       ("PKGREVISION", spec["revision"]),
       ("PKGVERSION", spec["version"]),
+      ("PKGFAMILY", get_package_family(p, specs)),
       ("RELOCATE_PATHS", " ".join(spec.get("relocate_paths", []))),
       ("REQUIRES", " ".join(spec["requires"])),
       ("RUNTIME_REQUIRES", " ".join(spec["runtime_requires"])),

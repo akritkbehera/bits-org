@@ -558,6 +558,15 @@ def asDict(overrides_array):
     debug("asDict (result): %s ",json.dumps(result))
     return result
 
+def packageFamilyMap(package_family):
+    family_map = {}
+    for family, patterns in package_family.items():
+        if not isinstance(patterns, list):
+            continue
+        for pattern in patterns:
+            family_map[pattern] = family
+    return family_map
+
 # (Almost pure part of the defaults parsing)
 # Override defaultsGetter for unit tests.
 def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=None):
@@ -572,6 +581,8 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
       banner("Using defaults-%s file found in %s", architecture, configDir)
       debug("Architecture-specific defaults mentioned in: %s ", archDefaults)
       defaultsMeta = merge_dicts(defaultsMeta, defaultsArchMeta, skip_keys={"package"})
+  if "package_family" in defaultsMeta:
+    defaultsMeta["package_family"] = packageFamilyMap(defaultsMeta.get("package_family", {}))
 
   # Defaults are actually special packages. They can override metadata
   # of any other package and they can disable other packages. For
