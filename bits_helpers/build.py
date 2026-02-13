@@ -119,13 +119,19 @@ def update_git_repos(args, specs, buildOrder):
 # and its direct / indirect dependencies
 def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
   # At the point we call this function, spec has a single, definitive hash.
-  target_dir = "{work_dir}/TARS/{arch}/{repo}/{package}/{package}-{version}-{revision}" \
-    .format(work_dir=args.workDir, arch=args.architecture, repo=repoType, **spec)
+  family = spec.get("family", "")
+  path_components = [args.workDir, "TARS", args.architecture, repoType]
+  if family:
+    path_components.append(family)
+  path_components.extend([spec["package"], "{}-{}-{}".format(spec["package"], spec["version"], spec["revision"])])
+  target_dir = join(*path_components)
   shutil.rmtree(target_dir.encode("utf-8"), ignore_errors=True)
   makedirs(target_dir, exist_ok=True)
+  # Symlink depth depends on whether family is present (extra directory level)
+  symlink_prefix = "../../../../../../" if family else "../../../../../"
   for pkg in [spec["package"]] + list(spec[requiresType]):
-    dep_tarball = "../../../../../TARS/{arch}/store/{short_hash}/{hash}/{package}-{version}-{revision}.{arch}.tar.gz" \
-      .format(arch=args.architecture, short_hash=specs[pkg]["hash"][:2], **specs[pkg])
+    dep_tarball = "{prefix}TARS/{arch}/store/{short_hash}/{hash}/{package}-{version}-{revision}.{arch}.tar.gz" \
+      .format(prefix=symlink_prefix, arch=args.architecture, short_hash=specs[pkg]["hash"][:2], **specs[pkg])
     symlink(dep_tarball, target_dir)
 
 def storeHook(package, specs, defaults) -> bool:
@@ -154,6 +160,22 @@ def storeHook(package, specs, defaults) -> bool:
 
     return bool(spec["hook"])
 
+def get_package_family(pkg_name, specs):
+  """Get the family for a package from defaults-release package_family.
+
+  Transforms {family: [packages]} format and looks up the package.
+  Supports glob patterns (e.g., data-* matches data-foo, data-bar).
+  Falls back to 'defaults' key if package not explicitly listed.
+  """
+  from fnmatch import fnmatch
+  raw_package_family = specs.get("defaults-release", {}).get("package_family", {})
+  for family, pkgs in raw_package_family.items():
+    if isinstance(pkgs, list):
+      for pattern in pkgs:
+        if fnmatch(pkg_name, pattern):
+          return family
+  return raw_package_family.get("defaults", "")
+
 def storeHashes(package, specs, considerRelocation):
   """Calculate various hashes for package, and store them in specs[package].
 
@@ -178,6 +200,8 @@ def storeHashes(package, specs, considerRelocation):
 
   for key in ("recipe", "version", "package"):
     h_all(spec.get(key, "none"))
+  # Include family in hash so packages get unique hash when family changes
+  h_all(spec.get("family", ""))
 
   # commit_hash could be a commit hash (if we're not building a tag, but
   # instead e.g. a branch or particular commit specified by its hash), or it
@@ -382,6 +406,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   itself; else, only generate variables pointing at it dependencies.
   """
   spec = specs[package]
+
   # Allow users to override BITS_ARCH_PREFIX if they manually source
   # init.sh. This is useful for development off CVMFS, since we have a
   # slightly different directory hierarchy there.
@@ -391,6 +416,14 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     '    WORK_DIR=%s' % abspath(workDir),
     'fi',
   ])
+
+  def get_package_path(pkg_name):
+    """Get the path prefix for a package, including family if defined."""
+    family = specs[pkg_name].get("family", "")
+    if family:
+      return "{family}/{package}".format(family=quote(family), package=quote(specs[pkg_name]["package"]))
+    return quote(specs[pkg_name]["package"])
+
   # Generate the part which sources the environment for all the dependencies.
   # We guarantee that a dependency is always sourced before the parts
   # depending on it, but we do not guarantee anything for the order in which
@@ -399,10 +432,10 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # generate them.
   lines.extend((
     '[ -n "${{{bigpackage}_REVISION}}" ] || '
-    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}/etc/profile.d/init.sh'
+    '. "$WORK_DIR/$BITS_ARCH_PREFIX"/{package_path}/{version}-{revision}/etc/profile.d/init.sh'
   ).format(
     bigpackage=dep.upper().replace("-", "_"),
-    package=quote(specs[dep]["package"]),
+    package_path=get_package_path(dep),
     version=quote(specs[dep]["version"]),
     revision=quote(specs[dep]["revision"]),
   ) for dep in spec.get("requires", ()))
@@ -414,13 +447,13 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # be set once the build has actually completed.
     lines.extend(line.format(
       bigpackage=bigpackage,
-      package=quote(spec["package"]),
+      package_path=get_package_path(package),
       version=quote(spec["version"]),
       revision=quote(spec["revision"]),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package}/{version}-{revision}',
+      'export {bigpackage}_ROOT="$WORK_DIR/$BITS_ARCH_PREFIX"/{package_path}/{version}-{revision}',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -495,6 +528,7 @@ def create_provenance_info(package, specs, args):
     },
     "architecture": args.architecture,
     "defaults": args.defaults,
+    "family": specs[package].get("family", ""),
     "package": spec_info(specs[package]),
     "dependencies": {
       "direct": {
@@ -708,7 +742,6 @@ def doFinalSync(spec, specs, args, syncHelper):
   if not spec["revision"].startswith("local"):
     syncHelper.upload_symlinks_and_tarball(spec)
 
-
 def doBuild(args, parser):
   syncHelper = remote_from_url(args.remoteStore, args.writeStore, args.architecture,
                                args.workDir, getattr(args, "insecure", False))
@@ -735,8 +768,7 @@ def doBuild(args, parser):
     branch_stream = ""
 
   defaultsReader = lambda : readDefaults(args.configDir, args.defaults, parser.error, args.architecture)
-  (err, overrides, taps) = parseDefaults(args.disable,
-                                        defaultsReader, debug, args.architecture, args.configDir)
+  (err, overrides, taps) = parseDefaults(args.disable, defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
   makedirs(join(workDir, "SPECS"), exist_ok=True)
 
@@ -1063,6 +1095,8 @@ def doBuild(args, parser):
     debug("spec = %r", spec)
     debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
     storeHook(p, specs, args.defaults[0])
+    # Store family in spec so it's available throughout build and sync
+    spec["family"] = get_package_family(p, specs)
     storeHashes(p, specs, considerRelocation=args.architecture.startswith("osx"))
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
@@ -1105,7 +1139,11 @@ def doBuild(args, parser):
       version=re.escape(spec["version"]),
       arch=re.escape(args.architecture),
     ))
-    symlink_dir = join(workDir, "TARS", args.architecture, spec["package"])
+    symlink_components = [workDir, "TARS", args.architecture]
+    if spec["family"]:
+      symlink_components.append(spec["family"])
+    symlink_components.append(spec["package"])
+    symlink_dir = join(*symlink_components)
     try:
       packages = [join(symlink_dir, symlink_path)
                   for symlink_path in os.listdir(symlink_dir)
@@ -1151,8 +1189,10 @@ def doBuild(args, parser):
     revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
     for symlink_path in packages:
       realPath = readlink(symlink_path)
-      matcher = "../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/{package}-{version}-((?:local)?[0-9]+).{arch}.tar.gz$" \
-        .format(arch=args.architecture, **spec)
+      # Number of ../ depends on whether family is present (2 without, 3 with)
+      dotdot_prefix = r"(?:\.\./){3}" if spec["family"] else r"(?:\.\./){2}"
+      matcher = "{dotdot}{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/{package}-{version}-((?:local)?[0-9]+).{arch}.tar.gz$" \
+        .format(dotdot=dotdot_prefix, arch=args.architecture, **spec)
       match = re.match(matcher, realPath)
       if not match:
         warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
@@ -1241,12 +1281,16 @@ def doBuild(args, parser):
       if develPrefix:
         call_ignoring_oserrors(symlink, spec["hash"], join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + develPrefix))
       # Last package built gets a "latest" mark.
+      latest_components = [workDir, args.architecture]
+      if spec["family"]:
+        latest_components.append(spec["family"])
+      latest_components.append(spec["package"])
       call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                             join(workDir, args.architecture, spec["package"], "latest"))
+                             join(*latest_components, "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
         call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
-                               join(workDir, args.architecture, spec["package"], "latest-" + spec["build_family"]))
+                               join(*latest_components, "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
     if spec["is_devel_pkg"]:
@@ -1257,11 +1301,11 @@ def doBuild(args, parser):
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
-    hashPath= "{}/{}/{}/{}-{}".format(workDir,
-                                  args.architecture,
-                                  spec["package"],
-                                  spec["version"],
-                                  spec["revision"])
+    hash_components = [workDir, args.architecture]
+    if spec["family"]:
+      hash_components.append(spec["family"])
+    hash_components.extend([spec["package"], "{}-{}".format(spec["version"], spec["revision"])])
+    hashPath = join(*hash_components)
     hashFile = hashPath + "/.build-hash"
     # If the folder is a symlink, we consider it to be to CVMFS and
     # take the hash for good.
@@ -1387,6 +1431,7 @@ def doBuild(args, parser):
       ("PKGDIR", spec["pkgdir"]),
       ("PKGREVISION", spec["revision"]),
       ("PKGVERSION", spec["version"]),
+      ("PKGFAMILY", spec["family"]),
       ("RELOCATE_PATHS", " ".join(spec.get("relocate_paths", []))),
       ("REQUIRES", " ".join(spec["requires"])),
       ("RUNTIME_REQUIRES", " ".join(spec["runtime_requires"])),
