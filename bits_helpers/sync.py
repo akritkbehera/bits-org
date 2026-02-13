@@ -188,7 +188,8 @@ class HttpRemoteSync:
         progress.end("done")
 
   def fetch_symlinks(self, spec) -> None:
-    links_path = resolve_links_path(self.architecture, spec["package"])
+    family = spec.get("family", "")
+    links_path = resolve_links_path(self.architecture, spec["package"], family)
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     # If we already have a symlink we can use, don't update the list. This
@@ -231,8 +232,10 @@ class HttpRemoteSync:
             self.getRetry("/".join((self.remoteStore, links_path, linkname)),
                           returnResult=True, log=False, session=session) \
                 .decode("utf-8").rstrip("\r\n")
+    # Symlink depth depends on whether family is present (extra directory level)
+    symlink_prefix = "../../../" if family else "../../"
     for linkname, target in symlinks.items():
-      symlink("../../" + target.lstrip("./"),
+      symlink(symlink_prefix + target.lstrip("./"),
               os.path.join(self.workdir, links_path, linkname))
 
   def upload_symlinks_and_tarball(self, spec) -> None:
@@ -277,7 +280,7 @@ class RsyncRemoteSync:
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
   def fetch_symlinks(self, spec) -> None:
-    links_path = resolve_links_path(self.architecture, spec["package"])
+    links_path = resolve_links_path(self.architecture, spec["package"], spec.get("family", ""))
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
     err = execute("rsync -rlvW --delete {remote_store}/{links_path}/ {workdir}/{links_path}/".format(
       remote_store=self.remoteStore,
@@ -289,21 +292,24 @@ class RsyncRemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
+    family = spec.get("family", "")
+    family_path = "{}/".format(family) if family else ""
     dieOnError(execute("""\
     set -e
     cd {workdir}
     tarball={package}-{version}-{revision}.{arch}.tar.gz
     rsync -avR --ignore-existing "{links_path}/$tarball" {remote}/
     for link_dir in dist dist-direct dist-runtime; do
-      rsync -avR --ignore-existing "TARS/{arch}/$link_dir/{package}/{package}-{version}-{revision}/" {remote}/
+      rsync -avR --ignore-existing "TARS/{arch}/$link_dir/{family_path}{package}/{package}-{version}-{revision}/" {remote}/
     done
     rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
     """.format(
       workdir=self.workdir,
       remote=self.remoteStore,
       store_path=resolve_store_path(self.architecture, spec["hash"]),
-      links_path=resolve_links_path(self.architecture, spec["package"]),
+      links_path=resolve_links_path(self.architecture, spec["package"], family),
       arch=self.architecture,
+      family_path=family_path,
       package=spec["package"],
       version=spec["version"],
       revision=spec["revision"],
@@ -340,28 +346,32 @@ class CVMFSRemoteSync:
   def fetch_symlinks(self, spec) -> None:
     # When using CVMFS, we create the symlinks grass by reading the .
     info("Fetching available build hashes for %s, from %s", spec["package"], self.remoteStore)
-    links_path = resolve_links_path(self.architecture, spec["package"])
+    family = spec.get("family", "")
+    links_path = resolve_links_path(self.architecture, spec["package"], family)
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     cvmfs_architecture = re.sub(r"slc(\d+)_x86-64", r"el\1-x86_64", self.architecture)
+    family_path = "{}/".format(family) if family else ""
+    # Symlink depth depends on whether family is present (extra directory level)
+    symlink_prefix = "../../../" if family else "../../"
     err = execute(r"""\
     set -x
     # Exit without error in case we do not have any package published
-    test -d "{remote_store}/{cvmfs_architecture}/Packages/{package}" || exit 0
+    test -d "{remote_store}/{cvmfs_architecture}/Packages/{family_path}{package}" || exit 0
     mkdir -p "{workDir}/{links_path}"
-    for install_path in $(find "{remote_store}/{cvmfs_architecture}/Packages/{package}" -type d -mindepth 1 -maxdepth 1); do
+    for install_path in $(find "{remote_store}/{cvmfs_architecture}/Packages/{family_path}{package}" -type d -mindepth 1 -maxdepth 1); do
       full_version="${{install_path##*/}}"
       tarball={package}-$full_version.{architecture}.tar.gz
       pkg_hash=$(cat "${{install_path}}/.build-hash" || jq -r '.package.hash' <${{install_path}}/.meta.json)
       if [ "X$pkg_hash" = X ]; then
         continue
       fi
-      ln -sf ../../{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball "{workDir}/{links_path}/$tarball"
+      ln -sf {symlink_prefix}{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball "{workDir}/{links_path}/$tarball"
       # Create the dummy tarball, if it does not exists
       test -f "{workDir}/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" && continue
-      mkdir -p "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}"
-      find "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version" ! -name etc -maxdepth 1 -mindepth 1 -exec ln -sf {} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/" \\;
-      cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{package}/$full_version/etc" "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{package}/etc"
+      mkdir -p "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{family_path}{package}"
+      find "{remote_store}/{cvmfs_architecture}/Packages/{family_path}{package}/$full_version" ! -name etc -maxdepth 1 -mindepth 1 -exec ln -sf {} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{family_path}{package}/" \\;
+      cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{family_path}{package}/$full_version/etc" "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{family_path}{package}/etc"
       mkdir -p "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash"
       tar -C "{workDir}/INSTALLROOT/$pkg_hash" -czf "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" .
       rm -rf "{workDir}/INSTALLROOT/$pkg_hash"
@@ -371,6 +381,8 @@ class CVMFSRemoteSync:
       architecture=self.architecture,
       cvmfs_architecture=cvmfs_architecture,
       package=spec["package"],
+      family_path=family_path,
+      symlink_prefix=symlink_prefix,
       remote_store=self.remoteStore,
       links_path=links_path,
     ))
@@ -415,23 +427,28 @@ class S3RemoteSync:
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
   def fetch_symlinks(self, spec) -> None:
+    family = spec.get("family", "")
+    links_path = resolve_links_path(self.architecture, spec["package"], family)
+    # Symlink depth depends on whether family is present (extra directory level)
+    symlink_prefix = "../../../" if family else "../../"
     err = execute("""\
     mkdir -p "{workDir}/{linksPath}"
     find "{workDir}/{linksPath}" -type l -delete
     curl -sL "https://s3.cern.ch/swift/v1/{b}/{linksPath}.manifest" |
       while IFS='\t' read -r symlink target; do
-        ln -sf "../../${{target#../../}}" "{workDir}/{linksPath}/$symlink" || true
+        ln -sf "{symlink_prefix}${{target#../../}}" "{workDir}/{linksPath}/$symlink" || true
       done
     for x in $(curl -sL "https://s3.cern.ch/swift/v1/{b}/?prefix={linksPath}/"); do
       # Skip already existing symlinks -- these were from the manifest.
       # (We delete leftover symlinks from previous runs above.)
       [ -L "{workDir}/{linksPath}/$(basename "$x")" ] && continue
-      ln -sf "$(curl -sL "https://s3.cern.ch/swift/v1/{b}/$x" | sed -r 's,^(\\.\\./\\.\\./)?,../../,')" \
+      ln -sf "$(curl -sL "https://s3.cern.ch/swift/v1/{b}/$x" | sed -r 's,^(\\.\\./\\.\\./)?,{symlink_prefix},')" \
          "{workDir}/{linksPath}/$(basename "$x")" || true
     done
     """.format(
       b=self.remoteStore,
-      linksPath=resolve_links_path(self.architecture, spec["package"]),
+      linksPath=links_path,
+      symlink_prefix=symlink_prefix,
       workDir=self.workdir,
     ))
     dieOnError(err, "Unable to fetch symlinks from specified store.")
@@ -439,6 +456,10 @@ class S3RemoteSync:
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
+    family = spec.get("family", "")
+    family_path = "{}/".format(family) if family else ""
+    # Symlink prefix for stripping - depends on family depth
+    strip_prefix = r"^\\.\\./\\.\\./\\.\\./" if family else r"^\\.\\./\\.\\./"
     dieOnError(execute("""\
     set -e
     put () {{
@@ -449,12 +470,12 @@ class S3RemoteSync:
 
     # First, upload "main" symlink, to reserve this revision number, in case
     # the below steps fail.
-    readlink "{links_path}/$tarball" | sed 's|^\\.\\./\\.\\./||' |
+    readlink "{links_path}/$tarball" | sed 's|{strip_prefix}||' |
       put - "s3://{bucket}/{links_path}/$tarball"
 
     # Then, upload dist symlink trees -- these must be in place before the main
     # tarball.
-    find TARS/{arch}/{{dist,dist-direct,dist-runtime}}/{package}/{package}-{version}-{revision}/ \
+    find TARS/{arch}/{{dist,dist-direct,dist-runtime}}/{family_path}{package}/{package}-{version}-{revision}/ \
          -type l | while read -r link; do
       hashedurl=$(readlink "$link" | sed 's|.*/\\.\\./TARS|TARS|')
       echo "$hashedurl" |
@@ -470,7 +491,9 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
       workdir=self.workdir,
       bucket=self.remoteStore,
       store_path=resolve_store_path(self.architecture, spec["hash"]),
-      links_path=resolve_links_path(self.architecture, spec["package"]),
+      links_path=resolve_links_path(self.architecture, spec["package"], family),
+      strip_prefix=strip_prefix,
+      family_path=family_path,
       arch=self.architecture,
       package=spec["package"],
       version=spec["version"],
@@ -585,8 +608,12 @@ class Boto3RemoteSync:
 
   def fetch_symlinks(self, spec) -> None:
     from botocore.exceptions import ClientError
-    links_path = resolve_links_path(self.architecture, spec["package"])
+    family = spec.get("family", "")
+    links_path = resolve_links_path(self.architecture, spec["package"], family)
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
+    # Symlink depth depends on whether family is present (extra directory level)
+    symlink_prefix = "../../../" if family else "../../"
+    symlink_prefix_bytes = symlink_prefix.encode()
 
     # Remove existing symlinks: we'll fetch the ones from the remote next.
     parent = os.path.join(self.workdir, links_path)
@@ -608,8 +635,8 @@ class Boto3RemoteSync:
         if not has_sep:
           debug("Ignoring malformed line in manifest: %r", line)
           continue
-        if not target.startswith(b"../../"):
-          target = b"../../" + target
+        if not target.startswith(symlink_prefix_bytes):
+          target = symlink_prefix_bytes + target.lstrip(b"./")
         target = os.fsdecode(target)
         link_path = os.path.join(self.workdir, links_path, os.fsdecode(link_name))
         symlink(target, link_path)
@@ -625,18 +652,23 @@ class Boto3RemoteSync:
       debug("Fetching leftover symlink %s", link_key)
       resp = self.s3.get_object(Bucket=self.remoteStore, Key=link_key)
       target = os.fsdecode(resp["Body"].read()).rstrip("\n")
-      if not target.startswith("../../"):
-        target = "../../" + target
+      if not target.startswith(symlink_prefix):
+        target = symlink_prefix + target.lstrip("./")
       symlink(target, link_path)
 
   def upload_symlinks_and_tarball(self, spec) -> None:
     if not self.writeStore:
       return
 
+    family = spec.get("family", "")
+
     dist_symlinks = {}
-    for link_dir in ("dist", "dist-direct", "dist-runtime"):
-      link_dir = "TARS/{arch}/{link_dir}/{package}/{package}-{version}-{revision}" \
-        .format(arch=self.architecture, link_dir=link_dir, **spec)
+    for link_dir_name in ("dist", "dist-direct", "dist-runtime"):
+      link_components = ["TARS", self.architecture, link_dir_name]
+      if family:
+        link_components.append(family)
+      link_components.extend([spec["package"], "{}-{}-{}".format(spec["package"], spec["version"], spec["revision"])])
+      link_dir = os.path.join(*link_components)
 
       debug("Comparing dist symlinks against S3 from %s", link_dir)
 
@@ -671,7 +703,7 @@ class Boto3RemoteSync:
       .format(architecture=self.architecture, **spec)
     tar_path = os.path.join(resolve_store_path(self.architecture, spec["hash"]),
                             tarball)
-    link_path = os.path.join(resolve_links_path(self.architecture, spec["package"]),
+    link_path = os.path.join(resolve_links_path(self.architecture, spec["package"], family),
                              tarball)
     tar_exists = self._s3_key_exists(tar_path)
     link_exists = self._s3_key_exists(link_path)
@@ -688,11 +720,13 @@ class Boto3RemoteSync:
 
     # Upload the smaller file first, so that any parallel uploads are more
     # likely to find it and fail.
+    # Symlink depth depends on whether family is present (extra directory level)
+    symlink_prefix = '../../..' if family else '../..'
     try:
       os.readlink(os.path.join(self.workdir, link_path))
     except FileNotFoundError:
       os.symlink(
-        os.path.join('../..', self.architecture, 'store', spec["hash"][:2], spec["hash"],
+        os.path.join(symlink_prefix, self.architecture, 'store', spec["hash"][:2], spec["hash"],
                      f"{spec['package']}-{spec['version']}-{spec['revision']}.{self.architecture}.tar.gz"),
         os.path.join(self.workdir, link_path)
       )

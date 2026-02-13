@@ -84,7 +84,9 @@ export PKG_NAME="$PKGNAME"
 export PKG_VERSION="$PKGVERSION"
 export PKG_BUILDNUM="$PKGREVISION"
 
-export PKGPATH=${ARCHITECTURE}/${PKGNAME}/${PKGVERSION}-${PKGREVISION}
+# Set PKGFAMILY_PREFIX for use in paths (empty if no family defined)
+PKGFAMILY_PREFIX="${PKGFAMILY:+$PKGFAMILY/}"
+export PKGPATH=${ARCHITECTURE}/${PKGFAMILY_PREFIX}${PKGNAME}/${PKGVERSION}-${PKGREVISION}
 mkdir -p "$WORK_DIR/BUILD" "$WORK_DIR/SOURCES" "$WORK_DIR/TARS" \
          "$WORK_DIR/SPECS" "$WORK_DIR/INSTALLROOT"
 # If we are in development mode, then install directly in $WORK_DIR/$PKGPATH,
@@ -195,7 +197,7 @@ else
   tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
   mkdir -p $(dirname $INSTALLROOT)
   rm -rf $INSTALLROOT
-  mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/$PKGNAME/$PKGVERSION-* $INSTALLROOT
+  mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$PKGVERSION-* $INSTALLROOT
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
   if [ -w "$INSTALLROOT" ]; then
       WORK_DIR=$WORK_DIR /bin/bash -ex $INSTALLROOT/relocate-me.sh
@@ -319,7 +321,7 @@ fi
 HASHPREFIX=`echo $PKGHASH | cut -b1,2`
 HASH_PATH=$ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
 mkdir -p "${WORK_DIR}/TARS/$HASH_PATH" \
-         "${WORK_DIR}/TARS/$ARCHITECTURE/$PKGNAME"
+         "${WORK_DIR}/TARS/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME"
 
 PACKAGE_WITH_REV=$PKGNAME-$PKGVERSION-$PKGREVISION.$ARCHITECTURE.tar.gz
 # Copy and tar/compress (if applicable) in parallel.
@@ -338,24 +340,24 @@ elif [ -z "$CACHED_TARBALL" ]; then
     $gzip -c > "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
   mv "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing" \
      "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
-  ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
-     "$WORK_DIR/TARS/$ARCHITECTURE/$PKGNAME/$PACKAGE_WITH_REV"
+  ln -nfs "${PKGFAMILY:+../}../../$HASH_PATH/$PACKAGE_WITH_REV" \
+     "$WORK_DIR/TARS/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$PACKAGE_WITH_REV"
 fi
 wait "$rsync_pid"
 
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
-if [ -w "$WORK_DIR/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
-  /bin/bash -ex "$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
+if [ -w "$WORK_DIR/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
+  /bin/bash -ex "$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
 fi
 
 
 # Last package built gets a "latest" mark.
-ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest
+ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/latest
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/$PKGNAME/latest-$BUILD_FAMILY
+  ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/latest-$BUILD_FAMILY
 fi
 
 # When the package is definitely fully installed, install the file that marks
