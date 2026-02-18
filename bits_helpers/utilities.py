@@ -101,12 +101,14 @@ def resolve_store_path(architecture, spec_hash):
   return "/".join(("TARS", architecture, "store", spec_hash[:2], spec_hash))
 
 
-def resolve_links_path(architecture, package):
+def resolve_links_path(architecture, package, family=""):
   """Return the path where symlinks for the given package are to be stored.
 
   The returned path is relative to the working directory (normally sw/) or the
-  root of the remote store.
+  root of the remote store. If family is provided, includes it in the path.
   """
+  if family:
+    return "/".join(("TARS", architecture, family, package))
   return "/".join(("TARS", architecture, package))
 
 
