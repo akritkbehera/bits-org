@@ -164,12 +164,16 @@ def get_package_family(pkg_name, specs):
   """Get the family for a package from defaults-release package_family.
 
   Transforms {family: [packages]} format and looks up the package.
+  Supports glob patterns (e.g., data-* matches data-foo, data-bar).
   Falls back to 'defaults' key if package not explicitly listed.
   """
+  from fnmatch import fnmatch
   raw_package_family = specs.get("defaults-release", {}).get("package_family", {})
   for family, pkgs in raw_package_family.items():
-    if isinstance(pkgs, list) and pkg_name in pkgs:
-      return family
+    if isinstance(pkgs, list):
+      for pattern in pkgs:
+        if fnmatch(pkg_name, pattern):
+          return family
   return raw_package_family.get("defaults", "")
 
 def storeHashes(package, specs, considerRelocation):
