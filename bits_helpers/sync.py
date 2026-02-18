@@ -542,7 +542,7 @@ class Boto3RemoteSync:
         config = None
       self.s3 = boto3.client("s3",
                              **({"config": config} if config else {}),
-                             endpoint_url="https://s3.cern.ch",
+                             endpoint_url="https://s3.eu-north-1.amazonaws.com",
                              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
                              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"])
     except KeyError:
@@ -747,8 +747,7 @@ class Boto3RemoteSync:
       self.s3.put_object(Bucket=self.writeStore,
                          Key=link_key,
                          Body=os.fsencode(hash_path),
-                         ACL="public-read",
-                         WebsiteRedirectLocation=hash_path)
+                         WebsiteRedirectLocation="/"+hash_path)
       return link_key
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

@@ -123,7 +123,7 @@ def createDistLinks(spec, specs, args, syncHelper, repoType, requiresType):
   path_components = [args.workDir, "TARS", args.architecture, repoType]
   if family:
     path_components.append(family)
-  path_components.extend([spec["package"], "{}-{}".format(spec["version"], spec["revision"])])
+  path_components.extend([spec["package"], "{}-{}-{}".format(spec["package"], spec["version"], spec["revision"])])
   target_dir = join(*path_components)
   shutil.rmtree(target_dir.encode("utf-8"), ignore_errors=True)
   makedirs(target_dir, exist_ok=True)
@@ -1185,8 +1185,10 @@ def doBuild(args, parser):
     revisionPrefix = "" if getattr(syncHelper, "writeStore", "") else "local"
     for symlink_path in packages:
       realPath = readlink(symlink_path)
-      matcher = "../../{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/{package}-{version}-((?:local)?[0-9]+).{arch}.tar.gz$" \
-        .format(arch=args.architecture, **spec)
+      # Number of ../ depends on whether family is present (2 without, 3 with)
+      dotdot_prefix = r"(?:\.\./){3}" if spec["family"] else r"(?:\.\./){2}"
+      matcher = "{dotdot}{arch}/store/[0-9a-f]{{2}}/([0-9a-f]+)/{package}-{version}-((?:local)?[0-9]+).{arch}.tar.gz$" \
+        .format(dotdot=dotdot_prefix, arch=args.architecture, **spec)
       match = re.match(matcher, realPath)
       if not match:
         warning("Symlink %s -> %s couldn't be parsed", symlink_path, realPath)
