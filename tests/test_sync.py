@@ -20,18 +20,21 @@ GOOD_SPEC = {    # fully present on the remote store
     "hash": GOOD_HASH,
     "remote_revision_hash": GOOD_HASH,
     "remote_hashes": [GOOD_HASH],
+    "architecture": ARCHITECTURE,
 }
 BAD_SPEC = {     # partially present on the remote store
     "package": PACKAGE, "version": "v1.3.1", "revision": "2",
     "hash": BAD_HASH,
     "remote_revision_hash": BAD_HASH,
     "remote_hashes": [BAD_HASH],
+    "architecture": ARCHITECTURE,
 }
 MISSING_SPEC = {    # completely absent from the remote store
     "package": PACKAGE, "version": "v1.3.1", "revision": "3",
     "hash": NONEXISTENT_HASH,
     "remote_revision_hash": NONEXISTENT_HASH,
     "remote_hashes": [NONEXISTENT_HASH],
+    "architecture": ARCHITECTURE,
 }
 
 

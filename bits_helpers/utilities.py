@@ -112,6 +112,20 @@ def resolve_links_path(architecture, package, family=""):
   return "/".join(("TARS", architecture, package))
 
 
+def symlink_depth_prefix(has_family):
+  """Return the relative path prefix for symlinks based on directory depth.
+
+  With family: TARS/arch/family/pkg -> need ../../../ to reach TARS/arch/store
+  Without family: TARS/arch/pkg -> need ../../ to reach TARS/arch/store
+  """
+  return "../../../" if has_family else "../../"
+
+
+def family_path_segment(family):
+  """Return family path segment with trailing slash, or empty string if no family."""
+  return "{}/".format(family) if family else ""
+
+
 def short_commit_hash(spec):
   """Shorten the spec's commit hash to make it more human-readable.
 
