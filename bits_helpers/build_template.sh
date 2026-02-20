@@ -86,7 +86,20 @@ export PKG_BUILDNUM="$PKGREVISION"
 
 # Set PKGFAMILY_PREFIX for use in paths (empty if no family defined)
 PKGFAMILY_PREFIX="${PKGFAMILY:+$PKGFAMILY/}"
-export PKGPATH=${ARCHITECTURE}/${PKGFAMILY_PREFIX}${PKGNAME}/${PKGVERSION}-${PKGREVISION}
+
+# INSTALL_REVISION: use FORCED_REVISION if set, otherwise PKGREVISION
+# FORCED_REVISION is only set when force_revision exists in defaults-release
+INSTALL_REVISION="${FORCED_REVISION-$PKGREVISION}"
+
+# VERSION_REV: version with install revision for local paths
+# Empty INSTALL_REVISION means no suffix (e.g., v1.0 instead of v1.0-1)
+if [ -n "$INSTALL_REVISION" ]; then
+  VERSION_REV="$PKGVERSION-$INSTALL_REVISION"
+else
+  VERSION_REV="$PKGVERSION"
+fi
+
+export PKGPATH=${ARCHITECTURE}/${PKGFAMILY_PREFIX}${PKGNAME}/${VERSION_REV}
 mkdir -p "$WORK_DIR/BUILD" "$WORK_DIR/SOURCES" "$WORK_DIR/TARS" \
          "$WORK_DIR/SPECS" "$WORK_DIR/INSTALLROOT"
 # If we are in development mode, then install directly in $WORK_DIR/$PKGPATH,
@@ -197,7 +210,7 @@ else
   tar -xzf "$CACHED_TARBALL" -C "$WORK_DIR/TMP/$PKGHASH"
   mkdir -p $(dirname $INSTALLROOT)
   rm -rf $INSTALLROOT
-  mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$PKGVERSION-* $INSTALLROOT
+  mv $WORK_DIR/TMP/$PKGHASH/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$VERSION_REV $INSTALLROOT
   pushd $WORK_DIR/INSTALLROOT/$PKGHASH
   if [ -w "$INSTALLROOT" ]; then
       WORK_DIR=$WORK_DIR /bin/bash -ex $INSTALLROOT/relocate-me.sh
@@ -347,17 +360,17 @@ wait "$rsync_pid"
 
 # We've copied files into their final place; now relocate.
 cd "$WORK_DIR"
-if [ -w "$WORK_DIR/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$PKGVERSION-$PKGREVISION" ]; then
-  /bin/bash -ex "$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$PKGVERSION-$PKGREVISION/relocate-me.sh"
+if [ -w "$WORK_DIR/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$VERSION_REV" ]; then
+  /bin/bash -ex "$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$VERSION_REV/relocate-me.sh"
 fi
 
 
 # Last package built gets a "latest" mark.
-ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/latest
+ln -snf $VERSION_REV $ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/latest
 
 # Latest package built for a given devel prefix gets latest-$BUILD_FAMILY
 if [[ $BUILD_FAMILY ]]; then
-  ln -snf $PKGVERSION-$PKGREVISION $ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/latest-$BUILD_FAMILY
+  ln -snf $VERSION_REV $ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/latest-$BUILD_FAMILY
 fi
 
 # When the package is definitely fully installed, install the file that marks

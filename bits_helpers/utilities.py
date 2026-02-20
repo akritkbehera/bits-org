@@ -620,8 +620,15 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
     return ("overrides should be a dictionary", None, None)
 
   overrides, taps = OrderedDict(), {}
-  commonEnv = {"env": defaultsMeta["env"]} if "env" in defaultsMeta else {}
-  overrides["defaults-release"] = commonEnv
+  # Pass env, package_family, and force_revision from defaults to specs["defaults-release"]
+  defaultsOverride = {}
+  if "env" in defaultsMeta:
+    defaultsOverride["env"] = defaultsMeta["env"]
+  if "package_family" in defaultsMeta:
+    defaultsOverride["package_family"] = defaultsMeta["package_family"]
+  if "force_revision" in defaultsMeta:
+    defaultsOverride["force_revision"] = defaultsMeta["force_revision"]
+  overrides["defaults-release"] = defaultsOverride
   for k, v in defaultsMeta.get("overrides", {}).items():
     f = k.split("@", 1)[0].lower()
     if "@" in k:
