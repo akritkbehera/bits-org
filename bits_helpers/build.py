@@ -180,6 +180,19 @@ def get_package_family(pkg_name, specs):
           return family
   return raw_package_family.get("defaults", "")
 
+
+def get_force_revision(pkg_name, specs):
+  """Get forced revision for a package from defaults-release force_revision.
+
+  Format: force_revision: {package: revision}
+  Returns None if package has no forced revision.
+  """
+  force_revisions = specs.get("defaults-release", {}).get("force_revision") or {}
+  if pkg_name in force_revisions:
+    return str(force_revisions[pkg_name])
+  return None
+
+
 def storeHashes(package, specs, considerRelocation):
   """Calculate various hashes for package, and store them in specs[package].
 
@@ -208,6 +221,11 @@ def storeHashes(package, specs, considerRelocation):
   h_all(spec.get("family", ""))
   # Include force_architecture in hash if set (so "shared" packages get unique hashes)
   h_all(spec.get("force_architecture", ""))
+  # Include force_revision in hash if set (so packages with different forced revisions get unique hashes)
+  # Skip if it's a dict (defaults-release holds the mapping, not a value)
+  force_rev = spec.get("force_revision")
+  if isinstance(force_rev, str):
+    h_all(force_rev)
 
   # commit_hash could be a commit hash (if we're not building a tag, but
   # instead e.g. a branch or particular commit specified by its hash), or it
@@ -439,6 +457,17 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       return dep_arch
     return "$BITS_ARCH_PREFIX"
 
+  def get_version_revision(pkg_name):
+    """Get version-revision string for paths."""
+    pkg_spec = specs[pkg_name]
+    # Use force_revision if it's a string, otherwise use revision
+    # (defaults-release has force_revision as a dict, not a value)
+    force_rev = pkg_spec.get("force_revision")
+    rev = force_rev if isinstance(force_rev, str) else pkg_spec["revision"]
+    if rev == "":
+      return quote(pkg_spec["version"])
+    return "{}-{}".format(quote(pkg_spec["version"]), quote(rev))
+
   # Generate the part which sources the environment for all the dependencies.
   # We guarantee that a dependency is always sourced before the parts
   # depending on it, but we do not guarantee anything for the order in which
@@ -447,13 +476,12 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # generate them.
   lines.extend((
     '[ -n "${{{bigpackage}_REVISION}}" ] || '
-    '. "$WORK_DIR/{arch_prefix}"/{package_path}/{version}-{revision}/etc/profile.d/init.sh'
+    '. "$WORK_DIR/{arch_prefix}"/{package_path}/{version_revision}/etc/profile.d/init.sh'
   ).format(
     bigpackage=dep.upper().replace("-", "_"),
     arch_prefix=get_arch_prefix(dep),
     package_path=get_package_path(dep),
-    version=quote(specs[dep]["version"]),
-    revision=quote(specs[dep]["revision"]),
+    version_revision=get_version_revision(dep),
   ) for dep in spec.get("requires", ()))
 
   if post_build:
@@ -462,16 +490,18 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # Set standard variables related to the package itself. These should only
     # be set once the build has actually completed.
     # Use get_arch_prefix to handle force_architecture correctly for the package's own paths.
+    # Use get_version_revision for the path (handles force_revision).
     lines.extend(line.format(
       bigpackage=bigpackage,
       arch_prefix=get_arch_prefix(package),
       package_path=get_package_path(package),
+      version_revision=get_version_revision(package),
       version=quote(spec["version"]),
       revision=quote(spec["revision"]),
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/{arch_prefix}"/{package_path}/{version}-{revision}',
+      'export {bigpackage}_ROOT="$WORK_DIR/{arch_prefix}"/{package_path}/{version_revision}',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",
       "export {bigpackage}_HASH={hash}",
@@ -1115,6 +1145,10 @@ def doBuild(args, parser):
     storeHook(p, specs, args.defaults[0])
     # Store family in spec so it's available throughout build and sync
     spec["family"] = get_package_family(p, specs)
+    # Store force_revision if defined in defaults-release (for stable local paths)
+    # Skip for defaults-release itself (it holds the dict, not a value)
+    if p != "defaults-release":
+      spec["force_revision"] = get_force_revision(p, specs)
     # Store effective architecture (force_architecture overrides args.architecture)
     spec["architecture"] = spec.get("force_architecture", args.architecture)
     storeHashes(p, specs, considerRelocation=spec["architecture"].startswith("osx"))
@@ -1267,9 +1301,13 @@ def doBuild(args, parser):
         # Ignore errors here, because the path we're linking to might not
         # exist (if this is the first run through the loop). On the second run
         # through, the path should have been created by the build process.
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+        # Use force_revision for local symlink target if set (string only, not dict)
+        force_rev = spec.get("force_revision")
+        inst_rev = force_rev if isinstance(force_rev, str) else spec["revision"]
+        symlink_target = spec["version"] if inst_rev == "" else "{}-{}".format(spec["version"], inst_rev)
+        call_ignoring_oserrors(symlink, symlink_target,
                                "{wd}/{arch}/{package}/latest-{build_family}".format(wd=workDir, arch=args.architecture, **spec))
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+        call_ignoring_oserrors(symlink, symlink_target,
                                "{wd}/{arch}/{package}/latest".format(wd=workDir, arch=args.architecture, **spec))
 
     # Now we know whether we're using a local or remote package, so we can set
@@ -1305,11 +1343,15 @@ def doBuild(args, parser):
       if spec["family"]:
         latest_components.append(spec["family"])
       latest_components.append(spec["package"])
-      call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+      # Use force_revision for local symlink target if set (string only, not dict)
+      force_rev = spec.get("force_revision")
+      inst_rev = force_rev if isinstance(force_rev, str) else spec["revision"]
+      symlink_target = spec["version"] if inst_rev == "" else "{}-{}".format(spec["version"], inst_rev)
+      call_ignoring_oserrors(symlink, symlink_target,
                              join(*latest_components, "latest"))
       # Latest package built for a given devel prefix gets a "latest-<family>" mark.
       if spec["build_family"]:
-        call_ignoring_oserrors(symlink, "{version}-{revision}".format(**spec),
+        call_ignoring_oserrors(symlink, symlink_target,
                                join(*latest_components, "latest-" + spec["build_family"]))
 
     # Check if this development package needs to be rebuilt.
@@ -1321,10 +1363,14 @@ def doBuild(args, parser):
 
     # Now that we have all the information about the package we want to build, let's
     # check if it wasn't built / unpacked already.
+    # Use force_revision for local path if set (string only, not dict), otherwise use revision
+    force_rev = spec.get("force_revision")
+    install_rev = force_rev if isinstance(force_rev, str) else spec["revision"]
+    version_rev = spec["version"] if install_rev == "" else "{}-{}".format(spec["version"], install_rev)
     hash_components = [workDir, spec["architecture"]]
     if spec["family"]:
       hash_components.append(spec["family"])
-    hash_components.extend([spec["package"], "{}-{}".format(spec["version"], spec["revision"])])
+    hash_components.extend([spec["package"], version_rev])
     hashPath = join(*hash_components)
     hashFile = hashPath + "/.build-hash"
     # If the folder is a symlink, we consider it to be to CVMFS and
@@ -1476,6 +1522,11 @@ def doBuild(args, parser):
     # Add resolved hooks as environment variables (POST_INSTALL -> POST_INSTALL_HOOKS)
     for hook_name, hook_value in spec.get("hook", {}).items():
       buildEnvironment.append((hook_name + "_HOOKS", hook_value))
+
+    # Add FORCED_REVISION only if force_revision is a string (not dict from defaults-release)
+    force_rev = spec.get("force_revision")
+    if isinstance(force_rev, str):
+      buildEnvironment.append(("FORCED_REVISION", force_rev))
 
     # Add the extra environment as passed from the command line.
     buildEnvironment += [e.partition('=')[::2] for e in args.environment]
