@@ -165,20 +165,36 @@ def storeHook(package, specs, defaults) -> bool:
 
     return bool(spec["hook"])
 
-def get_package_family(pkg_name, specs):
-  """Get the family for a package from defaults-release package_family.
+def get_defaults_mapping(pkg_name, specs, key, default_key="defaults"):
+  """Get value for a package from a defaults-release mapping.
 
-  Transforms {family: [packages]} format and looks up the package.
+  The mapping format is: {value: [package_patterns]}
+  Returns the value for the first matching pattern, or the default value.
   Supports glob patterns (e.g., data-* matches data-foo, data-bar).
-  Falls back to 'defaults' key if package not explicitly listed.
   """
-  raw_package_family = specs.get("defaults-release", {}).get("package_family", {})
-  for family, pkgs in raw_package_family.items():
-    if isinstance(pkgs, list):
-      for pattern in pkgs:
+  raw_mapping = specs.get("defaults-release", {}).get(key) or {}
+  for value, patterns in raw_mapping.items():
+    if value == default_key:
+      continue
+    if isinstance(patterns, list):
+      for pattern in patterns:
         if fnmatch(pkg_name, pattern):
-          return family
-  return raw_package_family.get("defaults", "")
+          return value
+  return raw_mapping.get(default_key, "") if default_key else None
+
+
+def get_package_family(pkg_name, specs):
+  """Get the family for a package from defaults-release package_family."""
+  return get_defaults_mapping(pkg_name, specs, "package_family", default_key="defaults")
+
+
+def get_force_architecture(pkg_name, specs):
+  """Get forced architecture for a package from defaults-release force_architecture.
+
+  Format: force_architecture: {arch: [packages]}
+  Returns None if package has no forced architecture.
+  """
+  return get_defaults_mapping(pkg_name, specs, "force_architecture", default_key=None)
 
 
 def get_force_revision(pkg_name, specs):
@@ -219,8 +235,8 @@ def storeHashes(package, specs, considerRelocation):
     h_all(spec.get(key, "none"))
   # Include family in hash so packages get unique hash when family changes
   h_all(spec.get("family", ""))
-  # Include force_architecture in hash if set (so "shared" packages get unique hashes)
-  h_all(spec.get("force_architecture", ""))
+  # Include force_architecture in hash if set (so packages with forced arch get unique hashes)
+  h_all(spec.get("force_architecture") or "")
   # Include force_revision in hash if set (so packages with different forced revisions get unique hashes)
   # Skip if it's a dict (defaults-release holds the mapping, not a value)
   force_rev = spec.get("force_revision")
@@ -1148,8 +1164,16 @@ def doBuild(args, parser):
     # Skip for defaults-release itself (it holds the dict, not a value)
     if p != "defaults-release":
       spec["force_revision"] = get_force_revision(p, specs)
-    # Store effective architecture (force_architecture overrides args.architecture)
-    spec["architecture"] = spec.get("force_architecture", args.architecture)
+    # Store effective architecture from defaults-release, or use args.architecture
+    # Also store force_architecture value (string or None) for hash calculation
+    # Skip defaults-release lookup for defaults-release itself (it holds the dict)
+    if p != "defaults-release":
+      force_arch = get_force_architecture(p, specs)
+      spec["force_architecture"] = force_arch  # None if not forced, string if forced
+      spec["architecture"] = force_arch if force_arch else args.architecture
+    else:
+      spec["force_architecture"] = None
+      spec["architecture"] = args.architecture
     storeHashes(p, specs, considerRelocation=spec["architecture"].startswith("osx"))
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,
           ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
