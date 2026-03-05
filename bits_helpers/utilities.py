@@ -92,40 +92,6 @@ def topological_sort(specs):
     assert False, "Unreachable error: cycle detection failed"
 
 
-def resolve_store_path(architecture, spec_hash):
-  """Return the path where a tarball with the given hash is to be stored.
-
-  The returned path is relative to the working directory (normally sw/) or the
-  root of the remote store.
-  """
-  return "/".join(("TARS", architecture, "store", spec_hash[:2], spec_hash))
-
-
-def resolve_links_path(architecture, package, family=""):
-  """Return the path where symlinks for the given package are to be stored.
-
-  The returned path is relative to the working directory (normally sw/) or the
-  root of the remote store. If family is provided, includes it in the path.
-  """
-  if family:
-    return "/".join(("TARS", architecture, family, package))
-  return "/".join(("TARS", architecture, package))
-
-
-def symlink_depth_prefix(has_family):
-  """Return the relative path prefix for symlinks based on directory depth.
-
-  With family: TARS/arch/family/pkg -> need ../../../ to reach TARS/arch/store
-  Without family: TARS/arch/pkg -> need ../../ to reach TARS/arch/store
-  """
-  return "../../../" if has_family else "../../"
-
-
-def family_path_segment(family):
-  """Return family path segment with trailing slash, or empty string if no family."""
-  return "{}/".format(family) if family else ""
-
-
 def short_commit_hash(spec):
   """Shorten the spec's commit hash to make it more human-readable.
 

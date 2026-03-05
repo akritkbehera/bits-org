@@ -13,8 +13,7 @@ from urllib.parse import quote
 
 from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint
-from bits_helpers.utilities import (resolve_store_path, resolve_links_path, symlink,
-                                    symlink_depth_prefix, family_path_segment)
+from bits_helpers.utilities import symlink
 
 
 def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False):
@@ -146,8 +145,8 @@ class HttpRemoteSync:
     # Check for any existing tarballs we can use instead of fetching new ones.
     for pkg_hash in spec["remote_hashes"]:
       try:
-        have_tarballs = os.listdir(os.path.join(
-          self.workdir, resolve_store_path(arch, pkg_hash)))
+        store_path = f"TARS/{arch}/store/{pkg_hash[:2]}/{pkg_hash}"
+        have_tarballs = os.listdir(os.path.join(self.workdir, store_path))
       except OSError:  # store path not readable
         continue
       for tarball in have_tarballs:
@@ -166,7 +165,7 @@ class HttpRemoteSync:
       store_path = use_tarball = None
       # Find the first tarball that matches any possible hash and fetch it.
       for pkg_hash in spec["remote_hashes"]:
-        store_path = resolve_store_path(arch, pkg_hash)
+        store_path = f"TARS/{arch}/store/{pkg_hash[:2]}/{pkg_hash}"
         tarballs = self.getRetry("{}/{}/".format(self.remoteStore, store_path),
                                  session=session)
         if tarballs:
@@ -192,7 +191,7 @@ class HttpRemoteSync:
   def fetch_symlinks(self, spec) -> None:
     arch = spec["architecture"]
     family = spec.get("family", "")
-    links_path = resolve_links_path(arch, spec["package"], family)
+    links_path = f"TARS/{arch}/{family}/{spec['package']}" if family else f"TARS/{arch}/{spec['package']}"
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     # If we already have a symlink we can use, don't update the list. This
@@ -236,7 +235,7 @@ class HttpRemoteSync:
                           returnResult=True, log=False, session=session) \
                 .decode("utf-8").rstrip("\r\n")
     # Symlink depth depends on whether family is present (extra directory level)
-    symlink_prefix = symlink_depth_prefix(family)
+    symlink_prefix = "../../../" if family else "../../"
     for linkname, target in symlinks.items():
       symlink(symlink_prefix + target.lstrip("./"),
               os.path.join(self.workdir, links_path, linkname))
@@ -279,13 +278,14 @@ class RsyncRemoteSync:
     """.format(pkg=spec["package"], ver=spec["version"], arch=arch,
                remoteStore=self.remoteStore,
                workDir=self.workdir,
-               storePaths=" ".join(resolve_store_path(arch, pkg_hash)
-                                   for pkg_hash in spec["remote_hashes"])))
+               storePaths=" ".join(f"TARS/{arch}/store/{h[:2]}/{h}"
+                                   for h in spec["remote_hashes"])))
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
   def fetch_symlinks(self, spec) -> None:
     arch = spec["architecture"]
-    links_path = resolve_links_path(arch, spec["package"], spec.get("family", ""))
+    family = spec.get("family", "")
+    links_path = f"TARS/{arch}/{family}/{spec['package']}" if family else f"TARS/{arch}/{spec['package']}"
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
     err = execute("rsync -rlvW --delete {remote_store}/{links_path}/ {workdir}/{links_path}/".format(
       remote_store=self.remoteStore,
@@ -299,7 +299,7 @@ class RsyncRemoteSync:
       return
     arch = spec["architecture"]
     family = spec.get("family", "")
-    family_path = family_path_segment(family)
+    family_path = f"{family}/" if family else ""
     dieOnError(execute("""\
     set -e
     cd {workdir}
@@ -312,8 +312,8 @@ class RsyncRemoteSync:
     """.format(
       workdir=self.workdir,
       remote=self.remoteStore,
-      store_path=resolve_store_path(arch, spec["hash"]),
-      links_path=resolve_links_path(arch, spec["package"], family),
+      store_path=f"TARS/{arch}/store/{spec['hash'][:2]}/{spec['hash']}",
+      links_path=f"TARS/{arch}/{family}/{spec['package']}" if family else f"TARS/{arch}/{spec['package']}",
       arch=arch,
       family_path=family_path,
       package=spec["package"],
@@ -342,7 +342,7 @@ class CVMFSRemoteSync:
     info("Downloading tarball for %s@%s-%s, if available", spec["package"], spec["version"], spec["revision"])
     # If we already have a tarball with any equivalent hash, don't check S3.
     for pkg_hash in spec["remote_hashes"] + spec["local_hashes"]:
-      store_path = resolve_store_path(arch, pkg_hash)
+      store_path = f"TARS/{arch}/store/{pkg_hash[:2]}/{pkg_hash}"
       pattern = os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])
       if glob.glob(pattern):
         info("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
@@ -355,13 +355,13 @@ class CVMFSRemoteSync:
     arch = spec["architecture"]
     info("Fetching available build hashes for %s, from %s", spec["package"], self.remoteStore)
     family = spec.get("family", "")
-    links_path = resolve_links_path(arch, spec["package"], family)
+    links_path = f"TARS/{arch}/{family}/{spec['package']}" if family else f"TARS/{arch}/{spec['package']}"
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
 
     cvmfs_architecture = re.sub(r"slc(\d+)_x86-64", r"el\1-x86_64", arch)
-    family_path = family_path_segment(family)
+    family_path = f"{family}/" if family else ""
     # Symlink depth depends on whether family is present (extra directory level)
-    symlink_prefix = symlink_depth_prefix(family)
+    symlink_prefix = "../../../" if family else "../../"
     err = execute(r"""\
     set -x
     # Exit without error in case we do not have any package published
@@ -378,7 +378,7 @@ class CVMFSRemoteSync:
       # Create the dummy tarball, if it does not exists
       test -f "{workDir}/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" && continue
       mkdir -p "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{family_path}{package}"
-      find "{remote_store}/{cvmfs_architecture}/Packages/{family_path}{package}/$full_version" ! -name etc -maxdepth 1 -mindepth 1 -exec ln -sf {} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{family_path}{package}/" \\;
+      find "{remote_store}/{cvmfs_architecture}/Packages/{family_path}{package}/$full_version" ! -name etc -maxdepth 1 -mindepth 1 -exec ln -sf {{}} "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{family_path}{package}/" \\;
       cp -fr "{remote_store}/{cvmfs_architecture}/Packages/{family_path}{package}/$full_version/etc" "{workDir}/INSTALLROOT/$pkg_hash/{architecture}/{family_path}{package}/etc"
       mkdir -p "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash"
       tar -C "{workDir}/INSTALLROOT/$pkg_hash" -czf "{workDir}/TARS/{architecture}/store/${{pkg_hash:0:2}}/$pkg_hash/$tarball" .
@@ -430,17 +430,17 @@ class S3RemoteSync:
     """.format(
       workDir=self.workdir,
       b=self.remoteStore,
-      storePaths=" ".join(resolve_store_path(arch, pkg_hash)
-                          for pkg_hash in spec["remote_hashes"]),
+      storePaths=" ".join(f"TARS/{arch}/store/{h[:2]}/{h}"
+                          for h in spec["remote_hashes"]),
     ))
     dieOnError(err, "Unable to fetch tarball from specified store.")
 
   def fetch_symlinks(self, spec) -> None:
     arch = spec["architecture"]
     family = spec.get("family", "")
-    links_path = resolve_links_path(arch, spec["package"], family)
+    links_path = f"TARS/{arch}/{family}/{spec['package']}" if family else f"TARS/{arch}/{spec['package']}"
     # Symlink depth depends on whether family is present (extra directory level)
-    symlink_prefix = symlink_depth_prefix(family)
+    symlink_prefix = "../../../" if family else "../../"
     err = execute("""\
     mkdir -p "{workDir}/{linksPath}"
     find "{workDir}/{linksPath}" -type l -delete
@@ -468,7 +468,7 @@ class S3RemoteSync:
       return
     arch = spec["architecture"]
     family = spec.get("family", "")
-    family_path = family_path_segment(family)
+    family_path = f"{family}/" if family else ""
     # Symlink prefix for stripping - depends on family depth
     strip_prefix = r"^\\.\\./\\.\\./\\.\\./" if family else r"^\\.\\./\\.\\./"
     dieOnError(execute("""\
@@ -501,8 +501,8 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     """.format(
       workdir=self.workdir,
       bucket=self.remoteStore,
-      store_path=resolve_store_path(arch, spec["hash"]),
-      links_path=resolve_links_path(arch, spec["package"], family),
+      store_path=f"TARS/{arch}/store/{spec['hash'][:2]}/{spec['hash']}",
+      links_path=f"TARS/{arch}/{family}/{spec['package']}" if family else f"TARS/{arch}/{spec['package']}",
       strip_prefix=strip_prefix,
       family_path=family_path,
       arch=arch,
@@ -586,13 +586,13 @@ class Boto3RemoteSync:
 
     # If we already have a tarball with any equivalent hash, don't check S3.
     for pkg_hash in spec["remote_hashes"]:
-      store_path = resolve_store_path(arch, pkg_hash)
+      store_path = f"TARS/{arch}/store/{pkg_hash[:2]}/{pkg_hash}"
       if glob.glob(os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])):
         debug("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
         return
 
     for pkg_hash in spec["remote_hashes"]:
-      store_path = resolve_store_path(arch, pkg_hash)
+      store_path = f"TARS/{arch}/store/{pkg_hash[:2]}/{pkg_hash}"
 
       # We don't already have a tarball with the hash that we need, so download
       # the first existing one from the remote, if possible. (Downloading more
@@ -622,10 +622,10 @@ class Boto3RemoteSync:
     from botocore.exceptions import ClientError
     arch = spec["architecture"]
     family = spec.get("family", "")
-    links_path = resolve_links_path(arch, spec["package"], family)
+    links_path = f"TARS/{arch}/{family}/{spec['package']}" if family else f"TARS/{arch}/{spec['package']}"
     os.makedirs(os.path.join(self.workdir, links_path), exist_ok=True)
     # Symlink depth depends on whether family is present (extra directory level)
-    symlink_prefix = symlink_depth_prefix(family)
+    symlink_prefix = "../../../" if family else "../../"
     symlink_prefix_bytes = symlink_prefix.encode()
 
     # Remove existing symlinks: we'll fetch the ones from the remote next.
@@ -715,10 +715,9 @@ class Boto3RemoteSync:
 
     tarball = "{package}-{version}-{revision}.{architecture}.tar.gz" \
       .format(**spec)
-    tar_path = os.path.join(resolve_store_path(spec["architecture"], spec["hash"]),
-                            tarball)
-    link_path = os.path.join(resolve_links_path(spec["architecture"], spec["package"], family),
-                             tarball)
+    tar_path = os.path.join(f"TARS/{arch}/store/{spec['hash'][:2]}/{spec['hash']}", tarball)
+    links_path = f"TARS/{arch}/{family}/{spec['package']}" if family else f"TARS/{arch}/{spec['package']}"
+    link_path = os.path.join(links_path, tarball)
     tar_exists = self._s3_key_exists(tar_path)
     link_exists = self._s3_key_exists(link_path)
     if tar_exists and link_exists:

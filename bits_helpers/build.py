@@ -7,7 +7,6 @@ from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort, detectArch
-from bits_helpers.utilities import resolve_store_path
 from bits_helpers.utilities import parseDefaults, readDefaults
 from bits_helpers.utilities import getPackageList, asList
 from bits_helpers.utilities import validateDefaults
@@ -163,35 +162,12 @@ def storeHook(package, specs, defaults) -> bool:
     return bool(spec["hook"])
 
 def get_defaults_mapping(pkg, specs, key, default_key="defaults"):
-  """Get value for a package from a defaults-release mapping.
-
-  The mapping format is: {value: [package_patterns]}
-  Returns the value for the first matching pattern, or the default value.
-  Supports glob patterns (e.g., data-* matches data-foo, data-bar).
-  """
+  """Get value for a package from a defaults-release mapping."""
   raw_mapping = specs.get("defaults-release", {}).get(key) or {}
   for value, patterns in raw_mapping.items():
-    if value == default_key:
-      continue
-    if isinstance(patterns, list):
-      for pattern in patterns:
-        if fnmatch(pkg, pattern):
-          return value
-    if isinstance(patterns, str):
-      if fnmatch(pkg, patterns):
-        return value
+    if value != default_key and any(fnmatch(pkg, p) for p in asList(patterns)):
+      return value
   return raw_mapping.get(default_key, "") if default_key else None
-
-def get_force_revision(pkg_name, specs):
-  """Get forced revision for a package from defaults-release force_revision.
-
-  Format: force_revision: {package: revision}
-  Returns None if package has no forced revision.
-  """
-  force_revisions = specs.get("defaults-release", {}).get("force_revision") or {}
-  if pkg_name in force_revisions:
-    return str(force_revisions[pkg_name])
-  return None
 
 
 def storeHashes(package, specs, considerRelocation):
@@ -442,25 +418,23 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     'fi',
   ])
 
+  def fmt(p):
+    s = specs[p]
+    arch = s.get("architecture", "$BITS_ARCH_PREFIX")
+    family = f"{quote(s['family'])}/" if s.get("family") else ""
+    rev = f"-{quote(s['revision'])}" if s.get("revision") else ""
+    return f'"$WORK_DIR/{arch}"/{family}{quote(s["package"])}/{quote(s["version"])}{rev}'
+
   # Generate the part which sources the environment for all the dependencies.
   # We guarantee that a dependency is always sourced before the parts
   # depending on it, but we do not guarantee anything for the order in which
   # unrelated components are activated.
   # These variables are also required during the build itself, so always
   # generate them.
-  lines.extend((
-    '[ -n "${{{bigpackage}_REVISION}}" ] || '
-    '. "$WORK_DIR/{arch_prefix}"/{name_with_family}/{version_revision}/etc/profile.d/init.sh'
-  ).format(
-    bigpackage=dep.upper().replace("-", "_"),
-    arch_prefix=specs[dep]["architecture"],
-    name_with_family="{}{}".format(quote(specs[dep]["family"]),
-                                  "/" if specs[dep]["family"] else "",
-                                  quote(specs[dep]["package"])),
-    version_revision="{}{}".format(quote(specs[dep]["version"]),
-                                  "-" if specs[dep]["revision"] else "",
-                                  quote(specs[dep]["revision"])),
-  ) for dep in spec.get("requires", ()))
+  lines.extend(
+    f'[ -n "${{{dep.upper().replace("-", "_")}_REVISION}}" ] || . {fmt(dep)}/etc/profile.d/init.sh'
+    for dep in spec.get("requires", ())
+  )
 
   if post_build:
     bigpackage = package.upper().replace("-", "_")
@@ -469,26 +443,13 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # be set once the build has actually completed.
     # Use get_arch_prefix to handle force_architecture correctly for the package's own paths.
     # Use get_version_revision for the path (handles force_revision).
-    lines.extend(line.format(
-      bigpackage=bigpackage,
-      arch_prefix=spec["architecture"],
-      name_with_family="{}{}".format(quote(spec["family"]),
-                                  "/" if spec["family"] else "",
-                                  quote(spec["package"])),
-      version_revision="{}{}".format(quote(spec["version"]),
-                                  "-" if spec["revision"] else "",
-                                  quote(spec["revision"])),
-      version=quote(spec["version"]),
-      revision=quote(spec["revision"]),
-      hash=quote(spec["hash"]),
-      commit_hash=quote(spec["commit_hash"]),
-    ) for line in (
-      'export {bigpackage}_ROOT="$WORK_DIR/{arch_prefix}"/{name_with_family}/{version_revision}',
-      "export {bigpackage}_VERSION={version}",
-      "export {bigpackage}_REVISION={revision}",
-      "export {bigpackage}_HASH={hash}",
-      "export {bigpackage}_COMMIT={commit_hash}",
-    ))
+    lines.extend([
+      f'export {bigpackage}_ROOT={fmt(package)}',
+      f'export {bigpackage}_VERSION={quote(spec["version"])}',
+      f'export {bigpackage}_REVISION={quote(spec["revision"])}',
+      f'export {bigpackage}_HASH={quote(spec["hash"])}',
+      f'export {bigpackage}_COMMIT={quote(spec["commit_hash"])}'
+    ])
 
     # Generate the part which sets the environment variables related to the
     # package itself. This can be variables set via the "env" keyword in the
@@ -1413,7 +1374,7 @@ def doBuild(args, parser):
     # directory contains files with non-ASCII names, e.g. Golang/Boost.
     shutil.rmtree(dirname(hashFile).encode("utf-8"), True)
 
-    tar_hash_dir = os.path.join(workDir, resolve_store_path(args.architecture, spec["hash"]))
+    tar_hash_dir = os.path.join(workDir, f"TARS/{args.architecture}/store/{spec['hash'][:2]}/{spec['hash']}")
     debug("Looking for cached tarball in %s", tar_hash_dir)
     spec["cachedTarball"] = ""
     if not spec["is_devel_pkg"]:
