@@ -92,6 +92,24 @@ def topological_sort(specs):
     assert False, "Unreachable error: cycle detection failed"
 
 
+def resolve_store_path(architecture, spec_hash):
+  """Return the path where a tarball with the given hash is to be stored.
+
+  The returned path is relative to the working directory (normally sw/) or the
+  root of the remote store.
+  """
+  return "/".join(("TARS", architecture, "store", spec_hash[:2], spec_hash))
+
+
+def resolve_links_path(architecture, package):
+  """Return the path where symlinks for the given package are to be stored.
+
+  The returned path is relative to the working directory (normally sw/) or the
+  root of the remote store.
+  """
+  return "/".join(("TARS", architecture, package))
+
+
 def short_commit_hash(spec):
   """Shorten the spec's commit hash to make it more human-readable.
 
