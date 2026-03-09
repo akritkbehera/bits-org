@@ -581,8 +581,7 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
       banner("Using defaults-%s file found in %s", architecture, configDir)
       debug("Architecture-specific defaults mentioned in: %s ", archDefaults)
       defaultsMeta = merge_dicts(defaultsMeta, defaultsArchMeta, skip_keys={"package"})
-  if "package_family" in defaultsMeta:
-    defaultsMeta["package_family"] = packageFamilyMap(defaultsMeta.get("package_family", {}))
+  # Note: package_family is NOT transformed - get_defaults_mapping expects {value: [patterns]}
 
   # Defaults are actually special packages. They can override metadata
   # of any other package and they can disable other packages. For

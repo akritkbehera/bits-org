@@ -18,7 +18,7 @@ run_hooks() {
   export skip_list
   eval "hooks_list=\"\${${hook_type}_HOOKS}\""
   eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
-  if [[ "$PKGREVISION" != local* ]]; then
+  if [[ "$PKG_BUILDNUM" != local* ]]; then
     [ -n "$skip_list" ] && echo "bits: skipping hooks if enabled not allowed while uploading. Aborting." && exit 1
   fi
   for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
@@ -84,20 +84,13 @@ export PKG_NAME="$PKGNAME"
 export PKG_VERSION="$PKGVERSION"
 export PKG_BUILDNUM="$PKGREVISION"
 
-# Set PKGFAMILY_PREFIX for use in paths (empty if no family defined)
+# Update PKGREVISION to forced revision if set
+PKGREVISION="${FORCED_REVISION-$PKGREVISION}"
+
+# Derived path variables for family and force_revision support
 PKGFAMILY_PREFIX="${PKGFAMILY:+$PKGFAMILY/}"
-
-# INSTALL_REVISION: use FORCED_REVISION if set, otherwise PKGREVISION
-# FORCED_REVISION is only set when force_revision exists in defaults-release
-INSTALL_REVISION="${FORCED_REVISION-$PKGREVISION}"
-
-# VERSION_REV: version with install revision for local paths
-# Empty INSTALL_REVISION means no suffix (e.g., v1.0 instead of v1.0-1)
-if [ -n "$INSTALL_REVISION" ]; then
-  VERSION_REV="$PKGVERSION-$INSTALL_REVISION"
-else
-  VERSION_REV="$PKGVERSION"
-fi
+FAMILY_SYMLINK_DEPTH="${PKGFAMILY:+../}"
+VERSION_REV="${PKGVERSION}${PKGREVISION:+-$PKGREVISION}"
 
 export PKGPATH=${ARCHITECTURE}/${PKGFAMILY_PREFIX}${PKGNAME}/${VERSION_REV}
 mkdir -p "$WORK_DIR/BUILD" "$WORK_DIR/SOURCES" "$WORK_DIR/TARS" \
@@ -191,7 +184,7 @@ if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   set -o pipefail;
   (unset DYLD_LIBRARY_PATH;
    set -x;   
-   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
+   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKG_BUILDNUM/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
    )  2>&1 | tee "$BUILDROOT/log" || exit 1
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
     set -o pipefail
@@ -200,7 +193,7 @@ elif [[ "$CACHED_TARBALL" == "" ]]; then
    set -o pipefail;
    (unset DYLD_LIBRARY_PATH;
    set -x;   
-   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
+   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKG_BUILDNUM/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
    )  2>&1 | tee "$BUILDROOT/log" || exit 1
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
@@ -336,7 +329,7 @@ HASH_PATH=$ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
 mkdir -p "${WORK_DIR}/TARS/$HASH_PATH" \
          "${WORK_DIR}/TARS/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME"
 
-PACKAGE_WITH_REV=$PKGNAME-$PKGVERSION-$PKGREVISION.$ARCHITECTURE.tar.gz
+PACKAGE_WITH_REV=$PKGNAME-$PKGVERSION-$PKG_BUILDNUM.$ARCHITECTURE.tar.gz
 # Copy and tar/compress (if applicable) in parallel.
 # Use -H to match tar's behaviour of preserving hardlinks.
 rsync -aH "$WORK_DIR/INSTALLROOT/$PKGHASH/" "$WORK_DIR" & rsync_pid=$!
@@ -353,7 +346,7 @@ elif [ -z "$CACHED_TARBALL" ]; then
     $gzip -c > "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
   mv "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing" \
      "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
-  ln -nfs "${PKGFAMILY:+../}../../$HASH_PATH/$PACKAGE_WITH_REV" \
+  ln -nfs "${FAMILY_SYMLINK_DEPTH}../../$HASH_PATH/$PACKAGE_WITH_REV" \
      "$WORK_DIR/TARS/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME/$PACKAGE_WITH_REV"
 fi
 wait "$rsync_pid"
