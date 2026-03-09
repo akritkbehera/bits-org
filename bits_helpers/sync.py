@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, dieOnError, ProgressPrint
-from bits_helpers.utilities import symlink, resolve_store_path, resolve_links_path
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink
 
 
 def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False):
@@ -554,7 +554,7 @@ class Boto3RemoteSync:
         config = None
       self.s3 = boto3.client("s3",
                              **({"config": config} if config else {}),
-                             endpoint_url="https://s3.eu-north-1.amazonaws.com",
+                             endpoint_url="https://s3.cern.ch",
                              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
                              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"])
     except KeyError:
@@ -587,13 +587,13 @@ class Boto3RemoteSync:
 
     # If we already have a tarball with any equivalent hash, don't check S3.
     for pkg_hash in spec["remote_hashes"]:
-      store_path = f"TARS/{arch}/store/{pkg_hash[:2]}/{pkg_hash}"
+      store_path = resolve_store_path(arch, pkg_hash)
       if glob.glob(os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"])):
         debug("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
         return
 
     for pkg_hash in spec["remote_hashes"]:
-      store_path = f"TARS/{arch}/store/{pkg_hash[:2]}/{pkg_hash}"
+      store_path = resolve_store_path(arch, pkg_hash)
 
       # We don't already have a tarball with the hash that we need, so download
       # the first existing one from the remote, if possible. (Downloading more
@@ -761,7 +761,8 @@ class Boto3RemoteSync:
       self.s3.put_object(Bucket=self.writeStore,
                          Key=link_key,
                          Body=os.fsencode(hash_path),
-                         WebsiteRedirectLocation="/"+hash_path)
+                         ACL="public-read",
+                         WebsiteRedirectLocation=hash_path)
       return link_key
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
