@@ -1099,7 +1099,7 @@ def doBuild(args, parser):
       forced_arch = get_defaults_mapping(p, specs, "force_architecture", None)
       spec["architecture"] = forced_arch if forced_arch else args.architecture
     else:
-      spec["force_architecture"] = None
+      # Don't overwrite force_architecture - it contains the mapping dict
       spec["architecture"] = args.architecture
     storeHashes(p, specs, considerRelocation=spec["architecture"].startswith("osx"))
     debug("Hashes for recipe %s are %s (remote); %s (local)", p,

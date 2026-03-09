@@ -18,7 +18,7 @@ run_hooks() {
   export skip_list
   eval "hooks_list=\"\${${hook_type}_HOOKS}\""
   eval "skip_list=\"\${SKIP_${hook_type}_HOOKS}\""
-  if [[ "$PKGREVISION" != local* ]]; then
+  if [[ "$PKG_BUILDNUM" != local* ]]; then
     [ -n "$skip_list" ] && echo "bits: skipping hooks if enabled not allowed while uploading. Aborting." && exit 1
   fi
   for hook in $(echo "$hooks_list" | tr -d ' ' | tr ',' '\n'); do
@@ -184,7 +184,7 @@ if [[ "$CACHED_TARBALL" == "" && ! -f $BUILDROOT/log ]]; then
   set -o pipefail;
   (unset DYLD_LIBRARY_PATH;
    set -x;   
-   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
+   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKG_BUILDNUM/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
    )  2>&1 | tee "$BUILDROOT/log" || exit 1
 elif [[ "$CACHED_TARBALL" == "" && $INCREMENTAL_BUILD_HASH != "0" && -f "$BUILDDIR/.build_succeeded" ]]; then
     set -o pipefail
@@ -193,7 +193,7 @@ elif [[ "$CACHED_TARBALL" == "" ]]; then
    set -o pipefail;
    (unset DYLD_LIBRARY_PATH;
    set -x;   
-   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKGREVISION/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
+   source "$WORK_DIR/SPECS/$ARCHITECTURE/$PKGNAME/$PKGVERSION-$PKG_BUILDNUM/$PKGNAME.sh" && [[ $(type -t Run) == function ]] && Run $* ;
    )  2>&1 | tee "$BUILDROOT/log" || exit 1
 else
   # Unpack the cached tarball in the $INSTALLROOT and remove the unrelocated
@@ -329,7 +329,7 @@ HASH_PATH=$ARCHITECTURE/store/$HASHPREFIX/$PKGHASH
 mkdir -p "${WORK_DIR}/TARS/$HASH_PATH" \
          "${WORK_DIR}/TARS/$ARCHITECTURE/${PKGFAMILY_PREFIX}$PKGNAME"
 
-PACKAGE_WITH_REV=$PKGNAME-$PKGVERSION-$PKGREVISION.$ARCHITECTURE.tar.gz
+PACKAGE_WITH_REV=$PKGNAME-$PKGVERSION-$PKG_BUILDNUM.$ARCHITECTURE.tar.gz
 # Copy and tar/compress (if applicable) in parallel.
 # Use -H to match tar's behaviour of preserving hardlinks.
 rsync -aH "$WORK_DIR/INSTALLROOT/$PKGHASH/" "$WORK_DIR" & rsync_pid=$!
