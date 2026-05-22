@@ -304,6 +304,18 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   commit_hash = spec.get("commit_hash", "hash_unknown")
   tag = str(spec.get("tag", "tag_unknown"))
   package = spec.get("package")
+
+  pkgdir = spec.get("pkgdir", "")
+  version_from_file = ""
+  if pkgdir:
+    version_file_path = os.path.join(pkgdir, "VERSION")
+    if os.path.exists(version_file_path):
+      try:
+        with open(version_file_path, "r") as f:
+          version_from_file = f.read().strip()
+      except OSError:
+        pass
+
   all_vars = {
     "package": package,
     "root_dir": "${%s_ROOT}" % pkg_to_shell_id(package),
@@ -315,12 +327,22 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
     "tag_basename": basename(tag),
     "defaults_upper": defaults_upper,
     "version": str(spec.get("version", "version_unknown")),
+    "version_from_file": version_from_file,
     "platform_machine": platform.machine(),
     "sys_platform": sys.platform,
     "os_name": os.name,
     **nowKwds,
   }
   for k, v in spec.get("variables",{}).items():
+    if isinstance(v, str) and v.startswith("file://"):
+      filepath = v[7:]
+      if not os.path.isabs(filepath) and pkgdir:
+        filepath = os.path.join(pkgdir, filepath)
+      try:
+        with open(filepath, "r") as f:
+          v = f.read().strip()
+      except OSError as e:
+        raise SpecError("Unable to read file %r for variable %r of package %r: %s" % (filepath, k, package, e))
     all_vars[k] = v
 
   # Support for indirect variable expansion e.g. with
@@ -330,8 +352,33 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
   #   final: %%(%(v1)s_key)s
   # "final" will have the value "bar" (first expanded to "%(foo_key)s" and
   # then to value of "foo_key" i.e. "bar")
-  while re.search(r"\%\([a-zA-Z][a-zA-Z0-9_]*\)s", data):
-    data = data % all_vars
+  iterations = 0
+  max_iterations = 20
+  while True:
+    match = re.search(r"\%\(([a-zA-Z0-9_\-\.\:\/]+)\)s", data)
+    if not match:
+      break
+    iterations += 1
+    if iterations > max_iterations:
+      raise SpecError("Circular dependency or excessive nesting detected during spec data expansion in package '%s': %r" % (package, data))
+    
+    key = match.group(1)
+    if key.startswith("file:") and key not in all_vars:
+      filepath = key[5:]
+      if not os.path.isabs(filepath) and pkgdir:
+        filepath = os.path.join(pkgdir, filepath)
+      try:
+        with open(filepath, "r") as f:
+          all_vars[key] = f.read().strip()
+      except OSError as e:
+        raise SpecError("Unable to read file %r for placeholder %r of package %r: %s" % (filepath, key, package, e))
+
+    try:
+      data = data % all_vars
+    except KeyError as e:
+      raise SpecError("Missing variable reference %s in spec data expansion for package '%s'" % (e, package))
+    except (ValueError, TypeError) as e:
+      raise SpecError("Format error during spec data expansion for package '%s': %s" % (package, e))
   return data
 
 def resolve_version(spec, defaults, branch_basename, branch_stream):
