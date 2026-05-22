@@ -362,16 +362,16 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
     if iterations > max_iterations:
       raise SpecError("Circular dependency or excessive nesting detected during spec data expansion in package '%s': %r" % (package, data))
     
-    key = match.group(1)
-    if key.startswith("file:") and key not in all_vars:
-      filepath = key[5:]
-      if not os.path.isabs(filepath) and pkgdir:
-        filepath = os.path.join(pkgdir, filepath)
-      try:
-        with open(filepath, "r") as f:
-          all_vars[key] = f.read().strip()
-      except OSError as e:
-        raise SpecError("Unable to read file %r for placeholder %r of package %r: %s" % (filepath, key, package, e))
+    for key in re.findall(r"\%\(([a-zA-Z0-9_\-\.\:\/]+)\)s", data):
+      if key.startswith("file:") and key not in all_vars:
+        filepath = key[5:]
+        if not os.path.isabs(filepath) and pkgdir:
+          filepath = os.path.join(pkgdir, filepath)
+        try:
+          with open(filepath, "r") as f:
+            all_vars[key] = f.read().strip()
+        except OSError as e:
+          raise SpecError("Unable to read file %r for placeholder %r of package %r: %s" % (filepath, key, package, e))
 
     try:
       data = data % all_vars
