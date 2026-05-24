@@ -2054,6 +2054,20 @@ def doBuild(args, parser):
       ("BITS_PREFER_SYSTEM_KEY", spec.get("key", "")),
       ("BITS_SCRIPT_DIR", "/bits" if args.docker else bits_dir),
     ]
+    import json
+    buildEnvironment.extend([
+      ("BITS_SPEC_JSON", json.dumps({
+        "package": spec.get("package"),
+        "version": spec.get("version"),
+        "pkgdir": spec.get("pkgdir"),
+        "variables": spec.get("variables", {}),
+        "commit_hash": spec.get("commit_hash"),
+        "tag": spec.get("tag"),
+      })),
+      ("BITS_SPEC_DEFAULTS", json.dumps(args.defaults)),
+      ("BITS_SPEC_BRANCH_BASENAME", branch_basename),
+      ("BITS_SPEC_BRANCH_STREAM", branch_stream),
+    ])
     if "sources" in spec:
       for idx, src in enumerate(spec["sources"]):
         url, _ = parse_checksum_entry(src)   # strip any ,algo:digest suffix
