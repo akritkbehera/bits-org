@@ -1279,3 +1279,52 @@ class Hasher:
     new_hasher = Hasher()
     new_hasher.h = self.h.copy()
     return new_hasher
+
+def resolve_spec_file(filepath):
+  import json
+  
+  if not exists(filepath):
+    print("Error: File %r not found." % filepath, file=sys.stderr)
+    sys.exit(1)
+    
+  try:
+    with open(filepath, "r") as f:
+      data = f.read()
+  except OSError as e:
+    print("Error reading file %r: %s" % (filepath, e), file=sys.stderr)
+    sys.exit(1)
+    
+  if "BITS_SPEC_JSON" in os.environ:
+    try:
+      spec = json.loads(os.environ["BITS_SPEC_JSON"])
+    except Exception as e:
+      print("Error loading BITS_SPEC_JSON: %s" % e, file=sys.stderr)
+      sys.exit(1)
+      
+    try:
+      defaults = json.loads(os.environ.get("BITS_SPEC_DEFAULTS", "[]"))
+    except Exception:
+      defaults = ["release"]
+      
+    branch_basename = os.environ.get("BITS_SPEC_BRANCH_BASENAME", "")
+    branch_stream = os.environ.get("BITS_SPEC_BRANCH_STREAM", "")
+    
+    spec_vars = spec.get("variables", {})
+    merged_vars = {}
+    if isinstance(spec_vars, dict):
+      merged_vars.update(spec_vars)
+    merged_vars.update(os.environ)
+    spec["variables"] = merged_vars
+  else:
+    spec = {
+      "package": "generic",
+      "version": os.environ.get("VERSION", "version_unknown"),
+      "pkgdir": os.path.dirname(os.path.abspath(filepath)) or ".",
+      "variables": dict(os.environ),
+    }
+    defaults = ["release"]
+    branch_basename = ""
+    branch_stream = ""
+    
+  resolved = resolve_spec_data(spec, data, defaults, branch_basename, branch_stream)
+  print(resolved, end="")
