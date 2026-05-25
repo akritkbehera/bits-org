@@ -705,7 +705,7 @@ class Boto3RemoteSync:
         config = None
       self.s3 = boto3.client("s3",
                              **({"config": config} if config else {}),
-                             endpoint_url="https://s3.cern.ch",
+                             endpoint_url="https://s3.cern.ch/swift/v1",
                              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
                              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"])
     except KeyError:
@@ -865,8 +865,10 @@ class Boto3RemoteSync:
     # build_template.sh wrote: "{pkg}-{ver_rev}.{arch}.tar.gz".  The content-
     # addressed store key (under store/<h2>/<hash>/) is unaffected and always
     # uses the package hash rather than the version-revision label.
-    tarball = "{package}-{ver_rev}.{architecture}.tar.gz" \
-      .format(architecture=arch, ver_rev=ver_rev(spec), **spec)
+    tarball = "{package}-{ver_rev}.{architecture}.tar.gz".format(
+    ver_rev=ver_rev(spec),
+      **{**spec, "architecture": spec.get("architecture") or arch}
+    )
     tar_path = os.path.join(resolve_store_path(arch, spec["hash"]),
                             tarball)
     link_path = os.path.join(resolve_links_path(arch, spec["package"]),
