@@ -98,7 +98,7 @@ def topological_sort(specs):
     assert False, "Unreachable error: cycle detection failed"
 
 
-SHARED_ARCH = "shared"
+SHARED_ARCH = "share"
 """Sentinel value used in all paths for architecture-independent packages.
 
 When a recipe sets ``architecture: shared``, bits substitutes this string for
