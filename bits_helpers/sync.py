@@ -705,7 +705,7 @@ class Boto3RemoteSync:
         config = None
       self.s3 = boto3.client("s3",
                              **({"config": config} if config else {}),
-                             endpoint_url="https://s3.cern.ch/swift/v1",
+                             endpoint_url="https://s3.cern.ch",
                              aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
                              aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"])
     except KeyError:
