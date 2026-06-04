@@ -293,7 +293,7 @@ def storeHashes(package, specs, considerRelocation):
   if spec.get("force_rebuild", False):
     h_all(str(time.time()))
 
-  for key in ("recipe", "version", "package"):
+  for key in ("recipe", "version", "package", "force_revision"):
     h_all(spec.get(key, "none"))
 
   # pkg_family changes the installation path (ARCH/FAMILY/PKG/VER vs
