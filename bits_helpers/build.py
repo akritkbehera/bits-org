@@ -2021,8 +2021,10 @@ def doBuild(args, parser):
     # remote_revision_hash.  This feeds directly into the force_revision path
     # below, so all its invariants (no symlink scan, no "local" prefix, hash
     # aligned to remote store) apply automatically.
-    if spec.get("revision_policy") == "hash" and "force_revision" not in spec:
-      spec["force_revision"] = spec["remote_revision_hash"][:10]
+    if (spec.get("revision_policy") == "hash"
+            and "force_revision" not in spec
+            and not spec["package"].startswith("defaults-")):
+      spec["force_revision"] = spec["remote_revision_hash"][:32]
 
     # ---- force_revision bypass -----------------------------------------------
     # When force_revision is provided in defaults-*.sh (per-package overrides:
