@@ -32,6 +32,11 @@ from bits_helpers.checksum_store import load_for_spec, merge_into_spec
 class SpecError(Exception):
   pass
 
+# Matches %(##INCLUDE:path/to/snippet.sh)s in recipe text.
+# The capture group is a file path, so "-" and "." are intentional.
+_INCLUDE_RE = re.compile(r"%\(##INCLUDE:([^)]+)\)s")
+_MAX_INCLUDE_DEPTH = 20
+
 
 def call_ignoring_oserrors(function, *args, **kwargs):
   try:
@@ -313,8 +318,60 @@ nowKwds = {
   "hour":  str(now.hour).zfill(2),
 }
 
+def _expand_includes(text_or_reader, configDir="", _depth=0, _seen=frozenset()):
+  """Expand %(##INCLUDE:filename)s directives, resolving files via getConfigPaths.
+
+  Handles nested includes recursively.  Raises KeyError on a missing file,
+  an unreadable file, or a detected cycle/depth overflow.
+  """
+  if _depth > _MAX_INCLUDE_DEPTH:
+    raise KeyError(
+      "##INCLUDE nesting depth exceeds %d — likely a cycle among: %s" %
+      (_MAX_INCLUDE_DEPTH, ", ".join(sorted(_seen)))
+    )
+
+  if callable(text_or_reader):
+    url = getattr(text_or_reader, "url", None)
+    if url:
+      configDir = os.path.dirname(os.path.dirname(os.path.abspath(url)))
+    text = text_or_reader()
+  else:
+    text = text_or_reader
+
+  if not _INCLUDE_RE.search(text):
+    return text
+
+  def _find(raw):
+    if os.path.isabs(raw):
+      return raw
+    for d in getConfigPaths(configDir):
+      candidate = os.path.join(d, raw)
+      if os.path.exists(candidate):
+        return candidate
+    raise KeyError("%(##INCLUDE:{})s — not found in any configured recipe directory".format(raw))
+
+  def _read(m):
+    raw = m.group(1).strip()
+    try:
+      path = os.path.realpath(_find(raw))
+    except KeyError:
+      raise
+    if path in _seen:
+      raise KeyError(
+        "%(##INCLUDE:{})s — include cycle detected (already included: {})".format(raw, path)
+      )
+    try:
+      with open(path) as f:
+        content = f.read()
+    except OSError as e:
+      raise KeyError("%(##INCLUDE:{})s — cannot read file: {}".format(raw, e)) from None
+    return _expand_includes(content, configDir, _depth + 1, _seen | {path})
+
+  return _INCLUDE_RE.sub(_read, text)
+
+
 def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream="",
-                      default_vars=None, strict=True):
+                      default_vars=None, strict=True, configDir=""):
   """Expand the data replacing the following keywords:
 
   - %(name)s      — package name (alias for %(package)s, preferred in source URLs)
@@ -335,6 +392,15 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
 
   with the calculated content.
   """
+  if _INCLUDE_RE.search(data):
+    try:
+      data = _expand_includes(data, configDir)
+    except KeyError as e:
+      dieOnError(True,
+        "Include error in recipe for '%s': %s" % (
+          spec.get("package") or "?", e.args[0] if e.args else e))
+      return data  # guard for mocked dieOnError in tests
+
   defaults_upper = "" if defaults == ['release'] else "_".join(d.upper() for d in defaults)
   commit_hash = spec.get("commit_hash", "hash_unknown")
   tag = str(spec.get("tag", "tag_unknown"))
