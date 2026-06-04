@@ -1152,9 +1152,23 @@ def yamlLoad(s):
     loader.flatten_mapping(node)
     return OrderedDict(loader.construct_pairs(node))
 
+  def construct_flat_sequence(loader, node):
+    # deep=True so !include tags inside the sequence are resolved first.
+    # Any item that is itself a list came from an !include of a list file;
+    # extend rather than append so the items land flat in the parent sequence.
+    result = []
+    for item in loader.construct_sequence(node, deep=True):
+      if isinstance(item, list):
+        result.extend(item)
+      else:
+        result.append(item)
+    return result
+
   YamlSafeOrderedLoader.add_constructor('!include', construct_include)
   YamlSafeOrderedLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
                                         construct_mapping)
+  YamlSafeOrderedLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_SEQUENCE_TAG,
+                                        construct_flat_sequence)
   return yaml.load(s, YamlSafeOrderedLoader)
 
 def yamlDump(s):
