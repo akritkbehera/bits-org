@@ -1982,6 +1982,16 @@ def doBuild(args, parser):
     # available.
     debug("Checking for packages already built.")
 
+    # ---- revision_policy: hash -----------------------------------------------
+    # When the defaults file sets revision_policy: hash and force_revision is
+    # not already set (recipe-level or per-package overrides always win),
+    # synthesize force_revision from the first 10 hex chars of the package's
+    # remote_revision_hash.  This feeds directly into the force_revision path
+    # below, so all its invariants (no symlink scan, no "local" prefix, hash
+    # aligned to remote store) apply automatically.
+    if spec.get("revision_policy") == "hash" and "force_revision" not in spec:
+      spec["force_revision"] = spec["remote_revision_hash"][:10]
+
     # ---- force_revision bypass -----------------------------------------------
     # When force_revision is provided in defaults-*.sh (per-package overrides:
     # block or top-level global field), skip the symlink-scanning and revision
