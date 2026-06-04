@@ -406,6 +406,13 @@ def storeHashes(package, specs, considerRelocation):
     for hook_name in sorted(spec.get("hook_params", {})):
       h_all("hook_params:" + hook_name + "=" + str(spec["hook_params"][hook_name]))
 
+  # force_revision changes the tarball's internal _VERREV path, so a tarball
+  # built with one revision label cannot be used for a build with a different
+  # one.  Fold it into the hash so each distinct force_revision value gets its
+  # own store entry and triggers a clean rebuild.
+  if "force_revision" in spec:
+    h_all("force_revision:" + spec["force_revision"])
+
   dh = Hasher()
   for dep in spec.get("requires", []):
     # At this point, our dependencies have a single hash, local or remote, in
