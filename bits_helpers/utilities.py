@@ -1536,6 +1536,13 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
       if raw is not None:
         spec["force_revision"] = "" if raw == "" else str(raw)
 
+    # Propagate revision_policy from defaults.  Per-package overrides that
+    # already set force_revision take precedence (handled at build time).
+    if "revision_policy" not in spec \
+            and defaults_meta is not None \
+            and "revision_policy" in defaults_meta:
+      spec["revision_policy"] = str(defaults_meta["revision_policy"])
+
     # If --always-prefer-system is passed or if prefer_system is set to true
     # inside the recipe, use the script specified in the prefer_system_check
     # stanza to see if we can use the system version of the package.
