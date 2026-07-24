@@ -101,7 +101,7 @@ def topological_sort(specs):
     assert False, "Unreachable error: cycle detection failed"
 
 
-SHARED_ARCH = "shared"
+SHARED_ARCH = "share"
 """Sentinel value used in all paths for architecture-independent packages.
 
 When a recipe sets ``architecture: shared``, bits substitutes this string for
@@ -385,6 +385,17 @@ def resolve_spec_data(spec, data, defaults, branch_basename="", branch_stream=""
           "  Offending value: %r\n"
           "  Available variables: %s" % (
             e, package or "?", data, ", ".join(sorted(all_vars))))
+        return data  # guard for mocked dieOnError in tests
+      except (ValueError, TypeError) as e:
+        # A bare `%` that isn't %% or %(name)s — e.g. a shell expansion like
+        # ${VAR%*.o} or a printf %d — is read as a format conversion here.
+        # Escape it as %% in the recipe (it collapses back on the next pass).
+        dieOnError(True,
+          "Malformed '%%' in recipe for '%s': %s.\n"
+          "  Offending value: %r\n"
+          "  A literal percent (shell ${x%%...}, printf %%d, etc.) must be "
+          "written as %%%% in a strict-expanded recipe." % (
+            package or "?", e, data))
         return data  # guard for mocked dieOnError in tests
     return data
 

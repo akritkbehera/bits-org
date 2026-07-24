@@ -342,7 +342,7 @@ EOF
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
 # Find which files need relocation.
-{ grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
+{ grep -I -H -l -r "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
 
 # Relocate script for <arch>/<pkgname>/<pkgver> structure
 
