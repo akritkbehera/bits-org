@@ -2991,7 +2991,13 @@ def doBuild(args, parser):
             "python_major_minor_str": f"{major}{minor}",
         })
     for k, v in variables.items():
-      variables[k] = resolve_spec_data(spec, v, args.defaults, branch_basename, branch_stream)
+      # A recipe's `variables:` value may be a non-string YAML scalar (e.g.
+      # `cms_cxx_std: 20` -> int).  resolve_spec_data expands a *string* template,
+      # so coerce first — matching how the defaults `variables:` path already
+      # str()-ifies values before substitution.  Without this an int/bool value
+      # raises "TypeError: expected string or bytes-like object" here.
+      variables[k] = resolve_spec_data(spec, v if isinstance(v, str) else str(v),
+                                       args.defaults, branch_basename, branch_stream)
     if "source" in spec:
       spec["source"] = resolve_spec_data(spec, spec["source"], args.defaults, branch_basename, branch_stream)
     if "sources" in spec:
