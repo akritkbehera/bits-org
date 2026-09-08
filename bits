@@ -147,6 +147,21 @@ function _listPkgVersions() {
   # Emit the <pkg>/<version> directories under the install tree (the input the
   # module-collection loop consumes).
   #
+  # Two layouts coexist and both must be enumerated:
+  #   <arch>/<pkg>/<ver>             — package with no pkg_family (e.g. defaults-*)
+  #   <arch>/<family>/<pkg>/<ver>    — package with pkg_family set (package_family:
+  #                                    in defaults-*.sh; CMS puts every package
+  #                                    under external/ lcg/ cms/, so the whole
+  #                                    install tree sits one level deeper)
+  # Hence the 2..3 depth range. Callers derive <pkg>/<ver> from the LAST two
+  # path segments, which is correct for both, and then test for the modulefile
+  # itself — so the extra non-package directories this emits for the shallow
+  # layout (a depth-2 package's own bin/, lib/, etc.) are filtered out by that
+  # existence check. Keeping the walk shallow is deliberate: descending far
+  # enough to find etc/modulefiles/<pkg> directly would traverse the whole
+  # install tree of every package (ROOT, CMSSW), which is orders of magnitude
+  # more expensive than the cheap stat the callers already do.
+  #
   # Fast path: when the tree is served from CVMFS, ask its serving catalog via
   # the bitsModules helper — one HTTP fetch + a local SQLite query — instead of
   # a per-file FUSE walk. The helper exits non-zero (fall-back contract) when
@@ -156,11 +171,11 @@ function _listPkgVersions() {
   real=$(readlink -f "$dir" 2> /dev/null || echo "$dir")
   if [[ "$real" == /cvmfs/* ]]; then
     bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules")
-    if [[ -x "$bm" ]] && "$bm" "$dir" --depth2-dirs 2> /dev/null; then
+    if [[ -x "$bm" ]] && "$bm" "$dir" --pkg-dirs 2> /dev/null; then
       return 0
     fi
   fi
-  find "$dir" -maxdepth 2 -mindepth 2 2> /dev/null
+  find "$dir" -mindepth 2 -maxdepth 3 2> /dev/null
 }
 
 function collectModules() {
@@ -212,13 +227,23 @@ EOF
   # Prune cache entries whose source modulefile no longer exists (deleted
   # package/version). Walk the (small) cache tree with plain find — no GNU
   # -printf, for macOS portability.
-  local DESTFILE rel pkg ver d
+  local DESTFILE rel pkg ver d cand found
   while read -r DESTFILE; do
     [[ -n "$DESTFILE" ]] || continue
     rel=${DESTFILE#"$mroot/"}
     pkg=${rel%/*}; ver=${rel##*/}
     [[ "$pkg" == BASE ]] && continue
-    [[ -e "$iroot/$pkg/$ver/etc/modulefiles/$pkg" ]] || rm -f "$DESTFILE"
+    # The cache is keyed <pkg>/<ver>, which does not record the pkg_family
+    # segment, so the source must be looked for in BOTH install layouts:
+    # <arch>/<pkg>/<ver> and <arch>/<family>/<pkg>/<ver>. Checking only the
+    # former deletes every modulefile of a package that has a family — i.e. the
+    # entire cache for a CMS install tree, immediately after copying it in.
+    found=
+    for cand in "$iroot/$pkg/$ver/etc/modulefiles/$pkg" \
+                "$iroot"/*/"$pkg/$ver/etc/modulefiles/$pkg"; do
+      [[ -e "$cand" ]] && { found=1; break; }
+    done
+    [[ -n "$found" ]] || rm -f "$DESTFILE"
   done < <(find "$mroot" -mindepth 2 -maxdepth 2 -type f 2> /dev/null)
   # Remove now-empty package directories (rmdir only deletes empties; keep BASE).
   for d in "$mroot"/*/; do
