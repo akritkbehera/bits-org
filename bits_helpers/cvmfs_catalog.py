@@ -19,7 +19,7 @@ per-file FUSE walk. See ADR-001 (Option E).
 This helper is self-contained (stdlib only) and imports nothing from bits, so it
 runs as a plain script:
 
-    python3 bits_helpers/cvmfs_catalog.py <dir> [--regex RE] [--depth2-dirs]
+    python3 bits_helpers/cvmfs_catalog.py <dir> [--regex RE] [--pkg-dirs]
 
 Exit status is a contract for the shell frontend:
     0  success — the listing was printed; use it.
@@ -210,10 +210,14 @@ def main(argv=None):
       description="List modules under a CVMFS directory via its serving catalog.")
   ap.add_argument("path", help="mounted CVMFS directory to list")
   ap.add_argument("--regex", help="filter listing (case-insensitive)")
-  ap.add_argument("--depth2-dirs", action="store_true",
-                  help="print absolute <path>/<a>/<b> directories (a drop-in "
-                       "for `find -mindepth 2 -maxdepth 2`); default prints the "
-                       "modulefiles (regular files / symlinks)")
+  ap.add_argument("--pkg-dirs", "--depth2-dirs", dest="pkg_dirs",
+                  action="store_true",
+                  help="print the absolute package directories (a drop-in for "
+                       "`find -mindepth 2 -maxdepth 3`), covering both the "
+                       "<arch>/<pkg>/<ver> layout and the <arch>/<family>/<pkg>/"
+                       "<ver> one produced by package_family; default prints the "
+                       "modulefiles (regular files / symlinks). --depth2-dirs is "
+                       "the former name, kept as an alias.")
   args = ap.parse_args(argv)
 
   if not os.path.isdir(args.path):
@@ -228,9 +232,12 @@ def main(argv=None):
     sys.stderr.write("cvmfs_catalog: unexpected error: %s\n" % exc)
     return 3
 
-  if args.depth2_dirs:
+  if args.pkg_dirs:
+    # 1 slash: <pkg>/<ver>; 2 slashes: <family>/<pkg>/<ver>. Both layouts are
+    # emitted — the caller keys off the last two segments and then tests for the
+    # modulefile, so the extra shallow-layout directories are filtered there.
     out = [os.path.join(args.path, rel) for rel, flags in entries
-           if (flags & kFlagDir) and rel.count("/") == 1]
+           if (flags & kFlagDir) and rel.count("/") in (1, 2)]
   else:
     out = [rel for rel, flags in entries
            if (flags & kFlagFile) or (flags & kFlagLink)]

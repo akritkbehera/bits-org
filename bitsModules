@@ -11,7 +11,7 @@ of a per-file FUSE walk.
 
 Arguments are forwarded as-is to the helper:
 
-    bitsModules <cvmfs-dir> [--regex RE] [--depth2-dirs]
+    bitsModules <cvmfs-dir> [--regex RE] [--pkg-dirs]
 
 Exit status is the fallback contract: 0 = listing printed (use it), 3 = fast
 path unavailable (caller must fall back to its POSIX walk).
