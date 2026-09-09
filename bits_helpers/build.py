@@ -3056,7 +3056,7 @@ def doBuild(args, parser):
 
     spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
     variables = spec["variables"]
-    if "Python" in spec.get("requires", []):
+    if "Python" in spec.get("requires", []) or spec["package"] == "Python":
         # Find the Python package spec safely
         python_version_str = ""
         py_spec = specs.get("Python")

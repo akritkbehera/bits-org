@@ -509,7 +509,14 @@ fi
 
 UNAME=$(uname)
 
-ARCHITECTURE=
+# BITS_ARCHITECTURE is the environment equivalent of -a/--architecture, mirroring
+# BITS_WORK_DIR for -w. Seeding ARCHITECTURE here is all that is needed: the
+# autodetect below is gated on _ARCH_GIVEN, which is simply "ARCHITECTURE is
+# already non-empty", so an env-supplied value skips autodetection exactly as an
+# explicit -a does. An -a argument still wins, since it is parsed after this.
+# Useful when the host arch (uname-derived) differs from the arch the install
+# tree was built for, where autodetect would otherwise pick the host's.
+ARCHITECTURE=${BITS_ARCHITECTURE:-}
 WORK_DIR=
 NO_REFRESH=
 DEFAULT_WORK_DIRS=("$BITS_WORK_DIR" "$BITS_WORK_DIR" ${BITSBUILD_CHDIR:+"$BITSBUILD_CHDIR/sw"} sw ../sw)
