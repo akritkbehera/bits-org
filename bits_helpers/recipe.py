@@ -228,7 +228,7 @@ def parseRecipe(reader, generatePackages=None, visited=None):
     d = reader()
     _m = re.search(r'^[ \t]*---[ \t]*$', d, re.M)
     if _m is None:
-      raise RuntimeError("recipe has no '---' front-matter terminator line")
+      raise RuntimeError("%s: recipe has no '---' front-matter terminator line" % (getattr(reader, "url", "") or "<recipe>"))
     header, recipe = d[:_m.start()], d[_m.end():]
     # Splice any `#!include` directives in the body before anything else sees it,
     # so the included text is variable-expanded and hashed as if written inline.

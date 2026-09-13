@@ -63,9 +63,9 @@ CORRECT_BEHAVIOR = [
   ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "")]),
   ((), "build zlib -a slc7_x86-64"                                                     , [("docker", False), ("dockerImage", None), ("docker_extra_args", ["--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib -a slc7_x86-64 --docker-image registry.cern.ch/alisw/some-builder"  , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/some-builder")]),
-  ((), "build zlib -a slc7_x86-64 --docker"                                            , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder")]),
-  ((), "build zlib -a slc7_x86-64 --docker-extra-args=--foo"                           , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("docker_extra_args", ["--foo", "--network=host", _MOCK_CPUSET_ARG])]),
-  ((), "build zlib --devel-prefix -a slc7_x86-64 --docker"                             , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
+  ((), "build zlib -a slc7_x86-64 --docker"                                            , [("docker", True), ("dockerImage", "gitlab-registry.cern.ch/bits/containers/x86_64-slc7:latest")]),
+  ((), "build zlib -a slc7_x86-64 --docker-extra-args=--foo"                           , [("docker", True), ("dockerImage", "gitlab-registry.cern.ch/bits/containers/x86_64-slc7:latest"), ("docker_extra_args", ["--foo", "--network=host", _MOCK_CPUSET_ARG])]),
+  ((), "build zlib --devel-prefix -a slc7_x86-64 --docker"                             , [("docker", True), ("dockerImage", "gitlab-registry.cern.ch/bits/containers/x86_64-slc7:latest"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
   ((), "build zlib --devel-prefix -a slc7_x86-64 --docker-image someimage"             , [("docker", True), ("dockerImage", "someimage"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
   ((), "--debug build --force-unknown-architecture --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("defaults", ["release", "o2"]), ("pkgname", ["O2"])]),
   ((), "build --force-unknown-architecture --debug --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("force_rebuild", []), ("defaults", ["release", "o2"]), ("pkgname", ["O2"])]),
@@ -89,6 +89,8 @@ GETSTATUSOUTPUT_MOCKS = {
 }
 
 class ArgsTestCase(unittest.TestCase):
+  @mock.patch.dict(os.environ, {"BITS_DOCKER_REGISTRY": "", "BITS_LEGACY_REGISTRY": "", "BITS_DOCKER_TAG": ""})
+  @mock.patch("bits_helpers.args._defaults_docker_registry", return_value=None)
   @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
   # Neutralise the host-dependent --memory/--memory-swap docker injection so
@@ -96,7 +98,7 @@ class ArgsTestCase(unittest.TestCase):
   # (the cap depends on host RAM and is skipped on hosts below the reserve).
   @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])
   @mock.patch('bits_helpers.args.commands')
-  def test_actionParsing(self, mock_commands, _mock_mem, _mock_cpus):
+  def test_actionParsing(self, mock_commands, _mock_mem, _mock_cpus, _mock_defreg):
     mock_commands.getstatusoutput.side_effect = lambda x : GETSTATUSOUTPUT_MOCKS[x]
     for (env, cmd, effects) in CORRECT_BEHAVIOR:
       (bits_helpers.args.DEFAULT_WORK_DIR,

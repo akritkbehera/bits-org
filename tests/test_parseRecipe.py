@@ -79,7 +79,7 @@ class TestRecipes(unittest.TestCase):
     self.assertEqual(meta["package"], "foo")
     self.assertEqual(meta["version"],  "bar")
     err, meta, body = parseRecipe(BufferReader("test_broken_1.sh", TEST_BROKEN_1))
-    self.assertEqual(err,  "Unable to parse test_broken_1.sh. Header missing.")
+    self.assertEqual(err,  "test_broken_1.sh: recipe has no '---' front-matter terminator line")
     err, meta, body = parseRecipe(BufferReader("test_broken_2.sh", TEST_BROKEN_2))
     self.assertEqual(err, "Malformed header for test_broken_2.sh\nEmpty recipe.")
     self.assertTrue(not meta and not body)
