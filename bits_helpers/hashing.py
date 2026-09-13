@@ -245,6 +245,12 @@ def storeHashes(package, specs, considerRelocation):
       with open(os.path.join(spec["pkgdir"], "patches", patch)) as ref:
         patch_content = "".join(ref.readlines())
         h_all(patch_content)
+  # A declared non-default patch strip level changes how a patch is applied
+  # (which files), so fold it into the identity. Only when set, so recipes that
+  # do not use it keep byte-identical hashes (no mass rebuild).
+  _patch_strip = spec.get("patch_strip") or {}
+  for _pn in sorted(_patch_strip):
+    h_all("patch_strip:%s=%s" % (_pn, _patch_strip[_pn]))
   
   if not package.startswith("defaults-"):
     for hook_name in sorted(spec.get("hook", {})):

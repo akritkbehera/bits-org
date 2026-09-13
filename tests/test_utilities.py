@@ -824,20 +824,43 @@ class VersionMatcherTest(unittest.TestCase):
         self.assertFalse(self._m(".*osx.*|.*arm64.*"))
 
     def test_parse_patch_entry(self):
-        self.assertEqual(_parse_patch_entry("p.patch"), ("p.patch", None, ""))
+        self.assertEqual(_parse_patch_entry("p.patch"), ("p.patch", None, "", None))
         self.assertEqual(_parse_patch_entry("p.patch:version=v40r2"),
-                         ("p.patch", "version=v40r2", ""))
+                         ("p.patch", "version=v40r2", "", None))
         self.assertEqual(_parse_patch_entry("p.patch,sha256:abc"),
-                         ("p.patch", None, ",sha256:abc"))
+                         ("p.patch", None, ",sha256:abc", None))
         self.assertEqual(_parse_patch_entry("p.patch:(?cuda),md5:x"),
-                         ("p.patch", "(?cuda)", ",md5:x"))
+                         ("p.patch", "(?cuda)", ",md5:x", None))
+        # strip=N is pulled out as an apply option, standalone or &&-joined
+        self.assertEqual(_parse_patch_entry("p.patch:strip=0"),
+                         ("p.patch", None, "", 0))
+        self.assertEqual(_parse_patch_entry("p.patch:version=v40r2&&strip=0"),
+                         ("p.patch", "version=v40r2", "", 0))
+        self.assertEqual(_parse_patch_entry("p.patch:strip=0,sha256:abc"),
+                         ("p.patch", None, ",sha256:abc", 0))
+        # malformed strip= (|| branch, spaces, negative) must fail loudly, not
+        # leak into the gate.
+        for bad in ("p.patch:a||strip=0", "p.patch:strip=-1", "p.patch:strip = 0"):
+            with self.assertRaises(SystemExit):
+                _parse_patch_entry(bad)
 
     def test_filter_patches_strips_matcher_and_drops_inactive(self):
         pl = ["a.patch:version=v40r2", "b.patch", "c.patch:version>=v40r4,sha256:zz"]
-        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r2"),
+        # filterPatches now returns (patches, strip_map); patches unchanged here.
+        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r2")[0],
                          ["a.patch", "b.patch"])
-        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r4"),
+        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r4")[0],
                          ["b.patch", "c.patch,sha256:zz"])
+
+    def test_filter_patches_records_strip(self):
+        pl = ["a.patch:strip=0", "b.patch", "c.patch:version=v40r2&&strip=0"]
+        patches, strips = filterPatches(pl, self.ARCH, ["dev4"], None, "v40r2")
+        self.assertEqual(patches, ["a.patch", "b.patch", "c.patch"])
+        self.assertEqual(strips, {"a.patch": 0, "c.patch": 0})
+        # a strip whose gate is inactive is not recorded (patch itself dropped)
+        _, strips2 = filterPatches(["d.patch:version=v99&&strip=0"],
+                                   self.ARCH, ["dev4"], None, "v40r2")
+        self.assertEqual(strips2, {})
 
 
 class TestResolveTag(unittest.TestCase):

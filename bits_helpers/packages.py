@@ -376,7 +376,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # strips the :matcher, so the hash, checkout copy, $PATCHn env and patch
     # application all see the same plain name[,checksum] list.
     if "patches" in spec:
-      spec["patches"] = filterPatches(spec.get("patches"), architecture, defaults,
+      spec["patches"], spec["patch_strip"] = filterPatches(
+                                      spec.get("patches"), architecture, defaults,
                                       _default_vars, spec["version"])
     spec["recipe"] = recipe.strip("\n")
     if spec["package"] in force_rebuild:

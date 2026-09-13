@@ -543,10 +543,14 @@ def _apply_patches(spec, source_dir):
   # Emit the header immediately so the package name is visible before any
   # output from patch(1) — important when a failure dumps verbose text.
   progress("Patching %s", pkg_label)
+  patch_strip = spec.get("patch_strip") or {}
   for patch_entry in spec["patches"]:
     patch_name, _ = parse_entry(patch_entry)
     patch_path = os.path.join(source_dir, patch_name)
-    debug("Applying patch %s in %s", patch_name, source_dir)
+    # Strip level: -p1 unless the recipe declared `strip=N` on the patch entry
+    # (for patches authored with bare paths or the file.orig convention).
+    strip = str(patch_strip.get(patch_name, 1))
+    debug("Applying patch %s in %s (-p%s)", patch_name, source_dir, strip)
     # In non-debug mode suppress patch(1) stdout/stderr so it doesn't leak
     # into the progress display; capture it so we can include it in the error
     # message on failure.
@@ -554,7 +558,7 @@ def _apply_patches(spec, source_dir):
     pipe = subprocess.PIPE if capture else None
     try:
       result = subprocess.run(
-        ["patch", "-p1", "--batch", "--input", patch_path],
+        ["patch", "-p" + strip, "--batch", "--input", patch_path],
         cwd=source_dir,
         stdout=pipe, stderr=subprocess.STDOUT if capture else None,
         check=True,

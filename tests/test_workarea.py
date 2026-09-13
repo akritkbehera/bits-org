@@ -293,6 +293,24 @@ class ApplyPatchesTest(unittest.TestCase):
                          ["patch", "-p1", "--batch", "--input", expected_path])
         self.assertEqual(mock_run.call_args[1].get("cwd"), self.source_dir)
 
+    @patch("subprocess.run")
+    def test_patch_strip_uses_declared_level(self, mock_run):
+        """A patch whose recipe declared strip=0 (spec['patch_strip']) must be
+        applied with patch -p0, not the -p1 default."""
+        spec = self._spec(patches=["fix-a.patch"])
+        spec["patch_strip"] = {"fix-a.patch": 0}
+        _apply_patches(spec, self.source_dir)
+        expected = os.path.join(self.source_dir, "fix-a.patch")
+        mock_run.assert_called_once()
+        self.assertEqual(self._patch_cmd(mock_run.call_args),
+                         ["patch", "-p0", "--batch", "--input", expected])
+
+    @patch("subprocess.run")
+    def test_patch_strip_absent_defaults_to_p1(self, mock_run):
+        """Without a declared strip, application stays at the -p1 default."""
+        _apply_patches(self._spec(patches=["fix-a.patch"]), self.source_dir)
+        self.assertEqual(self._patch_cmd(mock_run.call_args)[:2], ["patch", "-p1"])
+
     # ------------------------------------------------------------------
     # Failure path: no sentinel on error
     # ------------------------------------------------------------------

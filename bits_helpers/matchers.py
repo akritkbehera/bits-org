@@ -236,7 +236,7 @@ def disabledByArchitectureDefaults(arch, defaults, requires, default_vars=None, 
 
 
 def _parse_patch_entry(entry):
-  """Split a ``patches:`` entry into ``(name, matcher_or_None, checksum_suffix)``.
+  """Split a ``patches:`` entry into ``(name, matcher_or_None, checksum_suffix, strip_or_None)``.
 
   Entry form: ``name[:matcher][,algo:digest]``. The optional inline checksum
   (which itself contains ``:``) is separated first on the first ``,``; a ``:``
@@ -246,19 +246,42 @@ def _parse_patch_entry(entry):
   head, sep, tail = entry.partition(",")
   checksum = (sep + tail) if sep else ""
   name, csep, matcher = head.partition(":")
-  return name.strip(), (matcher.strip() if csep else None), checksum
+  matcher = matcher.strip() if csep else None
+  # `strip=N` is an apply option (which patch -pN level), not a gate: pull it out
+  # of the matcher (it defaults to -p1) so _matcher_active never sees it. Supports
+  # a standalone `strip=N` or one &&-joined with real gate clauses.
+  strip = None
+  if matcher:
+    kept = []
+    for clause in matcher.split("&&"):
+      m = re.fullmatch(r"\s*strip=(\d+)\s*", clause)
+      if m:
+        strip = int(m.group(1))
+      else:
+        kept.append(clause)
+    matcher = "&&".join(kept).strip() or None
+    if matcher and re.search(r"strip\s*=", matcher):
+      dieOnError(True, "Malformed 'strip=' in patch entry %r: use a standalone "
+                       "'strip=N' or one &&-joined with gate clauses (not '||'), "
+                       "with N a non-negative integer." % entry)
+  return name.strip(), matcher, checksum, strip
 
 
 def filterPatches(patches, arch, defaults, default_vars, version):
   """Return the ``patches:`` entries active for this build, with any ``:matcher``
   stripped so downstream (checksum lookup, copy to $SOURCEDIR, ``patch``) sees a
-  plain ``name[,algo:digest]``. Entries without a matcher are always kept."""
+  plain ``name[,algo:digest]``. Entries without a matcher are always kept.
+  Returns ``(patches, strip_map)`` where strip_map maps a patch name to its
+  declared ``strip=N`` apply level (only entries that set one)."""
   out = []
+  strips = {}
   for entry in patches or []:
-    name, matcher, checksum = _parse_patch_entry(entry)
+    name, matcher, checksum, strip = _parse_patch_entry(entry)
     if matcher is None or _matcher_active(matcher, arch, defaults, default_vars, version=version):
       out.append(name + checksum)
-  return out
+      if strip is not None:
+        strips[name] = strip
+  return out, strips
 
 
 def _collect_version_pins(arch, defaults, raw_requires, owner, version_pins, specs,
