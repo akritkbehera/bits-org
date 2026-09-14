@@ -131,8 +131,20 @@ function installHint() {
 }
 
 function detectShell() {
-  # Detect parent shell (fall back to bash)
-  [[ -z "$MODULES_SHELL" ]] && MODULES_SHELL=$(ps -e -o pid,command | grep -E "^\s*$PPID\s+" | awk '{print $2}' | sed -e 's/^-\{0,1\}\(.*\)$/\1/')
+  # Detect parent shell (fall back to bash). Read /proc directly where it exists:
+  # this runs with the module environment already loaded, and forking ps|grep|awk|
+  # sed there is exactly what dies with "Argument list too long" once that
+  # environment is large. Strip any leading directory (ps reports /usr/bin/zsh)
+  # and the login-shell '-' marker before matching.
+  if [[ -z "$MODULES_SHELL" ]]; then
+    if [[ -r /proc/$PPID/comm ]]; then
+      read -r MODULES_SHELL < /proc/$PPID/comm
+    else
+      MODULES_SHELL=$(ps -p $PPID -o comm= 2> /dev/null)
+    fi
+    MODULES_SHELL="${MODULES_SHELL##*/}"
+    MODULES_SHELL="${MODULES_SHELL#-}"
+  fi
   case "$MODULES_SHELL" in
     sh)                                      ;;
     csh|tcsh) SHELL_NORC_PARAM=-f            ;;
@@ -632,9 +644,36 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
       printf "${EY}      (override with  bits -a <arch> %s)${EZ}\n" "${ACTION:-q}" >&2
     fi
   else
-    # Nothing installed yet → host arch from python (e.g. for a first build).
-    ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
-    [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+    # MODULES/ is a CACHE and may legitimately be absent -- deleted by hand, or
+    # not yet built. Falling straight through to the host arch here is wrong
+    # whenever the install tree uses an effective arch that differs from it
+    # (CMS builds slc9_x86-64 into el9_amd64_gcc14): bits would then create an
+    # empty cache under the host name, report every module as "not found", and
+    # keep doing so, because that empty directory makes the next run think it
+    # found the sole installed arch. So consult the INSTALL tree first -- it is
+    # the real source of truth, and the cache is rebuilt from it anyway.
+    _bestn=0
+    for _d in "$WORK_DIR"/*/; do
+      _a=$(basename "$_d")
+      case "$_a" in
+        BUILD|INSTALLROOT|SOURCES|SPECS|TARS|MANIFESTS|MIRROR|MODULES|REPOS|TMP|WEB|etc|share|common|wrapper-scripts) continue ;;
+      esac
+      # An arch tree holds <pkg>/<ver>/etc/profile.d/init.sh, one level deeper
+      # when the packages carry a pkg_family (external/ lcg/ cms/). Count the
+      # hits rather than stopping at the first: a half-built tree left over from
+      # an aborted build must not outrank the populated one.
+      _n=0
+      for _i in "$_d"*/*/etc/profile.d/init.sh "$_d"*/*/*/etc/profile.d/init.sh; do
+        [[ -e "$_i" ]] && _n=$((_n + 1))
+      done
+      (( _n > _bestn )) && { _bestn=$_n; ARCHITECTURE="$_a"; }
+    done
+    unset _d _i _n _bestn
+    # Genuinely nothing installed (e.g. a first build) -> host arch from python.
+    if [[ -z "$ARCHITECTURE" ]]; then
+      ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
+      [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+    fi
   fi
 fi
 _bt_mark archdetect         # arch autodetect (python spawn only when needed)
@@ -668,6 +707,16 @@ IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # "Loading requirement:" progress lines so setenv/printenv/load/enter output can
 # be captured/parsed cleanly. Honoured by environment-modules >= 4.
 [[ -z "${VERBOSE:-}" ]] && export MODULES_VERBOSITY=silent
+# Do not let environment-modules record a `module load` inside a modulefile as an
+# implicit requirement. That bookkeeping lands in a single __MODULES_LMPREREQ
+# variable whose length grows with the number of dependency edges in the loaded
+# closure; a large collection (cmssw-tools: ~660 modules) pushes it past the
+# kernel's per-string exec limit (MAX_ARG_STRLEN, 128 KiB), after which *every*
+# fork+exec from the loaded environment fails with "Argument list too long" --
+# including the shell `enter` is about to exec. The generated modulefiles carry
+# their dependencies as explicit `module load` lines, so nothing here needs the
+# extra bookkeeping to resolve a closure; it only costs environment space.
+export MODULES_IMPLICIT_REQUIREMENT=0
 
 # --view: once modules are loaded *in process*, collapse the additive path
 # variables (PATH / LD_LIBRARY_PATH / CMAKE_PREFIX_PATH / PKG_CONFIG_PATH /
@@ -715,8 +764,10 @@ case "$ACTION" in
     fi
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
-    detectShell
+    # applyView first: it shrinks the additive path variables, so anything that
+    # forks below runs in the smaller environment.
     applyView
+    detectShell
     if [[ ! -z "$CLEAN_ENV" ]]; then
       case $MODULES_SHELL in
         sh|bash) export PS1="[$MODULES]$PS1DEV"' \w $> '   ;;
