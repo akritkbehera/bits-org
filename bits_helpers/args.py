@@ -1207,9 +1207,10 @@ def add_build_arguments(subparsers, ctx):
   ctx.defaults(build_parser,
                help="Use defaults from CONFIGDIR/defaults-%(metavar)s.sh.")
 
-  build_parser.add_argument("--flavour", "--flavor", dest="flavours", action="append",
+  build_parser.add_argument("--flavour", "--flavor", "--set", dest="flavours", action="append",
                             default=[], metavar="NAME[=VALUE]",
-                            help=("Set a build-wide flavour variable (repeatable, comma-separated). "
+                            help=("Set a build-wide flavour variable (repeatable, comma-separated); "
+                                  "--set is an alias. "
                                   "NAME -> true, NAME=VALUE -> VALUE, !NAME -> false. Flavours gate "
                                   "conditional requires/sources/patches via (?NAME) and are exported "
                                   "into the build environment; they override a defaults `variables:` "
