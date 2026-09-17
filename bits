@@ -30,12 +30,19 @@ if [[ "${ARGV[0]:-}" == "preload" ]]; then
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.preload_cmd import main; sys.exit(main())' "${ARGV[@]:1}"
 fi
 
-# `bits lcg-view …` — self-contained post-build scanner (like preload): reads the
-# installed .meta.json tree and writes an lcgcmake-style LCG release view so
-# ATLAS find_package(LCG) resolves against the bits install tree. Needs none of
-# the build/defaults arg machinery, so it is dispatched here before that setup.
+# `bits overlay <format> …` — emit a consumable overlay of the built closure in a
+# named format (bits_helpers/overlay/<format>.py, or dropped in via
+# $BITS_OVERLAY_PLUGINS). Self-contained like preload; dispatched before the
+# build/defaults arg setup. Generic verb — nothing CERN-specific in the core CLI.
+if [[ "${ARGV[0]:-}" == "overlay" ]]; then
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.overlay import main; sys.exit(main())' "${ARGV[@]:1}"
+fi
+
+# `bits lcg-view …` — DEPRECATED alias for `bits overlay lcg` (same arguments).
+# Kept so any straggler still calling it works; new recipes use `bits overlay lcg`.
 if [[ "${ARGV[0]:-}" == "lcg-view" ]]; then
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.lcg_view import main; sys.exit(main())' "${ARGV[@]:1}"
+  echo "bits: 'lcg-view' is deprecated; use 'bits overlay lcg'." >&2
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.overlay.lcg import main; sys.exit(main())' "${ARGV[@]:1}"
 fi
 
 # Optional phase timing for diagnosing slow load/enter: set BITS_TIMING=1 to
