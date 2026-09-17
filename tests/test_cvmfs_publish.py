@@ -265,7 +265,18 @@ class TestBatchDriver(unittest.TestCase):
         with mock.patch.object(cp, "publish_one", lambda s, c: []):
             with self.assertRaises(SystemExit):
                 cp.main(["--manifest", m, "--repo", "r", "--tars-root", tars,
-                         "--arch", "el9", "--workers", "4"])
+                         "--arch", "el9", "--workers", "4",
+                         "--publish-path", "staged"])   # guard is staged-only
+
+    def test_workers_gt_1_ok_on_ingest_default(self):
+        # ingest POSTs the tar, no local prepare, so N>1 needs no extra flags.
+        m, tars = self._manifest([("a", 10)])
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        with mock.patch.object(cp, "publish_one", lambda s, c: []):
+            rc = cp.main(["--manifest", m, "--repo", "r", "--tars-root", tars,
+                          "--arch", "el9", "--workers", "4"])   # default ingest
+        self.assertEqual(rc, 0)
 
     def test_serial_is_manifest_order(self):
         m, tars = self._manifest([("a", 10), ("big", 100), ("c", 5)])

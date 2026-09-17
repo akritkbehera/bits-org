@@ -321,9 +321,9 @@ def _locate_pkgroot(work_dir):
 
 def _publish_tar(ctx, path, tar, label, fp=None):
     """Publish ONE prepared tar via the configured path; return its job id and
-    remove the tar. STAGED (default): cvmfs-stage the tar to an S3 prefix (always,
-    so --dry-run still yields the catalog hash) then submit_staged. INGEST: POST
-    the tar itself with submit_ingest — the gateway chunks it. --dry-run submits
+    remove the tar. INGEST (default): POST the tar itself with submit_ingest — the
+    gateway chunks it. STAGED: cvmfs-stage the tar to an S3 prefix (always, so
+    --dry-run still yields the catalog hash) then submit_staged. --dry-run submits
     nothing. A non-None fp prints the mtime-independent FINGERPRINT (verify hook)."""
     ingest = ctx.get("publish_path") == "ingest"
     submit = ctx.get("submit", True)
@@ -594,12 +594,12 @@ def main(argv=None):
                     help="ingest only: add direct_s3 so cvmfs_server writes data "
                          "objects straight to S3, bypassing the gateway. No effect "
                          "on the staged path.")
-    ap.add_argument("--publish-path", choices=("staged", "ingest"), default="staged",
-                    help="staged (default): prepare objects here with cvmfs-stage "
-                         "and submit a light job. ingest: POST the tar itself and "
-                         "let prepub's gateway chunk it (the tar IS the payload). "
-                         "Both order biggest-first and run concurrently at N>1; "
-                         "ingest ignores the cvmfs-stage flags below.")
+    ap.add_argument("--publish-path", choices=("staged", "ingest"), default="ingest",
+                    help="ingest (default): POST the tar itself and let prepub's "
+                         "gateway chunk it (the tar IS the payload). staged: "
+                         "prepare objects here with cvmfs-stage and submit a light "
+                         "job. Both order biggest-first and run concurrently at "
+                         "N>1; ingest ignores the cvmfs-stage flags below.")
     ap.add_argument("--replace-on-conflict", action="store_true",
                     help="REPUBLISH: if a package's path is already published, "
                          "the add-only prepare fails on a UNIQUE conflict; retry "
@@ -612,8 +612,8 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=1,
                     help="prepare up to N packages concurrently, biggest tar "
                          "first (MEASUREMENTS §31). Default 1 = serial, manifest "
-                         "order (today's behaviour). N>1 needs --no-stats-db + "
-                         "--no-prepare-lock (concurrent prepares).")
+                         "order (today's behaviour). Staged path only: N>1 needs "
+                         "--no-stats-db + --no-prepare-lock (concurrent prepares).")
     ap.add_argument("--dry-run", action="store_true",
                     help="stage but do NOT submit — prints DRYRUN(prefix|hashC), "
                          "so the catalog hash can be checked without a graft")
