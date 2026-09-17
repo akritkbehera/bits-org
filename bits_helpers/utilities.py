@@ -306,6 +306,43 @@ def resolve_tag(spec, default_vars=None):
     return spec.get("tag", "")  # guard for mocked dieOnError in tests
 
 
+def apply_version_from(spec, default_vars):
+  """Honour a recipe's ``version_from: <var>`` field.
+
+  Sets ``spec["version"]`` to the value of the named defaults ``variables:``
+  entry (already resolved by resolve_variables), so the version is taken
+  DIRECTLY from a named build variable instead of threading ``%(<var>)s``
+  through resolve_tag / resolve_version (which only expand defaults variables
+  when a ``source:``/``sources:`` is present). For a SOURCE-LESS package it also
+  sets ``tag`` and ``commit_hash`` to the same value, so a synthetic package
+  (e.g. ``lcg-view``) can be versioned by an LCG release without carrying a
+  source purely to unlock templating.
+
+  A package WITH a source keeps its git/tarball tag semantics; ``version_from``
+  then sets only its ``version``. Fatal if the named variable is not defined in
+  the active defaults profile.
+
+  Returns True when applied, False when the recipe has no ``version_from``.
+  """
+  vfrom = spec.get("version_from")
+  if not vfrom:
+    return False
+  vars_ = default_vars or {}
+  if vfrom not in vars_:
+    dieOnError(True,
+      "version_from: '%s' is not a variable in the active defaults profile for "
+      "recipe '%s' (available: %s)" % (
+        vfrom, spec.get("package", "?"),
+        ", ".join(sorted(str(k) for k in vars_))))
+    return True  # guard for mocked dieOnError in tests
+  value = str(vars_[vfrom])
+  spec["version"] = value
+  if "source" not in spec and "sources" not in spec:
+    spec["tag"] = value
+    spec["commit_hash"] = value
+  return True
+
+
 def normalise_multiple_options(option, sep=","):
   return [x for x in ",".join(option).split(sep) if x]
 

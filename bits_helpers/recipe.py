@@ -35,6 +35,12 @@ def validateSpec(spec):
     raise SpecError("Not a YAML key / value.")
   if "package" not in spec:
     raise SpecError("Missing package field in header.")
+  # A recipe may omit `version:` when it declares `version_from:` (the version is
+  # taken from a named defaults variable at build time, see apply_version_from).
+  # Seed a placeholder so every downstream spec["version"] read is safe; the real
+  # value is set at the top of the build loop before it is materially used.
+  if "version_from" in spec and "version" not in spec:
+    spec["version"] = "0"
 
 
 def getRecipeReader(url: str, dist=None, genPackages={}):

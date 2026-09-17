@@ -13,6 +13,7 @@ from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
 from bits_helpers.utilities import resolve_version, resolve_spec_data, resolve_tag
+from bits_helpers.utilities import apply_version_from
 from bits_helpers.utilities import topological_sort
 from bits_helpers.matchers import _parse_req_matcher, _collect_version_pins
 from bits_helpers.defaults import asDict, merge_dicts
@@ -912,6 +913,47 @@ class YamlCompatReexportTest(unittest.TestCase):
         out = yamlDump(d)
         self.assertIn("package: Foo", out)
         self.assertEqual(dict(yamlLoad(out)), dict(d))
+
+
+
+class TestApplyVersionFrom(unittest.TestCase):
+    """version_from: <var> — take version (and, for source-less, tag+commit_hash)
+    from a named defaults variable. See apply_version_from / build.py."""
+
+    def test_sourceless_sets_version_tag_commit(self):
+        spec = OrderedDict(package="lcg-view", version_from="release")
+        applied = apply_version_from(spec, {"release": "LCG_110"})
+        self.assertTrue(applied)
+        self.assertEqual(spec["version"], "LCG_110")
+        self.assertEqual(spec["tag"], "LCG_110")
+        self.assertEqual(spec["commit_hash"], "LCG_110")
+
+    def test_unknown_variable_is_fatal(self):
+        spec = OrderedDict(package="lcg-view", version_from="bogus")
+        with patch("bits_helpers.utilities.dieOnError") as die:
+            apply_version_from(spec, {"release": "LCG_110"})
+        self.assertTrue(die.called)
+        self.assertIs(die.call_args[0][0], True)  # dieOnError(True, ...)
+
+    def test_no_version_from_is_noop(self):
+        # Regression guard: a recipe WITHOUT version_from is untouched, even with a
+        # templated version present (the 874 source-less recipes must not change).
+        spec = OrderedDict(package="x", version="%(year)s%(month)s%(day)s")
+        applied = apply_version_from(spec, {"release": "LCG_110"})
+        self.assertFalse(applied)
+        self.assertEqual(spec["version"], "%(year)s%(month)s%(day)s")
+        self.assertNotIn("tag", spec)
+        self.assertNotIn("commit_hash", spec)
+
+    def test_with_source_sets_version_only(self):
+        # A package WITH a source keeps its git/tarball tag; version_from sets only
+        # the version, leaving tag/commit_hash to the source handling.
+        spec = OrderedDict(package="y", version_from="release", source="http://x")
+        applied = apply_version_from(spec, {"release": "LCG_110"})
+        self.assertTrue(applied)
+        self.assertEqual(spec["version"], "LCG_110")
+        self.assertNotIn("tag", spec)
+        self.assertNotIn("commit_hash", spec)
 
 
 if __name__ == '__main__':

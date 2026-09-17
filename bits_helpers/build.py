@@ -26,6 +26,7 @@ from bits_helpers.hashing import storeHashes
 from bits_helpers.defaults import validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data
+from bits_helpers.utilities import apply_version_from
 from bits_helpers.paths import resolveLocalPath
 from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
@@ -3319,6 +3320,11 @@ def doBuild(args, parser):
                "{recipe}.sh instead."
                .format(package=p, recipe=p.lower()))
 
+    # version_from: <var> — take version (and, for a source-less package, tag +
+    # commit_hash) directly from a named defaults variable. Runs before the tag
+    # defaulting / source blocks so a synthetic package can be versioned by e.g.
+    # the LCG release without a source. No-op unless the recipe sets version_from.
+    apply_version_from(spec, defaultsMeta.get("variables"))
     if "tag" not in spec:
       spec["tag"] = spec["version"]
     if "source" in spec:
