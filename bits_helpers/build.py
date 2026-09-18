@@ -2648,6 +2648,59 @@ def doBuild(args, parser):
     _legacy_env = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower() in (
       "1", "true", "yes", "on")
     args.initdotshFromModules = not _legacy_env
+  # Preserve the CLI-supplied disables: parseDefaults appends the config-dir
+  # disables to this list in place, so the re-parse below must start clean.
+  _cli_disable = list(args.disable)
+  (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
+                                        defaultsReader, debug, args.architecture, args.configDir)
+  dieOnError(err, err)
+
+  # ── Repository-provider discovery (must precede the FULL defaults resolve) ──
+  # The parse above only saw the config dir, so it captured `requires:` (enough to
+  # seed discovery) but NOT the defaults that live INSIDE provider repos — the
+  # shared stacks base `defaults-release` and the compiler axes `defaults-gccNN`.
+  # Clone the providers now (seeded by those requires), extending BITS_PATH, THEN
+  # re-resolve the chain so every provider-supplied env / package_family / override
+  # / append_arch / system knob is merged before anything downstream consumes it.
+  # provider_policy is CLI-sourced, so discovery needs no BuildConfig yet.
+  # Discovery is transitive (fetch_repo_providers_iteratively re-reads each
+  # cloned provider's own requires), so the config-dir seed only needs the
+  # first hop and a single re-parse then covers the whole provider graph.
+  always_on_dirs = load_always_on_providers(
+    config_dir        = args.configDir,
+    work_dir          = workDir,
+    reference_sources = args.referenceSources,
+    fetch_repos       = args.fetchRepos,
+    bits_providers    = getattr(args, "bits_providers", None),
+    taps              = taps,
+    provider_policy   = getattr(args, "provider_policy", {}),
+    force_tracked     = getattr(args, "forceTracked", False),
+  )
+  defaults_provider_seed = (
+    list(defaultsMeta.get("requires", []))
+    + list(defaultsMeta.get("build_requires", []))
+    + list(getattr(args, "_bootstrap_provider_requires", []) or [])
+  )
+  provider_dirs = fetch_repo_providers_iteratively(
+    packages          = packages + defaults_provider_seed,
+    config_dir        = args.configDir,
+    work_dir          = workDir,
+    reference_sources = args.referenceSources,
+    fetch_repos       = args.fetchRepos,
+    taps              = taps,
+    provider_policy   = getattr(args, "provider_policy", {}),
+    overrides         = overrides,
+    defaults          = args.defaults,
+    default_vars      = defaultsMeta.get("variables"),
+    force_tracked     = getattr(args, "forceTracked", False),
+  )
+  provider_dirs.update(always_on_dirs)
+
+  # Re-resolve the defaults chain now that the provider repos are on BITS_PATH, so
+  # the full stacks base + compiler axis contribute their env / package_family /
+  # overrides / append_arch / system. Reset disable to the original CLI set so a
+  # provider-supplied disable is picked up without double-counting config-dir ones.
+  args.disable = list(_cli_disable)
   (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
                                         defaultsReader, debug, args.architecture, args.configDir)
   dieOnError(err, err)
@@ -3021,65 +3074,6 @@ def doBuild(args, parser):
       if _rc != 0:
         warning("brew: 'brew bundle --file %s' exited %d; falling back to "
                 "per-recipe on-demand install.", _brewfile, _rc)
-
-  # ── Repository-provider discovery ─────────────────────────────────────────
-  # Phase 1 – Always-on providers: recipes with ``always_load: true`` (and
-  # optionally the auto-synthesised ``bits-providers`` package built from
-  # $BITS_PROVIDERS / bits.rc).  These are cloned *before* the iterative scan
-  # so that the recipes they contain are visible to getPackageList right away.
-  always_on_dirs = load_always_on_providers(
-    config_dir        = args.configDir,
-    work_dir          = workDir,
-    reference_sources = args.referenceSources,
-    fetch_repos       = args.fetchRepos,
-    bits_providers    = getattr(args, "bits_providers", None),
-    taps              = taps,
-    provider_policy   = cfg.provider_policy,
-    force_tracked     = getattr(args, "forceTracked", False),
-  )
-
-  # Phase 2 – Iterative scan: walk the top-level package list for any packages
-  # that carry ``provides_repository: true`` and clone them into the local REPOS
-  # cache, extending BITS_PATH.  A freshly-cloned provider may itself contain
-  # further providers, which are discovered and cloned on the next pass.
-  #
-  # The scan is also seeded with any top-level ``requires`` / ``build_requires``
-  # declared directly in the active defaults file(s).  This allows a defaults
-  # file to trigger provider loading with the ordinary ``requires`` field:
-  #
-  #   requires:
-  #     - my-org-recipes   # a recipe whose .sh declares provides_repository: true
-  #
-  # ``filterByArchitectureDefaults`` is intentionally skipped here: being
-  # conservative (pre-loading a provider on every architecture) is safe and
-  # avoids a chicken-and-egg where the provider's own recipes would be needed
-  # to evaluate the architecture condition.
-  # Also seed with the bootstrap org-pointer recipe's own requires (e.g.
-  # alice.bits.sh ``requires: [alidist.bits]``): the recipe repo we just
-  # bootstrapped depends on those sibling provider repos for its base recipes,
-  # but they are not build-graph dependencies of the requested target, so the
-  # walk would otherwise never reach them.
-  defaults_provider_seed = (
-    list(defaultsMeta.get("requires", []))
-    + list(defaultsMeta.get("build_requires", []))
-    + list(getattr(args, "_bootstrap_provider_requires", []) or [])
-  )
-
-  provider_dirs = fetch_repo_providers_iteratively(
-    packages          = packages + defaults_provider_seed,
-    config_dir        = args.configDir,
-    work_dir          = workDir,
-    reference_sources = args.referenceSources,
-    fetch_repos       = args.fetchRepos,
-    taps              = taps,
-    provider_policy   = cfg.provider_policy,
-    overrides         = overrides,
-    defaults          = args.defaults,
-    default_vars      = defaultsMeta.get("variables"),
-    force_tracked     = getattr(args, "forceTracked", False),
-  )
-  provider_dirs.update(always_on_dirs)
-
   # ── Build manifest initialisation ─────────────────────────────────────────
   # The manifest is always written; it records every package, provider, and
   # checksum so the build can be reproduced later with --from-manifest.
