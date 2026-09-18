@@ -622,6 +622,14 @@ case "$ACTION" in
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
     detectShell
+    # A `view: true` package advertises BITS_VIEW in its modulefile; entering it
+    # auto-enables --view (collapse PATH/LD_LIBRARY_PATH onto the merged view). Any
+    # loaded module with the marker triggers it — fine while view packages are
+    # top-level (lcg-view requires the metapackage, nothing requires lcg-view).
+    # Consume-and-clear so the marker never leaks into the entered shell / a nested
+    # `bits setenv` (applyView keys off VIEWOPT, not BITS_VIEW).
+    [[ -n "${BITS_VIEW:-}" ]] && VIEWOPT=1
+    unset BITS_VIEW
     applyView
     if [[ ! -z "$CLEAN_ENV" ]]; then
       case $MODULES_SHELL in
@@ -679,6 +687,8 @@ case "$ACTION" in
     existModules $MODULES
     eval $($MODULECMD bash add $MODULES 2> >(grep -v "$IGNORE_ERR" >&2))
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
+    [[ -n "${BITS_VIEW:-}" ]] && VIEWOPT=1   # view: true package auto-enables --view
+    unset BITS_VIEW                          # consume-and-clear (no leak into -c command)
     applyView
     exec "${COMMAND_IN_ENV[@]}"
   ;;

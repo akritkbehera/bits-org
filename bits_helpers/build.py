@@ -2369,6 +2369,7 @@ def build_one_package(p, ctx):
     ("PKGDIR", spec["pkgdir"]),
     ("PKGREVISION", spec["revision"]),
     ("PKGVERSION", spec["version"]),
+    ("BITS_MODULE_VIEW", "1" if spec.get("view") else ""),
     ("RELOCATE_PATHS", " ".join(spec.get("relocate_paths", []))),
     ("REQUIRES", " ".join(spec["requires"])),
     ("RUNTIME_REQUIRES", " ".join(spec["runtime_requires"])),
