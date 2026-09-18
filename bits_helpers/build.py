@@ -7,7 +7,7 @@ from pathlib import Path
 from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
-from bits_helpers.repo_provider import fetch_repo_providers_iteratively, load_always_on_providers
+from bits_helpers.repo_provider import fetch_repo_providers_iteratively, load_always_on_providers, MAX_PROVIDER_ITERATIONS
 from bits_helpers.memory import effective_jobs
 from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     enforcement_mode as checksum_enforcement_mode,
@@ -2676,34 +2676,63 @@ def doBuild(args, parser):
     provider_policy   = getattr(args, "provider_policy", {}),
     force_tracked     = getattr(args, "forceTracked", False),
   )
-  defaults_provider_seed = (
-    list(defaultsMeta.get("requires", []))
-    + list(defaultsMeta.get("build_requires", []))
-    + list(getattr(args, "_bootstrap_provider_requires", []) or [])
-  )
-  provider_dirs = fetch_repo_providers_iteratively(
-    packages          = packages + defaults_provider_seed,
-    config_dir        = args.configDir,
-    work_dir          = workDir,
-    reference_sources = args.referenceSources,
-    fetch_repos       = args.fetchRepos,
-    taps              = taps,
-    provider_policy   = getattr(args, "provider_policy", {}),
-    overrides         = overrides,
-    defaults          = args.defaults,
-    default_vars      = defaultsMeta.get("variables"),
-    force_tracked     = getattr(args, "forceTracked", False),
-  )
-  provider_dirs.update(always_on_dirs)
-
-  # Re-resolve the defaults chain now that the provider repos are on BITS_PATH, so
-  # the full stacks base + compiler axis contribute their env / package_family /
-  # overrides / append_arch / system. Reset disable to the original CLI set so a
-  # provider-supplied disable is picked up without double-counting config-dir ones.
-  args.disable = list(_cli_disable)
-  (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
-                                        defaultsReader, debug, args.architecture, args.configDir)
-  dieOnError(err, err)
+  # Discovery <-> defaults resolution is a FIXED POINT, not one pass. The override
+  # that turns the `release` variable into an lcg.bits branch tag
+  # (`overrides: lcg.bits: tag: "%(release)s"`) can itself live INSIDE a provider
+  # (the shared stacks base), so it is invisible on the first, config-dir-only
+  # parse: a stacks-inheriting community (key4hep/ship/lhcb) would otherwise fetch
+  # lcg.bits at the bare `requires:` default (main) regardless of `release` or a
+  # `--set release=` on the CLI, because there is no override yet to consume the
+  # value. So fetch with the overrides/variables known so far, re-parse now that
+  # the providers (and their overrides) are on BITS_PATH, and repeat until the set
+  # of (provider, commit) pins stops moving. Re-pointing a provider changes its
+  # checkout dir, so BITS_PATH is rebuilt from a stable base each pass to stop a
+  # superseded tag from shadowing the new one. atlas declares the override in its
+  # own config dir, so it converges on the first fetch (the second pass just
+  # confirms the fixed point); an inheriting community converges once the stacks
+  # override/release become visible.
+  _base_bits_path = os.environ.get("BITS_PATH", "")
+  provider_dirs = {}
+  _prev_pin_sig = None
+  for _disc_pass in range(MAX_PROVIDER_ITERATIONS):
+    os.environ["BITS_PATH"] = _base_bits_path
+    defaults_provider_seed = (
+      list(defaultsMeta.get("requires", []))
+      + list(defaultsMeta.get("build_requires", []))
+      + list(getattr(args, "_bootstrap_provider_requires", []) or [])
+    )
+    provider_dirs = fetch_repo_providers_iteratively(
+      packages          = packages + defaults_provider_seed,
+      config_dir        = args.configDir,
+      work_dir          = workDir,
+      reference_sources = args.referenceSources,
+      fetch_repos       = args.fetchRepos,
+      taps              = taps,
+      provider_policy   = getattr(args, "provider_policy", {}),
+      overrides         = overrides,
+      defaults          = args.defaults,
+      default_vars      = defaultsMeta.get("variables"),
+      force_tracked     = getattr(args, "forceTracked", False),
+    )
+    provider_dirs.update(always_on_dirs)
+    # (provider, commit) pin set: order-independent and re-point-sensitive.
+    _pin_sig = frozenset((_n, _h) for (_d, (_n, _h)) in provider_dirs.items())
+    # Re-resolve the defaults chain now that the provider repos are on BITS_PATH,
+    # so the full stacks base + compiler axis contribute their env / package_family
+    # / overrides / append_arch / system. Reset disable to the original CLI set so
+    # a provider-supplied disable is picked up without double-counting config-dir
+    # ones.
+    args.disable = list(_cli_disable)
+    (err, overrides, taps, defaultsMeta) = parseDefaults(args.disable,
+                                          defaultsReader, debug, args.architecture, args.configDir)
+    dieOnError(err, err)
+    if _pin_sig == _prev_pin_sig:
+      break
+    _prev_pin_sig = _pin_sig
+  else:
+    warning("Provider discovery did not reach a fixed point after %d passes; "
+            "using the last resolved provider set (some provider pins may still "
+            "be moving).", MAX_PROVIDER_ITERATIONS)
   # A defaults file may request the legacy (pre-modules) init.sh via
   # `system: legacy_initdotsh: true` (top-level key also honoured) — this is how
   # `--defaults alidist` makes bits reuse the alibuild-repo tarballs without any
