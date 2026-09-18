@@ -887,6 +887,10 @@ def add_cvmfs_path_arguments(subparsers, ctx):
       "--install-dir", dest="installDir", metavar="DIR", default="",
       help="CVMFS install-dir ({install_dir} in the template).")
   cvmfs_path_parser.add_argument(
+      "--day", dest="day", metavar="DAY", default=None,
+      help="Value for the {day} nightly slot; must match the build (pass the same "
+           "--day). Default: auto UTC weekday when the template uses {day}.")
+  cvmfs_path_parser.add_argument(
       "--kind", dest="kind", choices=["releases", "modules", "shared"],
       default="releases",
       help="Which template to resolve (default: %(default)s).")
@@ -1220,6 +1224,10 @@ def add_build_arguments(subparsers, ctx):
                    help=("Build as if on the specified architecture. When used with --docker, build "
                          "inside a Docker image for the specified architecture. Default is the current "
                          "system architecture, which is '%(default)s'."))
+  build_parser.add_argument("--day", dest="day", metavar="DAY", default=None,
+                            help="Value for the {day} nightly path slot (e.g. Fri). "
+                                 "Default: bits auto-fills the UTC weekday when a "
+                                 "template uses {day}; pass '' to collapse the slot.")
   build_parser.add_argument("--force-unknown-architecture", dest="forceUnknownArch", action="store_true",
                             help="Build on this system, even if it doesn't have a supported architecture.")
   build_parser.add_argument("-z", "--devel-prefix", nargs="?", dest="develPrefix", default=argparse.SUPPRESS,

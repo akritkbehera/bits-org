@@ -2774,7 +2774,8 @@ def doBuild(args, parser):
   # boundary, so a recipe cannot redirect the publish into another group's tree; a
   # recipe prefix is only a local-dev fallback. The recipe still owns the LAYOUT.
   from bits_helpers.cvmfs_layout import (
-      resolve_cvmfs_templates, resolve_release, path_release, bake_release)
+      resolve_cvmfs_templates, resolve_release, path_release, bake_release,
+      resolve_day, bake_day)
   args.cvmfsTemplates = resolve_cvmfs_templates(
       defaultsMeta, os.environ.get("BITS_CVMFS_PREFIX") or None)
   # {release} is a build-level constant — the release LABEL resolved from the same
@@ -2786,9 +2787,25 @@ def doBuild(args, parser):
   # {family}/{pkg}/{tag}/{platform} stay as tokens (resolved per package).
   if args.cvmfsTemplates:
     _release_path = path_release(resolve_release(defaultsMeta, branch_basename))
-    for _k in ("path", "modules", "shared", "prefix", "user_prefix"):
+    # {day} is a nightly deploy-path slot (layout-only: never hashed, never in the
+    # store or manifest key). Resolve it only when a template actually uses it, so
+    # non-nightly builds stay byte-identical. Frozen on args for the whole run.
+    _tmpl_keys = ("path", "modules", "shared", "prefix", "user_prefix")
+    _has_day = any("{day}" in (args.cvmfsTemplates.get(_k) or "") for _k in _tmpl_keys)
+    _day_override = getattr(args, "day", None)
+    _day = resolve_day(defaultsMeta, _day_override) if _has_day else None
+    if _day is not None:
+      args.day = _day
+      _sys_meta = (defaultsMeta or {}).get("system") or {}
+      if _day_override is None and "day" not in (defaultsMeta or {}) \
+         and "day" not in _sys_meta:
+        warning("{day} path slot auto-filled to %r (UTC weekday). For a reserved "
+                "build (bits cvmfs-path then build) pass --day explicitly so the "
+                "reserve and publish agree across a UTC midnight.", _day)
+    for _k in _tmpl_keys:
       if args.cvmfsTemplates.get(_k):
-        args.cvmfsTemplates[_k] = bake_release(args.cvmfsTemplates[_k], _release_path)
+        _t = bake_release(args.cvmfsTemplates[_k], _release_path)
+        args.cvmfsTemplates[_k] = bake_day(_t, _day) if _day is not None else _t
 
   # Global build-time network policy for the recipe sandbox. Precedence:
   #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".

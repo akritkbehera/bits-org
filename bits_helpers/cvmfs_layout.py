@@ -31,6 +31,7 @@ cvmfs://`` root for reusing already-deployed components.
 
 import os
 import re
+from datetime import datetime, timezone
 
 _VAR_RE = re.compile(r"%\((\w+)\)s")
 
@@ -237,6 +238,50 @@ def bake_release(template, release):
     return (template.replace("{release}/", "")
                     .replace("/{release}", "")
                     .replace("{release}", ""))
+
+
+# Locale-independent weekday table so the {day} nightly slot is always "Fri",
+# never a localised "ven". Layout-only: {day} is never hashed, never in the store
+# path, never in the (effective_architecture, hash) manifest key.
+_WEEKDAY_ABBR = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def resolve_day(defaults_meta, override=None, now=None):
+    """The {day} value for the nightly path slot.
+
+    Precedence: an explicit *override* (CLI --day / system: day / top-level day)
+    wins verbatim, INCLUDING an explicit "" which collapses the {day}/ segment.
+    With no override bits auto-fills the 3-letter English weekday (fixed table,
+    UTC) so a nightly template gets Mon..Sun without the caller supplying it.
+    *now* is injectable for tests and to freeze the value across a run.
+
+    Note: bits computes the weekday from the current UTC time, so a long build
+    that crosses midnight between the pre-build reserve (`bits cvmfs-path`) and
+    publish could resolve different days. CI should pass --day explicitly to pin
+    it; auto is the convenience default for single-shot local builds.
+    """
+    if override is not None:
+        return str(override).strip()
+    sysd = (defaults_meta or {}).get("system", {}) or {}
+    if "day" in sysd:
+        return str(sysd.get("day") or "").strip()
+    if "day" in (defaults_meta or {}):
+        return str((defaults_meta or {}).get("day") or "").strip()
+    dt = now or datetime.now(timezone.utc)
+    return _WEEKDAY_ABBR[dt.weekday()]
+
+
+def bake_day(template, day):
+    """Substitute {day} in a path template, mirroring bake_release: a value is
+    substituted; an empty value strips the whole {day}/ (or /{day}) segment so a
+    non-nightly path collapses cleanly. Templates without {day} are unaffected."""
+    if not template:
+        return template
+    if day:
+        return template.replace("{day}", day)
+    return (template.replace("{day}/", "")
+                    .replace("/{day}", "")
+                    .replace("{day}", ""))
 
 
 def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):

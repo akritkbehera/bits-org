@@ -26,7 +26,8 @@ from bits_helpers.log import debug, dieOnError
 from bits_helpers.utilities import git
 from bits_helpers.defaults import parseDefaults, readDefaults
 from bits_helpers.cvmfs_layout import (
-    resolve_cvmfs_templates, resolve_release, path_release, bake_release)
+    resolve_cvmfs_templates, resolve_release, path_release, bake_release,
+    resolve_day, bake_day)
 
 
 # The placeholder set the publish pipeline's _expand_tmpl understands. {commit}
@@ -88,6 +89,9 @@ def doCvmfsPath(args, parser):
     _branch_basename = re.sub("refs/heads/", "", _value)
     tmpl = bake_release(
         tmpl, path_release(resolve_release(defaults_meta, _branch_basename)))
+    # {day} baked identically to the build so the reserved path matches the
+    # published one (see cvmfs_layout.resolve_day for the auto-weekday / --day rule).
+    tmpl = bake_day(tmpl, resolve_day(defaults_meta, getattr(args, "day", None)))
 
     # {family} is per-package and unknown before the build, so it collapses to
     # empty — the templates use the trailing-slash form {family}{pkg}.
