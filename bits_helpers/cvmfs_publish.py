@@ -319,6 +319,26 @@ def _locate_pkgroot(work_dir):
     raise SystemExit("cannot locate package root (.meta.json) under %s" % work_dir)
 
 
+def _files_under(root):
+    """Set of absolute file paths (not dirs) under *root*. Used to snapshot the
+    relocate work dir before/after so we can detect what post-relocate.sh wrote."""
+    out = set()
+    for dp, _dns, fns in os.walk(root):
+        for f in fns:
+            out.add(os.path.join(dp, f))
+    return out
+
+
+def _writes_outside_pkgroot(before, after, pkgroot):
+    """Files present after relocate but not before, that live OUTSIDE *pkgroot* —
+    i.e. what post-relocate.sh created outside the package's own tree. publish_one
+    tars only pkgroot, so these would otherwise be silently dropped and never reach
+    CVMFS. Returned sorted for a stable message."""
+    root = pkgroot.rstrip(os.sep)
+    return sorted(p for p in (after - before)
+                  if p != root and not p.startswith(root + os.sep))
+
+
 def _publish_tar(ctx, path, tar, label, fp=None):
     """Publish ONE prepared tar via the configured path; return its job id and
     remove the tar. INGEST (default): POST the tar itself with submit_ingest — the
@@ -419,12 +439,29 @@ def publish_one(spec, ctx):
                        WORK_DIR=work_dir, BITS_RELOCATE_STRIP_PP="1")
             # Run it exactly as the CI does: cwd=work_dir, script named RELATIVE
             # to it (the CI passes ${_pkgpath}/relocate-me.sh), so $0 matches.
+            _before = _files_under(work_dir)
             subprocess.run(["bash", "-e", os.path.relpath(reloc, work_dir)],
                            cwd=work_dir, env=env, check=True)
             for dp, _dn, fns in os.walk(pkgroot):
                 for f in fns:
                     if f.endswith(".unrelocated"):
                         os.remove(os.path.join(dp, f))
+            # Fail loud, never silent: publish only tars `pkgroot`, so any file
+            # post-relocate.sh created OUTSIDE the package's own tree would be
+            # dropped and never reach CVMFS. Detect it and stop. (Giving such
+            # files a real CVMFS channel — MODULES_STAGING / a shared path — is a
+            # planned follow-up; until then, surfacing the loss beats hiding it.)
+            _leaked = _writes_outside_pkgroot(_before, _files_under(work_dir), pkgroot)
+            if _leaked:
+                raise SystemExit(
+                    "%s@%s: post-relocate.sh wrote %d file(s) OUTSIDE the package "
+                    "tree. `bits cvmfs-publish` only publishes the package's own "
+                    "directory, so these would be silently dropped and never reach "
+                    "CVMFS. Publishing out-of-package files is not yet implemented "
+                    "(needs a MODULES_STAGING / shared-path channel). Offending "
+                    "files (relative to the relocate work dir):\n  %s"
+                    % (pkg, vdir, len(_leaked),
+                       "\n  ".join(os.path.relpath(f, work_dir) for f in _leaked)))
 
         relativise_symlinks(pkgroot)
         sanitize(pkgroot)
