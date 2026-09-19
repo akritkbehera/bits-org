@@ -195,3 +195,50 @@ class TestBuildIdFromManifest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRecursiveDependencyBuildOrder(unittest.TestCase):
+    """recursive.build / recursive.runtime are emitted in build (topological)
+    order, not arbitrary set-iteration order; direct deps keep declaration order."""
+
+    def _record(self, package, specs, build_order):
+        args = SimpleNamespace(annotate={}, architecture="arch",
+                               defaults=["release"], build_order=build_order)
+        os.environ["BITS_DIST_HASH"] = "deadbeef"
+        try:
+            return json.loads(create_provenance_info(package, specs, args))
+        finally:
+            os.environ.pop("BITS_DIST_HASH", None)
+
+    def test_recursive_runtime_in_build_order(self):
+        specs = {
+            "app": _spec("app",
+                         runtime_requires=["z", "a"],
+                         full_runtime_requires={"z", "a", "m"}),
+            "z": _spec("z"), "a": _spec("a"), "m": _spec("m"),
+        }
+        rec = self._record("app", specs, ["a", "m", "z", "app"])
+        got = [d["name"] for d in rec["dependencies"]["recursive"]["runtime"]]
+        self.assertEqual(got, ["a", "m", "z"])            # build order, not set order
+        direct = [d["name"] for d in rec["dependencies"]["direct"]["runtime"]]
+        self.assertEqual(direct, ["z", "a"])              # declaration order kept
+
+    def test_recursive_build_in_build_order(self):
+        specs = {
+            "app": _spec("app", full_build_requires={"tool2", "tool1"}),
+            "tool1": _spec("tool1"), "tool2": _spec("tool2"),
+        }
+        rec = self._record("app", specs, ["tool1", "tool2", "app"])
+        got = [d["name"] for d in rec["dependencies"]["recursive"]["build"]]
+        self.assertEqual(got, ["tool1", "tool2"])
+
+    def test_no_build_order_falls_back_cleanly(self):
+        args = SimpleNamespace(annotate={}, architecture="arch", defaults=["release"])
+        specs = {"app": _spec("app", full_runtime_requires={"a"}), "a": _spec("a")}
+        os.environ["BITS_DIST_HASH"] = "x"
+        try:
+            rec = json.loads(create_provenance_info("app", specs, args))
+        finally:
+            os.environ.pop("BITS_DIST_HASH", None)
+        self.assertEqual(
+            [d["name"] for d in rec["dependencies"]["recursive"]["runtime"]], ["a"])

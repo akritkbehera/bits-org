@@ -883,7 +883,18 @@ def create_provenance_info(package, specs, args):
     }
 
   def dependency_list(key):
-    return [spec_info(specs[dep]) for dep in specs[package].get(key, ())]
+    deps = specs[package].get(key, ())
+    # The recursive closures (full_build_requires / full_runtime_requires) are
+    # sets, so their natural iteration order is arbitrary and not reproducible
+    # across runs. Emit them in build (topological) order when it is available, so
+    # each .meta.json is deterministic and the recursive lists read in the order
+    # the dependencies are built. Direct deps are already lists (declaration
+    # order) and are left untouched.
+    order = getattr(args, "build_order", None)
+    if order is not None and not isinstance(deps, (list, tuple)):
+      rank = {name: i for i, name in enumerate(order)}
+      deps = sorted(deps, key=lambda d: (rank.get(d, len(rank)), d))
+    return [spec_info(specs[dep]) for dep in deps]
 
   # ADR-0001 additive provenance: build_id / abi_tag / reuse_policy + a repro
   # block. Never enters the package hash and never alters behaviour (the simple
@@ -3221,6 +3232,10 @@ def doBuild(args, parser):
            ", ".join(ownPackages))
 
   buildOrder = list(topological_sort(specs))
+  # Expose the topological build order so create_provenance_info can emit the
+  # recursive (set-based) dependency closures in build order — deterministic and
+  # meaningful, instead of arbitrary set-iteration order — in each .meta.json.
+  args.build_order = buildOrder
 
   # Check if any of the packages can be picked up from a local checkout
   if args.forceTracked:
