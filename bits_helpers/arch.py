@@ -70,6 +70,11 @@ def effective_arch(spec: dict, build_arch: str) -> str:
   """
   if spec.get("architecture") == SHARED_ARCH:
     return SHARED_ARCH
+  # own_hash packages (the toolchain) carry a build-type-neutral arch on the spec
+  # (set once at build setup), so one compiler build is shared across -opt/-dbg/…
+  # instead of forking the store per build type. See compute_own_hash_arch.
+  if spec.get("_own_hash_arch"):
+    return spec["_own_hash_arch"]
   return build_arch
 
 
@@ -140,6 +145,30 @@ def compute_combined_arch(defaults_meta: dict, defaults_list: list, raw_arch: st
   if not qualifiers:
     return raw_arch
   return raw_arch + "-" + "-".join(qualifiers)
+
+
+def compute_own_hash_arch(defaults_meta: dict, defaults_list: list, raw_arch: str) -> str:
+  """Store/deploy architecture for ``own_hash`` packages: the combined arch with the
+  append_arch qualifiers a defaults profile marked ``own_hash_neutral`` removed.
+
+  ``own_hash`` already makes a package's IDENTITY invariant to the community /
+  build-type defaults (it drops the merged ``defaults-release`` from the hash and
+  folds the container fingerprint). This makes its STORE/DEPLOY namespace match that
+  invariance: a build-type qualifier such as ``-opt``/``-dbg`` (marked
+  ``own_hash_neutral: true`` in ``defaults-opt.sh``/``defaults-dbg.sh``) is dropped,
+  so one compiler build serves every build type instead of one per type. Compiler
+  qualifiers (``-gcc15``, ``-clang``) are NOT marked, so they are kept and
+  gcc15/gcc16/clang stay distinct. Falls back to :func:`compute_combined_arch` when
+  the per-default append_arch mechanism is not active (the legacy ``qualify_arch``
+  path has no build-type concept).
+  """
+  per_default = defaults_meta.get("_append_arch_qualifiers")
+  if per_default:
+    drop = set(defaults_meta.get("_own_hash_drop_qualifiers") or ())
+    return raw_arch + "".join(q for q in per_default if q and q not in drop)
+  return compute_combined_arch(defaults_meta, defaults_list, raw_arch)
+
+
 # Built-in architecture layout, used when no `architecture:` template is set in
 # the defaults.  Expressed with the same %(...)s substitution syntax bits uses
 # elsewhere (sources, tags).  Available keys: see arch_components().

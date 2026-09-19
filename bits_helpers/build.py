@@ -17,7 +17,7 @@ from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev
-from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch
+from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch, compute_own_hash_arch
 from bits_helpers.defaults import parseDefaults, readDefaults
 from bits_helpers.matchers import resolve_variables
 from bits_helpers.packages import getPackageList
@@ -2761,6 +2761,11 @@ def doBuild(args, parser):
   # used, for example, to detect macOS via ${ARCHITECTURE:0:3}).
   raw_architecture = args.architecture
   args.architecture = compute_combined_arch(defaultsMeta, args.defaults, raw_architecture)
+  # own_hash packages (the toolchain) use a build-type-neutral arch so one compiler
+  # build serves every build type; identical to args.architecture until a defaults
+  # profile marks an append_arch own_hash_neutral (e.g. -opt/-dbg).
+  args.architecture_own_hash = compute_own_hash_arch(
+      defaultsMeta, args.defaults, raw_architecture)
   if args.architecture != raw_architecture:
     debug("qualify_arch active: using combined architecture %s (raw: %s)",
           args.architecture, raw_architecture)
@@ -3203,6 +3208,9 @@ def doBuild(args, parser):
                % ", ".join(sorted(x["package"] for x in _own_specs)))
     for _s in _own_specs:
       _s["container_fingerprint"] = _fp
+      # Build-type-neutral store/deploy arch (effective_arch reads this), so the
+      # one compiler build is shared across -opt/-dbg instead of forked per type.
+      _s["_own_hash_arch"] = getattr(args, "architecture_own_hash", args.architecture)
 
   if systemPackages:
     banner("bits can take the following packages from the system and will not build them:\n  %s",

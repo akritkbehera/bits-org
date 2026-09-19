@@ -157,6 +157,7 @@ def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta = {}
   defaultsBody = ""
   append_arch_qualifiers = []  # per-default append_arch values, in chain order
+  own_hash_drop_qualifiers = []  # append_arch values own_hash pkgs drop (build-type)
   valid_defaults_exempt = []   # structural/overlay defaults, in chain order
 
   for xdefaults in defaults:
@@ -173,6 +174,12 @@ def readDefaults(configDir, defaults, error, architecture):
       # into a single scalar and we need the ordered per-default list).
       if "append_arch" in xMeta:
         append_arch_qualifiers.append(xMeta["append_arch"])
+        # `own_hash_neutral: true` marks a build-type (or otherwise
+        # toolchain-irrelevant) append_arch; own_hash packages drop it from their
+        # store/deploy arch so one compiler build serves every build type.
+        if xMeta.get("own_hash_neutral"):
+          own_hash_drop_qualifiers.append(xMeta["append_arch"])
+      xMeta.pop("own_hash_neutral", None)  # profile marker, not merged metadata
       # A structural/overlay default (e.g. the 'alidist' variant) is not a
       # build flavor: packages must not gate their valid_defaults on it. Read
       # and strip the marker before the merge so it does not leak into the
@@ -195,6 +202,8 @@ def readDefaults(configDir, defaults, error, architecture):
   # use them instead of appending every default name to the architecture.
   if append_arch_qualifiers:
     defaultsMeta["_append_arch_qualifiers"] = append_arch_qualifiers
+  if own_hash_drop_qualifiers:
+    defaultsMeta["_own_hash_drop_qualifiers"] = own_hash_drop_qualifiers
 
   # The 'release' base is auto-injected into every chain and is never a build
   # flavor, so it is always structural (exempt from the valid_defaults gate).
