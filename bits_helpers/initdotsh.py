@@ -8,7 +8,7 @@ of build.py; pure string generation from resolved specs, no build side effects."
 from os.path import abspath
 from shlex import quote
 
-from bits_helpers.arch import SHARED_ARCH
+from bits_helpers.arch import SHARED_ARCH, effective_arch
 from bits_helpers.log import dieOnError
 from bits_helpers.utilities import (asList, pkg_to_shell_id, resolve_spec_data,
                                     topological_sort, ver_rev)
@@ -60,6 +60,15 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     """
     if dep_spec.get("architecture") == SHARED_ARCH:
       return f'"$WORK_DIR/{SHARED_ARCH}"'
+    # own_hash packages (the toolchain) are installed, stored and deployed under
+    # their build-type-NEUTRAL arch (effective_arch), not the consumer's build
+    # arch, so $BITS_ARCH_PREFIX (the consumer arch) points at a tree that only
+    # exists when a same-arch build happened to leave a warm-cache copy. On a
+    # fresh reuse from the store the neutral install is the only one present, so
+    # embed the dependency's own arch literally, exactly like SHARED_ARCH above.
+    dep_arch = effective_arch(dep_spec, architecture)
+    if dep_arch != architecture:
+      return f'"$WORK_DIR/{dep_arch}"'
     return '"$WORK_DIR/$BITS_ARCH_PREFIX"'
 
   def _dep_init_path(dep):
