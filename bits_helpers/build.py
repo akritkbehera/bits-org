@@ -2157,7 +2157,20 @@ def build_one_package(p, ctx):
       # Gate on the WRITE-store object itself (a HEAD), never the manifest or the
       # read store: after a store wipe the package is installed locally but the
       # S3 object is gone.
-      if syncHelper.writestore_has_tarball(spec, args.architecture):
+      # The existence HEAD is itself best-effort: _s3_key_exists re-raises any
+      # non-404 (403 expired creds, 503 SlowDown), and a connection timeout is
+      # not even a ClientError — so an un-guarded call here would propagate and
+      # fail an ALREADY-INSTALLED (reused) package, which has an empty BUILD dir
+      # and no log. Under a -j build doing one HEAD per reused package a transient
+      # throttle/timeout is near-certain, so we must never let it fail the package:
+      # on error we fall through and try the (idempotent) publish anyway.
+      _in_write_store = False
+      try:
+        _in_write_store = syncHelper.writestore_has_tarball(spec, args.architecture)
+      except Exception as exc:
+        warning("%s@%s write-store check failed (%s); will try to publish anyway",
+                spec["package"], spec["version"], exc)
+      if _in_write_store:
         debug("%s@%s already in the write store; nothing to publish.",
               spec["package"], spec["version"])
       elif os.path.isfile(_local_tar):
