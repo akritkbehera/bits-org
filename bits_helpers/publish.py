@@ -386,6 +386,10 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             # The CI pipeline that produced this build — the id the console's passkey
             # pre-approval is keyed on. The certify job reads it from this BOM to
             # consume that pre-approval when it signs. Absent for a local publish.
+            # FUTURE(build_id-unification 2026-09-20): source_pipeline_id is CI-only
+            # (empty off-CI), so CLI/external BOMs are not pre-approvable by it. Unify
+            # the pre-approval anchor on the deterministic manifest build_id. KEEP this
+            # until that lands. Doc: signing-authz-unified-model-2026-09-20.
             _pipeline_id = os.environ.get("CI_PIPELINE_ID", "").strip()
             if _pipeline_id:
                 _provenance["source_pipeline_id"] = _pipeline_id
