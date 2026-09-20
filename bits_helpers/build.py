@@ -2138,6 +2138,40 @@ def build_one_package(p, ctx):
         rmdir(join(workDir, "INSTALLROOT"))
       except Exception:
         pass
+    # The install dir is present at the right hash, but that does NOT prove the
+    # content tarball is in the write store: a store wipe (or the first publish
+    # from a node whose local cache stayed warm) leaves a package installed
+    # locally yet absent from S3. Don't assume "installed => published" — when a
+    # write store is configured and the local content tarball is present, push
+    # it. upload_symlinks_and_tarball HEAD-skips when the object already exists,
+    # so this is a cheap no-op in the common case. Guards mirror doFinalSync
+    # (skip local revisions, repository packages, non-redistributable binaries).
+    from bits_helpers.sync import binary_redistributable
+    if getattr(syncHelper, "writeStore", "") \
+       and not spec["revision"].startswith("local") \
+       and not spec.get("provides_repository") \
+       and binary_redistributable(spec):
+      _eff_arch = effective_arch(spec, args.architecture)
+      _tarname  = "%s-%s.%s.tar.gz" % (spec["package"], ver_rev(spec), _eff_arch)
+      _local_tar = os.path.join(workDir, resolve_store_path(_eff_arch, spec["hash"]), _tarname)
+      # Gate on the WRITE-store object itself (a HEAD), never the manifest or the
+      # read store: after a store wipe the package is installed locally but the
+      # S3 object is gone.
+      if syncHelper.writestore_has_tarball(spec, args.architecture):
+        debug("%s@%s already in the write store; nothing to publish.",
+              spec["package"], spec["version"])
+      elif os.path.isfile(_local_tar):
+        # Absent from the store but present locally: publish it. Best-effort — a
+        # store hiccup (expired creds / transient network) must NOT fail an
+        # otherwise-complete package, unlike a freshly built one in doFinalSync.
+        try:
+          syncHelper.upload_symlinks_and_tarball(spec)
+          info("%s@%s [uploaded from local cache]", spec["package"], spec["version"])
+        except Exception as exc:
+          warning("%s@%s store sync failed: %s", spec["package"], spec["version"], exc)
+      else:
+        warning("%s@%s installed locally but absent from the store and no local "
+                "tarball — rebuild to publish it.", spec["package"], spec["version"])
     # Record in the build manifest that this package was already installed.
     if getattr(args, "manifest", None) is not None:
       args.manifest.add_package(spec, "already_installed",
@@ -3188,6 +3222,24 @@ def doBuild(args, parser):
   
   if args.docker and getattr(args, "dockerImage", None):
     banner("Building in container:\n%s", args.dockerImage)
+  # Make the release label and the bits build tool explicit up front — both are
+  # otherwise only embedded in the raw argument line. The release is the resolved
+  # {release} slot (an explicit "--set release=" wins); it drives the lcg.bits
+  # branch override and the CVMFS path, so surfacing it prevents silent
+  # mis-targeting from a copy-pasted command.
+  _release = (defaultsMeta.get("variables") or {}).get("release")
+  banner("Release: %s", _release if _release else "<not set>")
+  try:
+    _bits_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _bits_branch = subprocess.check_output(
+        ["git", "-C", _bits_src, "rev-parse", "--abbrev-ref", "HEAD"],
+        stderr=subprocess.DEVNULL).decode().strip()
+  except Exception:
+    _bits_branch = ""
+  banner("bits build tool: %s%s (dist@%s)",
+         __version__ or "unknown",
+         " on branch %s" % _bits_branch if _bits_branch and _bits_branch != "HEAD" else "",
+         (os.environ.get("BITS_DIST_HASH") or "?")[:10])
   banner("Configured directory:\n%s", os.path.abspath(args.configDir))
   banner("Package Recipe will be searched in the following order \n%s", os.environ.get("BITS_PATH"))
   # Resolve the effective auto-patch flag for every package. Default behaviour is

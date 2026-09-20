@@ -312,6 +312,15 @@ class RemoteSync:
     """Store tarball object names for an (architecture, hash), or []."""
     return []
 
+  def writestore_has_tarball(self, spec, architecture=None):
+    """True iff *spec*'s content tarball already exists in the WRITE store.
+
+    Checked with a HEAD of the write-store object itself — never the manifest or
+    the read store (those can report present when the write store was wiped).
+    Default False (no write store, or not queryable): the caller then attempts
+    the upload, whose own idempotent HEAD-skip is the backstop."""
+    return False
+
 
 class DualRemoteSync(RemoteSync):
   """Read packages from one backend, upload freshly-built ones to another.
@@ -361,6 +370,11 @@ class DualRemoteSync(RemoteSync):
   def list_store_tarballs(self, *args, **kwargs):
     return self._first_nonempty(
         self.reader.list_store_tarballs, self.writer.list_store_tarballs, [], *args, **kwargs)
+
+  def writestore_has_tarball(self, spec, architecture=None):
+    # Existence in the WRITE store only — the reader (e.g. a CVMFS mount) is
+    # irrelevant to whether we must upload.
+    return self.writer.writestore_has_tarball(spec, architecture)
 
   @staticmethod
   def _first_nonempty(reader_fn, writer_fn, default, *args, **kwargs):
@@ -1095,6 +1109,16 @@ class Boto3RemoteSync(RemoteSync):
         return False
       raise
     return True
+
+  def writestore_has_tarball(self, spec, architecture=None):
+    """HEAD the content object in the WRITE bucket (not the manifest/read store)."""
+    if not self.writeStore:
+      return False
+    arch = effective_arch(spec, architecture or self.architecture)
+    tarball = "{package}-{ver_rev}.{architecture}.tar.gz".format(
+        package=spec["package"], ver_rev=ver_rev(spec), architecture=arch)
+    tar_path = os.path.join(resolve_store_path(arch, spec["hash"]), tarball)
+    return self._s3_key_exists(tar_path)
 
   def _s3_remote_tarball_sha256(self, key):
     """Return ``'sha256:HEX'`` for the store object at *key*, or None if absent.
