@@ -341,21 +341,27 @@ cat > "$INSTALLROOT/.meta.json" <<\EOF
 EOF
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
-# Make pkg-config files relocation-independent: rewrite this package's own
-# absolute install prefix to a ${pcfiledir}-relative path, baked in BEFORE the
-# store tarball so consumers resolve correctly under every path, including
-# reuse that skips relocate-me.sh.
+# Make pkg-config and CMake package files relocation-independent: rewrite this
+# package's own absolute install prefix to a location-relative reference, baked
+# in BEFORE the store tarball so consumers resolve correctly under every path,
+# including reuse that skips relocate-me.sh. .pc anchors on ${pcfiledir}, .cmake
+# on ${CMAKE_CURRENT_LIST_DIR}. The grep guard means only files that actually
+# bake the absolute prefix are touched (relocatable configs are left alone).
 _absroot="$INSTALLROOT"
-find . -name '*.pc' -type f | while IFS= read -r _pc; do
-  grep -qF "$_absroot" "$_pc" || continue
-  _dir="$(dirname "${_pc#./}")"
-  if [ "$_dir" = "." ]; then _rel='${pcfiledir}'; else
+find . \( -name '*.pc' -o -name '*.cmake' \) -type f | while IFS= read -r _cf; do
+  grep -qF "$_absroot" "$_cf" || continue
+  case "$_cf" in
+    *.pc) _anchor='${pcfiledir}' ;;
+    *)    _anchor='${CMAKE_CURRENT_LIST_DIR}' ;;
+  esac
+  _dir="$(dirname "${_cf#./}")"
+  if [ "$_dir" = "." ]; then _rel="$_anchor"; else
     _up=""; _oIFS="$IFS"; IFS=/; for _c in $_dir; do _up="../$_up"; done; IFS="$_oIFS"
-    _rel="\${pcfiledir}/${_up%%/}"
+    _rel="${_anchor}/${_up%%/}"
   fi
-  sed -i "s|$_absroot|$_rel|g" "$_pc"
+  sed -i "s|$_absroot|$_rel|g" "$_cf"
 done
-unset _absroot _pc _dir _up _c _oIFS _rel
+unset _absroot _cf _anchor _dir _up _c _oIFS _rel
 # Find which files need relocation.
 { grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
 
