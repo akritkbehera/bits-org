@@ -2335,8 +2335,9 @@ def build_one_package(p, ctx):
       verify_tarball_checksum(spec, workDir, args.architecture, spec["cachedTarball"])
     # Trusted-reuse gate (--require-signed-reuse): a tarball recalled from the
     # remote store is reused only if a verified signed manifest vouches for it
-    # (hash present AND sha256 matches). Otherwise fall through to a rebuild;
-    # a sha256 mismatch is fatal (tampering).
+    # (hash present AND sha256 matches). Otherwise fall through to a rebuild:
+    # an unvouched hash or a sha256 mismatch both discard the tarball and
+    # rebuild locally (the bad tarball is never reused).
     if (spec["cachedTarball"] and cfg.require_signed_reuse
         and spec["cachedTarball"] not in _preFetchTars):
       _idx = trusted_reuse_index(args, workDir)
@@ -2348,13 +2349,17 @@ def build_one_package(p, ctx):
         spec["cachedTarball"] = ""
       else:
         _actual = compute_checksum_file(spec["cachedTarball"])
-        dieOnError(_actual != _sha,
-                   "INTEGRITY FAILURE: remote tarball %s does not match the "
-                   "signed manifest.\n  Expected: %s\n  Actual:   %s\n  "
-                   "Do NOT use it." % (os.path.basename(spec["cachedTarball"]),
-                                       _sha, _actual))
-        debug("Trusted reuse: %s@%s verified against signed manifest",
-              spec["package"], spec["hash"])
+        if _actual != _sha:
+          # A mismatched remote tarball is never reused, but that is not fatal:
+          # discard it and rebuild locally (same self-healing path as an
+          # unvouched hash). Warn loudly so the store inconsistency is visible.
+          warning("Trusted reuse: remote tarball %s does not match the signed "
+                  "manifest (expected %s, got %s); discarding and rebuilding.",
+                  os.path.basename(spec["cachedTarball"]), _sha, _actual)
+          spec["cachedTarball"] = ""
+        else:
+          debug("Trusted reuse: %s@%s verified against signed manifest",
+                spec["package"], spec["hash"])
 
   # The actual build script.
   
