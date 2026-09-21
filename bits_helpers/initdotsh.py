@@ -246,7 +246,8 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     _lib_path_var = "DYLD_LIBRARY_PATH" if architecture.startswith("osx") else "LD_LIBRARY_PATH"
     for key, value in (("PATH", "bin"),
                        (_lib_path_var, "lib"), (_lib_path_var, "lib64"),
-                       ("PKG_CONFIG_PATH", "lib/pkgconfig"), ("PKG_CONFIG_PATH", "lib64/pkgconfig")):
+                       ("PKG_CONFIG_PATH", "lib/pkgconfig"), ("PKG_CONFIG_PATH", "lib64/pkgconfig"),
+                       ("CPATH", "include")):
       prepend_path.setdefault(key, []).insert(0, f"${bigpackage}_ROOT/{value}")
     lines.extend('[ ! -d "{value}" ] || export {key}="{value}${{{key}+:${key}}}"'
                  .format(key=key, value=dir)
