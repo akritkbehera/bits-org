@@ -3,6 +3,9 @@
 
 """Auto-derivation of signed-reuse trust-manifest URLs from a remote store."""
 
+import json
+import os
+import tempfile
 import unittest
 
 from bits_helpers.build import derive_trust_manifest_srcs as d
@@ -47,6 +50,55 @@ class TestDeriveTrustManifestSrcs(unittest.TestCase):
         self.assertEqual(d("cvmfs://repo", P, A), [])
         self.assertEqual(d("", P, A), [])
         self.assertEqual(d(None, P, A), [])
+
+
+class TestListStoreManifestSrcs(unittest.TestCase):
+    """Listing-based derivation: trust every signed manifest in the store."""
+
+    def _run(self, objs, store="b3://lcgapp-bits-testing::rw"):
+        import bits_helpers.download as dl
+        from bits_helpers.build import _list_store_manifest_srcs
+
+        def fake_dl(url, destDir, work_dir, dest_filename=None):
+            self.assertIn("format=json", url)
+            with open(os.path.join(destDir, dest_filename), "w") as fh:
+                json.dump(objs, fh)
+            return True
+
+        orig = dl.downloadUrllib2
+        dl.downloadUrllib2 = fake_dl
+        try:
+            return _list_store_manifest_srcs(store, P, None, tempfile.mkdtemp())
+        finally:
+            dl.downloadUrllib2 = orig
+
+    def test_lists_manifests_sorted_excluding_sig_and_nonprefix(self):
+        objs = [{"name": "MANIFESTS/common-manifest-x86_64-el9-gcc15.json"},
+                {"name": "MANIFESTS/common-manifest-x86_64-el9-gcc15.json.sig"},
+                {"name": "MANIFESTS/common-manifest-x86_64-el10-gcc14-opt.json"},
+                {"name": "OTHER/unrelated.json"}]
+        b = "https://s3.cern.ch/swift/v1/lcgapp-bits-testing/MANIFESTS/common-manifest"
+        self.assertEqual(self._run(objs),
+                         [b + "-x86_64-el10-gcc14-opt.json", b + "-x86_64-el9-gcc15.json"])
+
+    def test_no_work_dir_returns_empty(self):
+        from bits_helpers.build import _list_store_manifest_srcs
+        self.assertEqual(_list_store_manifest_srcs("b3://b", P, None, None), [])
+
+    def test_unsupported_store_returns_empty(self):
+        from bits_helpers.build import _list_store_manifest_srcs
+        self.assertEqual(_list_store_manifest_srcs("rsync://h/p", P, None, "/tmp"), [])
+
+    def test_download_failure_falls_back_to_empty(self):
+        import bits_helpers.download as dl
+        from bits_helpers.build import _list_store_manifest_srcs
+        orig = dl.downloadUrllib2
+        dl.downloadUrllib2 = lambda *a, **k: False   # fetch failed, wrote nothing
+        try:
+            self.assertEqual(
+                _list_store_manifest_srcs("b3://b", P, None, tempfile.mkdtemp()), [])
+        finally:
+            dl.downloadUrllib2 = orig
 
 
 if __name__ == "__main__":

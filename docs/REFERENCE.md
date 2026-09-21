@@ -176,6 +176,11 @@ The tier-3 attestation is driven by three build flags:
   store is reused only when `--trust-manifest` lists its hash **and** its sha256
   matches. Unlisted → discard and rebuild; sha256 mismatch → fatal (tampering).
   Local build-node and CVMFS artifacts are unaffected.
+  Maximal reuse is the default: with no `--trust-manifest`, a build trusts
+  every signed manifest present in the store (content hashes are
+  arch-independent, so a build reuses any hash a trusted key vouched for,
+  across arch and community); signature + expiry are the only gate. Scope it
+  with `--trust-groups`, or turn verification off with `--no-require-signed-reuse`.
 - `--trust-groups G1,G2,…` — scope reuse by group. The signed common manifest may
   tag each entry with a `group`; with `--trust-groups` a consumer trusts only
   those groups plus the always-trusted `common` base (untagged entries count as
