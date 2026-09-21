@@ -341,6 +341,21 @@ cat > "$INSTALLROOT/.meta.json" <<\EOF
 EOF
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
+# Make pkg-config files relocation-independent: rewrite this package's own
+# absolute install prefix to a ${pcfiledir}-relative path, baked in BEFORE the
+# store tarball so consumers resolve correctly under every path, including
+# reuse that skips relocate-me.sh.
+_absroot="$INSTALLROOT"
+find . -name '*.pc' -type f | while IFS= read -r _pc; do
+  grep -qF "$_absroot" "$_pc" || continue
+  _dir="$(dirname "${_pc#./}")"
+  if [ "$_dir" = "." ]; then _rel='${pcfiledir}'; else
+    _up=""; _oIFS="$IFS"; IFS=/; for _c in $_dir; do _up="../$_up"; done; IFS="$_oIFS"
+    _rel="\${pcfiledir}/${_up%/}"
+  fi
+  sed -i "s|$_absroot|$_rel|g" "$_pc"
+done
+unset _absroot _pc _dir _up _c _oIFS _rel
 # Find which files need relocation.
 { grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
 
