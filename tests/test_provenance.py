@@ -22,7 +22,7 @@ from bits_helpers.build import create_provenance_info
 def _spec(name, **kw):
     base = {
         "package": name, "version": "1.0", "revision": "1", "hash": "h" + name,
-        "tag": None, "source": None,
+        "tag": None, "source": None, "requires": [],
         "build_requires": [], "runtime_requires": [],
         "full_build_requires": [], "full_runtime_requires": [],
     }

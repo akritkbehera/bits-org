@@ -1478,6 +1478,25 @@ def _apply_source_mode(spec, mode):
             spec.pop("tag", None)              # ...and its git ref (-> version)
 
 
+def create_deps_info(package, specs, args):
+  """Return *package*'s runtime dependency graph as ``{pkg: [deps]}``.
+
+  One entry per package of the closure, in build order, with its dependencies
+  also in build order — the same edges `bits deps --outmake --runtime-only`
+  prints, as data rather than Makefile text.
+
+  .meta.json already lists the closure (dependencies.recursive.runtime), but
+  not the edges *among* those packages, so a consumer holding one tarball can
+  only learn the install order by unpacking every dependency and reading their
+  .meta.json files in turn. This records the whole graph once, in build order.
+
+  Built from the specs this build used, so it describes what was actually
+  built rather than what the recipes say later. Never hashed.
+  """
+  from bits_helpers.deps import deps_graph
+  return deps_graph(specs, package, runtime_only=True)
+
+
 def create_provenance_info(package, specs, args):
   """Return a metadata record for storage in the package's install directory."""
 
@@ -1557,6 +1576,12 @@ def create_provenance_info(package, specs, args):
         "runtime": dependency_list("full_runtime_requires"),
       },
     },
+    # Runtime edges between the members of the closure above, as
+    # {"pkg": ["dep", ...]} in build order (the same graph
+    # `bits deps --outmake --runtime-only` prints). The lists above give the
+    # closure but not the edges among its members, so this is what lets a
+    # consumer derive the install order from this file alone. Never hashed.
+    "dependency_graph": create_deps_info(package, specs, args),
   })
 
 
