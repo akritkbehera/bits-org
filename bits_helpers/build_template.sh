@@ -351,7 +351,7 @@ find . -name '*.pc' -type f | while IFS= read -r _pc; do
   _dir="$(dirname "${_pc#./}")"
   if [ "$_dir" = "." ]; then _rel='${pcfiledir}'; else
     _up=""; _oIFS="$IFS"; IFS=/; for _c in $_dir; do _up="../$_up"; done; IFS="$_oIFS"
-    _rel="\${pcfiledir}/${_up%/}"
+    _rel="\${pcfiledir}/${_up%%/}"
   fi
   sed -i "s|$_absroot|$_rel|g" "$_pc"
 done
