@@ -341,13 +341,6 @@ cat > "$INSTALLROOT/.meta.json" <<\EOF
 EOF
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
-# Make pkg-config and CMake package files relocation-independent: rewrite this
-# package's own absolute install prefix to a location-relative reference, baked
-# in BEFORE the store tarball so consumers resolve correctly under every path,
-# including reuse that skips relocate-me.sh. .pc anchors on ${pcfiledir}, .cmake
-# on ${CMAKE_CURRENT_LIST_DIR}. The grep guard means only files that actually
-# bake the absolute prefix are touched (relocatable configs are left alone).
-bash "${BITS_SCRIPT_DIR}/bits_helpers/relativize-configs.sh" "$INSTALLROOT"
 # Find which files need relocation.
 { grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
 
@@ -451,6 +444,18 @@ find "$_pack_root" -type l | while IFS= read -r _lnk; do
   esac
 done
 unset _pack_root
+
+# Make pkg-config and CMake package files relocation-independent: rewrite this
+# package's own absolute install prefix to a location-relative reference. Done
+# HERE - the LAST tree mutation before the rsync + tar below, after POST_INSTALL
+# hooks and the symlink pass - so both the runtime install and the store tarball
+# see the fix. Earlier (before POST_INSTALL) a hook that regenerates .pc/.cmake
+# would re-bake the absolute prefix into the packed tree. .pc anchors on
+# ${pcfiledir}, .cmake on ${CMAKE_CURRENT_LIST_DIR}; the grep guard leaves
+# already-relative configs untouched.
+if [ -w "$INSTALLROOT" ]; then
+  bash "${BITS_SCRIPT_DIR}/bits_helpers/relativize-configs.sh" "$INSTALLROOT"
+fi
 
 # Archive creation
 # B7 FIX: replace backtick with $(...) and quote $PKGHASH; use -c (chars) consistently.
