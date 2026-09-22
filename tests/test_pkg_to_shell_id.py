@@ -184,5 +184,21 @@ class TestGenerateInitdotshDotPackage(unittest.TestCase):
         self.assertIn("GCC-Toolchain/2.0-1", initsh)  # path uses original name
 
 
+class TestBuildEnvSearchPaths(unittest.TestCase):
+    """Build-time init.sh must put a dependency's libs on LIBRARY_PATH (the
+    compiler's -L link search), symmetric with CPATH (its -I include search).
+    Without LIBRARY_PATH a bare `-lfoo` link (e.g. Go/cgo, an autoconf project
+    not using pkg-config) fails to find the dep even though the header compiles.
+    """
+
+    def test_library_path_and_cpath_emitted(self):
+        initsh = generate_initdotsh("my-pkg", _make_specs("my-pkg"), "slc7_x86-64",
+                                    workDir="/sw", post_build=True)
+        # full guarded line: guard + prepend form, not just presence
+        self.assertIn('[ ! -d "$MY_PKG_ROOT/lib" ] || export LIBRARY_PATH="$MY_PKG_ROOT/lib${LIBRARY_PATH+:$LIBRARY_PATH}"', initsh)
+        self.assertIn('export CPATH="$MY_PKG_ROOT/include', initsh)      # compiler -I (377f619)
+        self.assertIn('export LD_LIBRARY_PATH="$MY_PKG_ROOT/lib', initsh)  # runtime loader
+
+
 if __name__ == "__main__":
     unittest.main()
