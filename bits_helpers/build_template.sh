@@ -347,21 +347,7 @@ cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
 # including reuse that skips relocate-me.sh. .pc anchors on ${pcfiledir}, .cmake
 # on ${CMAKE_CURRENT_LIST_DIR}. The grep guard means only files that actually
 # bake the absolute prefix are touched (relocatable configs are left alone).
-_absroot="$INSTALLROOT"
-find . \( -name '*.pc' -o -name '*.cmake' \) -type f | while IFS= read -r _cf; do
-  grep -qF "$_absroot" "$_cf" || continue
-  case "$_cf" in
-    *.pc) _anchor='${pcfiledir}' ;;
-    *)    _anchor='${CMAKE_CURRENT_LIST_DIR}' ;;
-  esac
-  _dir="$(dirname "${_cf#./}")"
-  if [ "$_dir" = "." ]; then _rel="$_anchor"; else
-    _up=""; _oIFS="$IFS"; IFS=/; for _c in $_dir; do _up="../$_up"; done; IFS="$_oIFS"
-    _rel="${_anchor}/${_up%%/}"
-  fi
-  sed -i "s|$_absroot|$_rel|g" "$_cf"
-done
-unset _absroot _cf _anchor _dir _up _c _oIFS _rel
+bash "${BITS_SCRIPT_DIR}/bits_helpers/relativize-configs.sh" "$INSTALLROOT"
 # Find which files need relocation.
 { grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
 
