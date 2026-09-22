@@ -162,6 +162,19 @@ def resolve_links_path(architecture, package):
   return "/".join(("TARS", architecture, package))
 
 
+def is_virtual_package(spec):
+    """True for packages that carry no publishable binary artifact and so must
+    never be uploaded to the store, published to CVMFS, or recalled from the
+    store: repository loaders (``provides_repository``) and the synthetic
+    ``defaults-release`` config collector. They are built/used locally only.
+
+    One predicate for all three store paths (upload, reuse, CVMFS publish) so
+    they cannot drift — defaults-release used to be excluded from CVMFS publish
+    but not from the S3 upload/reuse gate, which leaked it into the store.
+    """
+    return bool(spec.get("provides_repository")) or spec.get("package") == "defaults-release"
+
+
 def short_commit_hash(spec):
   """Shorten the spec's commit hash to make it more human-readable.
 

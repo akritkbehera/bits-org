@@ -706,9 +706,11 @@ def main(argv=None):
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
 
+    from bits_helpers.utilities import is_virtual_package
+
     def _publishable(s):
         # virtual / repository-loader packages produce nothing for CVMFS
-        if s.get("provides_repository") or s.get("package") == "defaults-release":
+        if is_virtual_package(s):
             return False
         # non-redistributable: kept in the store, never in public CVMFS. Exact
         # replica of the CI (jq `.redistributable != false`): only a literal

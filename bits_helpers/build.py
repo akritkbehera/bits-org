@@ -16,7 +16,7 @@ from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
 from bits_helpers.cmd import execute, DockerRunner, BASH, install_wrapper_script, getstatusoutput
 from bits_helpers.sandbox import wrap_build_command
 from bits_helpers.utilities import prunePaths, symlink, call_ignoring_oserrors, topological_sort
-from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, ver_rev, is_virtual_package
 from bits_helpers.arch import detectArch, effective_arch, SHARED_ARCH, compute_combined_arch, compute_own_hash_arch
 from bits_helpers.defaults import parseDefaults, readDefaults
 from bits_helpers.matchers import resolve_variables
@@ -1477,7 +1477,7 @@ def doFinalSync(spec, specs, args, syncHelper):
   # artifacts and must NOT be pushed to the store (nor published to CVMFS). Skip
   # their upload the same way local-only builds are skipped.
   from bits_helpers.sync import binary_redistributable
-  if not spec["revision"].startswith("local") and not spec.get("provides_repository") \
+  if not spec["revision"].startswith("local") and not is_virtual_package(spec) \
      and not binary_redistributable(spec):
     # redistributable: sources|none (QGRAF, the CPC family, vendor EULAs …):
     # the binary must not be uploaded — the store may be world-readable, and a
@@ -1486,7 +1486,7 @@ def doFinalSync(spec, specs, args, syncHelper):
     if getattr(syncHelper, "writeStore", ""):
       info("%s@%s [NOT uploaded — redistributable: %s]",
            spec["package"], spec["version"], spec.get("redistributable"))
-  elif not spec["revision"].startswith("local") and not spec.get("provides_repository"):
+  elif not spec["revision"].startswith("local") and not is_virtual_package(spec):
     syncHelper.upload_symlinks_and_tarball(spec)
     # Log (info level) that a freshly built tarball was pushed to the write store.
     # Reused packages (cachedTarball) are already there and were marked
@@ -2273,7 +2273,9 @@ def build_one_package(p, ctx):
   tar_hash_dir = os.path.join(workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
   debug("Looking for cached tarball in %s", tar_hash_dir)
   spec["cachedTarball"] = ""
-  if not spec["is_devel_pkg"]:
+  # Virtual packages (provides_repository, defaults-release) are never in the
+  # store: skip the fetch/select/trusted-reuse scan entirely and build locally.
+  if not spec["is_devel_pkg"] and not is_virtual_package(spec):
     # MUTUAL EXCLUSION with the prefetch pool, not just waiting: merely
     # waiting on the sentinel left a window — a prefetch worker that had not
     # yet STARTED this package (no sentinel to wait on) could drop the
