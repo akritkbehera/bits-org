@@ -70,3 +70,98 @@ def test_idempotent_and_no_backup_left():
         # the sed -i.suffix backup must be cleaned up
         leftovers = [f for _, _, files in os.walk(root) for f in files if f.endswith(".bits-reloc")]
         assert leftovers == []
+
+
+SELF_PREFIX = 'prefix=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)'
+
+
+def test_config_script_prefix_becomes_self_relative():
+    with tempfile.TemporaryDirectory() as root:
+        cfg = os.path.join(root, "bin", "foo-config")
+        _write(cfg, "#!/bin/sh\nprefix=%s\nexec_prefix=${prefix}\n"
+                    "includedir=${prefix}/include\nlibdir=${exec_prefix}/lib\n"
+                    "echo -I${includedir} -L${libdir} -lfoo\n" % root)
+        os.chmod(cfg, 0o755)
+        _run(root)
+        txt = open(cfg).read()
+        # the one absolute line is recomputed from $0; everything else derived
+        # from ${prefix} is left as-is
+        assert SELF_PREFIX + "\n" in txt
+        assert "exec_prefix=${prefix}\n" in txt
+        assert "includedir=${prefix}/include\n" in txt
+        assert root not in txt
+        # +x bit preserved (a *-config must stay runnable)
+        assert os.access(cfg, os.X_OK)
+
+
+def test_config_script_quoted_prefix_and_literal_libdir():
+    with tempfile.TemporaryDirectory() as root:
+        cfg = os.path.join(root, "bin", "bar-config")
+        # quoted prefix assignment + a literal own-root libdir (multiarch idiom)
+        _write(cfg, '#!/bin/sh\nprefix="%s"\nlibdir=%s/lib64\n'
+                    'echo -L${libdir}\n' % (root, root))
+        os.chmod(cfg, 0o755)
+        _run(root)
+        txt = open(cfg).read()
+        assert SELF_PREFIX + "\n" in txt          # quoted form recognised
+        assert "libdir=${prefix}/lib64\n" in txt  # literal own-root repointed
+        assert root not in txt
+
+
+def test_config_script_foreign_dep_path_untouched():
+    # over-rewrite negative control: a DIFFERENT package's absolute path
+    # (a different INSTALLROOT hash) must survive — we only rewrite our own root.
+    with tempfile.TemporaryDirectory() as root:
+        foreign = "/some/other/INSTALLROOT/%s/x86-64/dep/1.0" % ("d" * 40)
+        cfg = os.path.join(root, "bin", "baz-config")
+        _write(cfg, "#!/bin/sh\nprefix=%s\necho -L${prefix}/lib -L%s/lib\n"
+                    % (root, foreign))
+        os.chmod(cfg, 0o755)
+        _run(root)
+        txt = open(cfg).read()
+        assert SELF_PREFIX + "\n" in txt
+        assert foreign in txt          # dependency path left alone
+        assert root not in txt
+
+
+def test_config_script_resolves_after_move():
+    # prove the endpoint: relativise, move the tree, the script emits the NEW path
+    import shutil
+    with tempfile.TemporaryDirectory() as parent:
+        root = os.path.join(parent, "orig")
+        os.makedirs(os.path.join(root, "bin"))
+        cfg = os.path.join(root, "bin", "foo-config")
+        _write(cfg, "#!/bin/sh\nprefix=%s\nincludedir=${prefix}/include\n"
+                    "echo -I${includedir}\n" % root)
+        os.chmod(cfg, 0o755)
+        _run(root)
+        moved = os.path.join(parent, "moved")
+        shutil.move(root, moved)
+        out = subprocess.run([os.path.join(moved, "bin", "foo-config")],
+                             capture_output=True, text=True, check=True).stdout
+        assert ("-I%s/include" % moved) in out
+
+
+def test_config_script_idempotent():
+    with tempfile.TemporaryDirectory() as root:
+        cfg = os.path.join(root, "bin", "foo-config")
+        _write(cfg, "#!/bin/sh\nprefix=%s\n" % root)
+        os.chmod(cfg, 0o755)
+        _run(root)
+        first = open(cfg).read()
+        _run(root)
+        assert open(cfg).read() == first
+        leftovers = [f for _, _, files in os.walk(root) for f in files if f.endswith(".bits-reloc")]
+        assert leftovers == []
+
+
+def test_config_script_without_prefix_line_left_untouched():
+    # a *-config that bakes the root but defines no prefix= assignment must be
+    # left byte-identical, never rewritten to an undefined ${prefix}.
+    with tempfile.TemporaryDirectory() as root:
+        cfg = os.path.join(root, "bin", "noprefix-config")
+        original = "#!/bin/sh\necho -I%s/include -L%s/lib\n" % (root, root)
+        _write(cfg, original)
+        os.chmod(cfg, 0o755)
+        _run(root)
+        assert open(cfg).read() == original   # untouched, still absolute
