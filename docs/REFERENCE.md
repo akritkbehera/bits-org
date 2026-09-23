@@ -996,6 +996,16 @@ AlmaLinux hosts.
 
 ---
 
+Package `.meta.json` files also contain `dependency_graph`, a mapping from each
+package in the runtime closure (including the package itself) to its direct runtime
+dependencies. This includes `untracked_requires`, but excludes build-only dependencies
+and the virtual `defaults-release` node and its edges. Node names and dependency lists
+are alphabetically sorted, independent of build order and unrelated build targets;
+consumers can derive installation order from the edges. Recursive dependency metadata
+lists are also alphabetically sorted; direct lists keep recipe declaration order.
+This metadata does not enter the package hash. Adding the field changes newly built
+tarball bytes, so existing signed checksums do not describe those rebuilt tarballs.
+
 ### bits deps
 
 Generate a visual dependency graph for a package (requires Graphviz), and/or a
