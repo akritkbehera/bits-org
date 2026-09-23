@@ -921,6 +921,7 @@ def create_provenance_info(package, specs, args):
   def spec_info(spec):
     return {
       "name": spec["package"],
+      "pkg_family": spec.get("pkg_family", ""),
       "tag": spec.get("tag"),
       "source": spec.get("source"),
       "version": spec["version"],
@@ -929,7 +930,12 @@ def create_provenance_info(package, specs, args):
     }
 
   def dependency_list(key):
-    return [spec_info(specs[dep]) for dep in specs[package].get(key, ())]
+    deps = specs[package].get(key, ())
+    # Recursive closures are sets. Stabilize serialization without changing
+    # execution order or the declaration order of direct dependencies.
+    if key in ("full_build_requires", "full_runtime_requires"):
+      deps = sorted(deps)
+    return [spec_info(specs[dep]) for dep in deps]
 
   # ADR-0001 additive provenance: build_id / abi_tag / reuse_policy + a repro
   # block. Never enters the package hash and never alters behaviour (the simple
@@ -965,6 +971,8 @@ def create_provenance_info(package, specs, args):
     _provenance = "own_hash"
   else:
     _provenance = "loose" if _closure_untracked() else "pure"
+  from bits_helpers.deps import deps_graph
+
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
@@ -1004,6 +1012,7 @@ def create_provenance_info(package, specs, args):
         "runtime": dependency_list("full_runtime_requires"),
       },
     },
+    "dependency_graph": deps_graph(specs, package, runtime_only=True),
   })
 
 
@@ -4035,4 +4044,3 @@ def doBuild(args, parser):
                           endpoint=_store_ep)
 
   debug("Everything done")
-
