@@ -869,20 +869,23 @@ def _apply_source_mode(spec, mode):
             spec.pop("tag", None)              # ...and its git ref (-> version)
 
 
-def create_deps_info(package, specs, args):
+def create_deps_info(package, specs):
   """Return *package*'s runtime dependency graph as ``{pkg: [deps]}``.
 
-  One entry per package of the closure, in build order, with its dependencies
-  also in build order — the same edges `bits deps --outmake --runtime-only`
-  prints, as data rather than Makefile text.
+  One entry per package of the closure, alphabetically sorted, with its direct
+  dependencies also alphabetically sorted. Unlike `bits deps --outmake --runtime-only`, this omits
+  virtual defaults-release, which has no installable tarball or CVMFS package.
 
   .meta.json already lists the closure (dependencies.recursive.runtime), but
   not the edges *among* those packages, so a consumer holding one tarball can
   only learn the install order by unpacking every dependency and reading their
-  .meta.json files in turn. This records the whole graph once, in build order.
+  .meta.json files in turn. This records the whole graph so consumers can
+  calculate installation order without fetching other metadata first.
   """
   from bits_helpers.deps import deps_graph
-  return deps_graph(specs, package, runtime_only=True)
+  graph = deps_graph(specs, package, runtime_only=True)
+  return {p: [dep for dep in deps if dep != "defaults-release"]
+          for p, deps in graph.items() if p != "defaults-release"}
 
 
 def create_provenance_info(package, specs, args):
@@ -900,16 +903,11 @@ def create_provenance_info(package, specs, args):
 
   def dependency_list(key):
     deps = specs[package].get(key, ())
-    # The recursive closures (full_build_requires / full_runtime_requires) are
-    # sets, so their natural iteration order is arbitrary and not reproducible
-    # across runs. Emit them in build (topological) order when it is available, so
-    # each .meta.json is deterministic and the recursive lists read in the order
-    # the dependencies are built. Direct deps are already lists (declaration
-    # order) and are left untouched.
-    order = getattr(args, "build_order", None)
-    if order is not None and not isinstance(deps, (list, tuple)):
-      rank = {name: i for i, name in enumerate(order)}
-      deps = sorted(deps, key=lambda d: (rank.get(d, len(rank)), d))
+    # Recursive closures use alphabetical order, independent of the run's
+    # build order and Python's set iteration order. Direct deps retain their
+    # recipe declaration order; dependency_graph records the dependency edges.
+    if key in ("full_build_requires", "full_runtime_requires"):
+      deps = sorted(deps)
     return [spec_info(specs[dep]) for dep in deps]
 
   # ADR-0001 additive provenance: build_id / abi_tag / reuse_policy + a repro
@@ -985,7 +983,7 @@ def create_provenance_info(package, specs, args):
         "runtime": dependency_list("full_runtime_requires"),
       },
     },
-    "dependency_graph": create_deps_info(package, specs, args),
+    "dependency_graph": create_deps_info(package, specs),
   })
 
 
@@ -3249,9 +3247,7 @@ def doBuild(args, parser):
            ", ".join(ownPackages))
 
   buildOrder = list(topological_sort(specs))
-  # Expose the topological build order so create_provenance_info can emit the
-  # recursive (set-based) dependency closures in build order — deterministic and
-  # meaningful, instead of arbitrary set-iteration order — in each .meta.json.
+  # Expose the execution order for consumers that need the full build sequence.
   args.build_order = buildOrder
 
   # Check if any of the packages can be picked up from a local checkout

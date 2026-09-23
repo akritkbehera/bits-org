@@ -4,8 +4,11 @@
 from unittest.mock import patch, MagicMock
 from io import StringIO
 import os.path
+import json
+import subprocess
+import sys
 
-from bits_helpers.deps import doDeps
+from bits_helpers.deps import doDeps, deps_graph
 from argparse import Namespace
 import unittest
 
@@ -39,6 +42,41 @@ build_requires:
 
 
 class DepsTestCase(unittest.TestCase):
+
+    def test_graph_deterministic_across_processes(self):
+        code = '''
+import json
+from bits_helpers.deps import deps_graph
+edges = {"base": [], "alpha": ["base"], "beta": ["base"],
+         "app": ["beta", "alpha"]}
+specs = {p: {"package": p, "requires": edges[p], "runtime_requires": edges[p]}
+         for p in set(edges)}
+print(json.dumps(deps_graph(specs, "app", runtime_only=True)))
+'''
+        expected = json.dumps({"alpha": ["base"], "app": ["alpha", "beta"],
+                               "base": [], "beta": ["base"]})
+        for seed in ("1", "2", "3", "4"):
+            with self.subTest(seed=seed):
+                output = subprocess.check_output(
+                    [sys.executable, "-c", code], text=True,
+                    env=dict(os.environ, PYTHONHASHSEED=seed))
+                self.assertEqual(output.strip(), expected)
+
+    def test_runtime_graph_ignores_build_only_and_unrelated_packages(self):
+        def spec(p, runtime=(), build=()):
+            return {"package": p, "requires": list(runtime) + list(build),
+                    "runtime_requires": list(runtime)}
+        specs = {"app": spec("app", ["beta", "alpha"]),
+                 "alpha": spec("alpha"), "beta": spec("beta")}
+        expected = json.dumps(deps_graph(specs, "app", runtime_only=True))
+        specs["alpha"] = spec("alpha", build=["tool"])
+        specs["tool"] = spec("tool")
+        specs["unrelated"] = spec("unrelated", ["beta"])
+        specs = dict(reversed(list(specs.items())))
+        self.assertEqual(json.dumps(deps_graph(specs, "app", runtime_only=True)), expected)
+        full = deps_graph(specs, "app")
+        self.assertEqual(full["alpha"], ["tool"])
+        self.assertEqual(list(full), ["alpha", "app", "beta", "tool"])
 
     @patch("bits_helpers.deps.open")
     @patch("bits_helpers.deps.execute", new=lambda cmd: True)

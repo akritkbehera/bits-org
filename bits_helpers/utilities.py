@@ -46,10 +46,11 @@ def symlink(link_target, link_name):
 asList = lambda x: x if isinstance(x, list) else [x]
 
 
-def topological_sort(specs):
+def topological_sort(specs, alphabetical=False):
   """Topologically sort specs so that dependencies come before the packages that depend on them.
 
   This function returns a generator, yielding package names in order.
+  With alphabetical=True, choose the alphabetically first available package.
 
   The algorithm used here was adapted from:
   http://www.stoimen.com/blog/2012/10/01/computer-algorithms-topological-sort-of-a-graph/
@@ -57,6 +58,8 @@ def topological_sort(specs):
   edges = [(spec["package"], dep) for spec in specs.values() for dep in spec["requires"]]
   leaves = [spec["package"] for spec in specs.values() if not spec["requires"]]
   while leaves:
+    if alphabetical:
+      leaves.sort()
     current_package = leaves.pop(0)
     yield current_package
     # Find every package that depends on the current one.

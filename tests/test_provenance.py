@@ -12,7 +12,10 @@ the helpers must never raise on minimal input.
 
 import json
 import os
+import subprocess
+import sys
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from bits_helpers import provenance as pv
@@ -140,6 +143,68 @@ class TestProvenanceRecord(unittest.TestCase):
         }
         self.assertEqual(self._record_specs(specs)["provenance"], "pure")
 
+    def test_embedded_graph_omits_virtual_defaults(self):
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit):
+                defaults = ["defaults-release"] if explicit else []
+                specs = {
+                    "a": _spec("a", runtime_requires=["dep"] + defaults),
+                    "dep": _spec("dep", runtime_requires=defaults),
+                    "defaults-release": _spec("defaults-release"),
+                }
+                graph = self._record_specs(specs)["dependency_graph"]
+                self.assertEqual(graph, {"dep": [], "a": ["dep"]})
+                self.assertEqual(list(graph), ["a", "dep"])
+
+    def test_embedded_graph_alphabetical_without_topological_sort(self):
+        specs = {
+            "a": _spec("a", runtime_requires=["zlib", "library", "library"]),
+            "library": _spec("library", runtime_requires=["zlib"]),
+            "zlib": _spec("zlib"),
+            "unrelated": _spec("unrelated"),
+        }
+        with patch("bits_helpers.deps.topological_sort",
+                   side_effect=AssertionError("metadata must not topologically sort")):
+            graph = self._record_specs(specs)["dependency_graph"]
+        self.assertEqual(json.dumps(graph), json.dumps({
+            "a": ["library", "zlib"], "library": ["zlib"], "zlib": []}))
+
+    def test_embedded_graph_stable_across_runs(self):
+        # Exercise the real metadata serializer in fresh interpreters: changing
+        # PYTHONHASHSEED inside this process would not change its hash seed.
+        code = '''
+import json
+from types import SimpleNamespace
+from tests.test_provenance import _spec
+from bits_helpers.build import create_provenance_info
+
+edges = {"app": ["beta", "alpha"], "alpha": ["base"],
+         "beta": ["base"], "base": []}
+specs = {p: _spec(p, requires=edges[p], runtime_requires=edges[p])
+         for p in set(edges)}
+specs["defaults-release"] = _spec("defaults-release")
+args = SimpleNamespace(annotate={}, architecture="arch", defaults=["release"])
+for extra in (False, True):
+    if extra:
+        specs["unrelated"] = _spec("unrelated", requires=["base"],
+                                   runtime_requires=["base"])
+    record = json.loads(create_provenance_info("app", specs, args))
+    print(json.dumps(record["dependency_graph"]))
+'''
+        expected = json.dumps({"alpha": ["base"], "app": ["alpha", "beta"],
+                               "base": [], "beta": ["base"]})
+        outputs = []
+        for seed in ("1", "3"):
+            with self.subTest(seed=seed):
+                output = subprocess.check_output(
+                    [sys.executable, "-c", code], text=True,
+                    cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    env=dict(os.environ, PYTHONHASHSEED=seed, BITS_DIST_HASH="x"))
+                # Compare serialized bytes/order, not just dictionary equality.
+                self.assertEqual(output.splitlines(), [expected, expected])
+                outputs.append(output)
+        self.assertEqual(outputs[0], outputs[1])
+
     def test_provenance_loose_when_closure_has_untracked(self):
         # untracked_requires decouples a dependency from the hash -> loose.
         specs = {
@@ -197,9 +262,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestRecursiveDependencyBuildOrder(unittest.TestCase):
-    """recursive.build / recursive.runtime are emitted in build (topological)
-    order, not arbitrary set-iteration order; direct deps keep declaration order."""
+class TestRecursiveDependencyAlphabeticalOrder(unittest.TestCase):
+    """Recursive deps use alphabetical order; direct deps keep declaration order."""
 
     def _record(self, package, specs, build_order):
         args = SimpleNamespace(annotate={}, architecture="arch",
@@ -210,35 +274,36 @@ class TestRecursiveDependencyBuildOrder(unittest.TestCase):
         finally:
             os.environ.pop("BITS_DIST_HASH", None)
 
-    def test_recursive_runtime_in_build_order(self):
+    def test_recursive_runtime_in_alphabetical_order(self):
         specs = {
             "app": _spec("app",
                          runtime_requires=["z", "a"],
                          full_runtime_requires={"z", "a", "m"}),
             "z": _spec("z"), "a": _spec("a"), "m": _spec("m"),
         }
-        rec = self._record("app", specs, ["a", "m", "z", "app"])
+        rec = self._record("app", specs, ["z", "m", "a", "app"])
         got = [d["name"] for d in rec["dependencies"]["recursive"]["runtime"]]
-        self.assertEqual(got, ["a", "m", "z"])            # build order, not set order
+        self.assertEqual(got, ["a", "m", "z"])
         direct = [d["name"] for d in rec["dependencies"]["direct"]["runtime"]]
         self.assertEqual(direct, ["z", "a"])              # declaration order kept
 
-    def test_recursive_build_in_build_order(self):
+    def test_recursive_build_in_alphabetical_order(self):
         specs = {
             "app": _spec("app", full_build_requires={"tool2", "tool1"}),
             "tool1": _spec("tool1"), "tool2": _spec("tool2"),
         }
-        rec = self._record("app", specs, ["tool1", "tool2", "app"])
+        rec = self._record("app", specs, ["tool2", "tool1", "app"])
         got = [d["name"] for d in rec["dependencies"]["recursive"]["build"]]
         self.assertEqual(got, ["tool1", "tool2"])
 
     def test_no_build_order_falls_back_cleanly(self):
         args = SimpleNamespace(annotate={}, architecture="arch", defaults=["release"])
-        specs = {"app": _spec("app", full_runtime_requires={"a"}), "a": _spec("a")}
+        specs = {"app": _spec("app", full_runtime_requires={"z", "a"}),
+                 "a": _spec("a"), "z": _spec("z")}
         os.environ["BITS_DIST_HASH"] = "x"
         try:
             rec = json.loads(create_provenance_info("app", specs, args))
         finally:
             os.environ.pop("BITS_DIST_HASH", None)
         self.assertEqual(
-            [d["name"] for d in rec["dependencies"]["recursive"]["runtime"]], ["a"])
+            [d["name"] for d in rec["dependencies"]["recursive"]["runtime"]], ["a", "z"])
