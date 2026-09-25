@@ -152,6 +152,30 @@ class TestProvenanceRecord(unittest.TestCase):
         del specs["a"]["pkg_family"]
         self.assertEqual(self._record_specs(specs)["package"]["pkg_family"], "")
 
+    def test_effective_architecture_recorded_for_packages_and_dependencies(self):
+        for overrides, expected in (({}, "arch"), ({"architecture": "share"}, "share"),
+                                    ({"_own_hash_arch": "neutral-arch"}, "neutral-arch")):
+            with self.subTest(overrides=overrides):
+                specs = {
+                    "a": _spec("a", build_requires=["shared", "native"],
+                               runtime_requires=["shared", "native"],
+                               full_build_requires=["shared", "native"],
+                               full_runtime_requires=["shared", "native"], **overrides),
+                    "shared": _spec("shared", architecture="share"),
+                    "native": _spec("native"),
+                }
+                original = deepcopy(specs)
+                rec = self._record_specs(specs)
+                self.assertEqual(rec["architecture"], expected)
+                self.assertEqual(rec["package"]["architecture"], expected)
+                for kind in ("direct", "recursive"):
+                    for scope in ("build", "runtime"):
+                        self.assertEqual(
+                            {dep["name"]: dep["architecture"]
+                             for dep in rec["dependencies"][kind][scope]},
+                            {"shared": "share", "native": "arch"})
+                self.assertEqual(specs, original)
+
     def test_dependency_graph_runtime_closure_without_defaults(self):
         specs = {
             "a": _spec("a", runtime_requires=["beta", "alpha", "alpha", "defaults-release"],

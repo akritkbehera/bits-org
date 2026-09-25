@@ -922,6 +922,7 @@ def create_provenance_info(package, specs, args):
     return {
       "name": spec["package"],
       "pkg_family": spec.get("pkg_family", ""),
+      "architecture": effective_arch(spec, args.architecture),
       "tag": spec.get("tag"),
       "source": spec.get("source"),
       "version": spec["version"],
@@ -979,7 +980,7 @@ def create_provenance_info(package, specs, args):
     "dist": {
       "commit": os.environ["BITS_DIST_HASH"],
     },
-    "architecture": args.architecture,
+    "architecture": effective_arch(specs[package], args.architecture),
     "defaults": args.defaults,
     "build_id": compute_build_id(specs, args),
     "abi_tag": compute_abi_tag(args),
