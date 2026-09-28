@@ -3131,7 +3131,7 @@ def doBuild(args, parser):
       args.remoteStore = _rs
 
   for _old, _new in dict(getattr(args, "normalisedStores", None) or []).items():
-    info("Store %s -> %s (bits lists CERN S3 stores via swift)", _old, _new)
+    debug("Store %s -> %s (bits lists CERN S3 stores via swift)", _old, _new)
 
   # A write store alone is also the read store (as with ::rw). Set it here, not
   # only in remote_from_url, so the signed-reuse checks below see that store.
@@ -3193,8 +3193,9 @@ def doBuild(args, parser):
       args._guessedTrustManifests = set(_srcs)   # names guessed, may not exist
     if _srcs:
       args.trustManifest = ",".join(_srcs)
-      info("--require-signed-reuse: trust manifests derived from store -> %s",
-           args.trustManifest)
+      info("--require-signed-reuse: %d signed manifest(s) in %s/",
+           len(_srcs), os.path.dirname(os.path.commonprefix(_srcs)))
+      debug("--require-signed-reuse: trust manifests -> %s", args.trustManifest)
 
   # The final target builds alone (every other package is one of its
   # already-finished dependencies), so the per-builder -j split needlessly
