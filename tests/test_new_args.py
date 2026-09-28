@@ -34,7 +34,8 @@ def _parse_with_docker(argv):
     sys.argv = ["bits"] + argv
     # subprocess.getstatusoutput("which docker") returns (0, path) when docker
     # is found.  We mock it so tests pass even on machines without docker.
-    with patch("bits_helpers.args.commands.getstatusoutput", return_value=(0, "/usr/bin/docker")):
+    with patch("bits_helpers.args.commands.getstatusoutput", return_value=(0, "/usr/bin/docker")), \
+         patch("bits_helpers.args._rootless_podman_controllers", return_value=None):
         args, _ = doParseArgs()
     return args
 

@@ -97,8 +97,9 @@ class ArgsTestCase(unittest.TestCase):
   # the exact docker_extra_args expectations below hold on any test host
   # (the cap depends on host RAM and is skipped on hosts below the reserve).
   @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])
+  @mock.patch("bits_helpers.args._rootless_podman_controllers", return_value=None)
   @mock.patch('bits_helpers.args.commands')
-  def test_actionParsing(self, mock_commands, _mock_mem, _mock_cpus, _mock_defreg):
+  def test_actionParsing(self, mock_commands, _mock_podman, _mock_mem, _mock_cpus, _mock_defreg):
     mock_commands.getstatusoutput.side_effect = lambda x : GETSTATUSOUTPUT_MOCKS[x]
     for (env, cmd, effects) in CORRECT_BEHAVIOR:
       (bits_helpers.args.DEFAULT_WORK_DIR,
@@ -140,6 +141,7 @@ class CpusetInjectionTestCase(unittest.TestCase):
     with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value=cpuset_return), \
          mock.patch("bits_helpers.args._docker_memory_args", return_value=[]), \
+         mock.patch("bits_helpers.args._rootless_podman_controllers", return_value=None), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
          patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
       mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
@@ -200,6 +202,81 @@ class CpusetInjectionTestCase(unittest.TestCase):
          mock.patch("os.cpu_count", return_value=None):
       result = _host_online_cpus()
     self.assertEqual(result, "0-0")
+
+
+class RootlessPodmanLimitsTestCase(unittest.TestCase):
+  """Limits whose cgroup controller rootless podman lacks are not injected."""
+
+  def _parse(self, cmd, ctrls):
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args._docker_memory_args",
+                    return_value=["--memory=1m", "--memory-swap=1m"]), \
+         mock.patch("bits_helpers.args._rootless_podman_controllers", return_value=ctrls), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         mock.patch("bits_helpers.log.warning") as warn, \
+         patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      return args.docker_extra_args, warn
+
+  def test_cpuset_not_delegated(self):
+    extra, warn = self._parse("build zlib -a slc7_x86-64 --docker", {"cpu", "memory", "pids"})
+    self.assertFalse(any(a.startswith("--cpuset-cpus") for a in extra))
+    self.assertIn("--memory=1m", extra)
+    warn.assert_called_once()
+    self.assertIn("cpuset", warn.call_args[0][1])
+
+  def test_nothing_delegated(self):
+    extra, warn = self._parse("build zlib -a slc7_x86-64 --docker", {"pids"})
+    self.assertFalse(any(a.startswith(("--cpuset-cpus", "--memory")) for a in extra))
+    self.assertEqual(warn.call_args[0][1], "cpuset, memory")
+
+  def test_not_podman_unchanged(self):
+    extra, warn = self._parse("build zlib -a slc7_x86-64 --docker", None)
+    self.assertIn("--cpuset-cpus=0-7", extra)
+    self.assertIn("--memory=1m", extra)
+    warn.assert_not_called()
+
+  def test_user_cpuset_no_warning(self):
+    extra, warn = self._parse(
+      "build zlib -a slc7_x86-64 --docker --docker-extra-args=--cpuset-cpus=0-1", {"memory"})
+    self.assertIn("--cpuset-cpus=0-1", extra)
+    warn.assert_not_called()
+
+  def _probe(self, version_out, controllers="cpu memory pids\n", uid=1000):
+    from bits_helpers.args import _rootless_podman_controllers
+    run = mock.Mock(return_value=mock.Mock(stdout=version_out))
+    with mock.patch("bits_helpers.args.platform.system", return_value="Linux"), \
+         mock.patch("bits_helpers.args.os.geteuid", return_value=uid), \
+         mock.patch("bits_helpers.args.os.getuid", return_value=uid), \
+         mock.patch("bits_helpers.args.commands.run", run), \
+         mock.patch("builtins.open", mock.mock_open(read_data=controllers)) as op:
+      return _rootless_podman_controllers(), op
+
+  def test_probe_podman(self):
+    ctrls, op = self._probe("podman version 5.4.0\n")
+    self.assertEqual(ctrls, {"cpu", "memory", "pids"})
+    self.assertIn("user-1000.slice/user@1000.service/cgroup.controllers", op.call_args[0][0])
+
+  def test_probe_docker(self):
+    self.assertIsNone(self._probe("Docker version 27.1.1, build 6312585\n")[0])
+
+  def test_probe_v2_without_user_manager(self):
+    from bits_helpers.args import _rootless_podman_controllers
+    run = mock.Mock(return_value=mock.Mock(stdout="podman version 5.4.0\n"))
+    for v2, want in ((True, set()), (False, None)):
+      with self.subTest(cgroup_v2=v2), \
+           mock.patch("bits_helpers.args.platform.system", return_value="Linux"), \
+           mock.patch("bits_helpers.args.os.geteuid", return_value=1000), \
+           mock.patch("bits_helpers.args.os.getuid", return_value=1000), \
+           mock.patch("bits_helpers.args.commands.run", run), \
+           mock.patch("builtins.open", side_effect=OSError), \
+           mock.patch("bits_helpers.args.os.path.exists", return_value=v2):
+        self.assertEqual(_rootless_podman_controllers(), want)
+
+  def test_probe_root(self):
+    self.assertIsNone(self._probe("podman version 5.4.0\n", uid=0)[0])
 
 
 class DockerMemoryCapTestCase(unittest.TestCase):

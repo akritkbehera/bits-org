@@ -84,6 +84,34 @@ def _host_online_cpus():
     return "0-%d" % ((os.cpu_count() or 1) - 1)
 
 
+def _rootless_podman_controllers():
+  """cgroup controllers a build container may use when `docker` is rootless podman.
+
+  Rootless podman can only apply limits for the controllers systemd delegates
+  to the user (EL9 default: cpu memory pids, no cpuset); an undelegated one makes
+  crun refuse to start. Returns that set, or None when `docker` is not rootless
+  podman or the set cannot be read (then nothing is filtered).
+  """
+  if platform.system() != "Linux" or os.geteuid() == 0:
+    return None
+  try:
+    out = commands.run(["docker", "--version"], capture_output=True,
+                       text=True, timeout=30).stdout
+  except Exception:  # pylint: disable=broad-except
+    return None
+  if not isinstance(out, str) or "podman" not in out.lower():
+    return None
+  uid = os.getuid()
+  try:
+    with open("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/"
+              "cgroup.controllers" % (uid, uid)) as f:
+      return set(f.read().split())
+  except OSError:
+    # cgroup v2 but no systemd user manager (su, ssh without lingering): podman
+    # falls back to cgroupfs and rejects every limit. cgroup v1: it ignores them.
+    return set() if os.path.exists("/sys/fs/cgroup/cgroup.controllers") else None
+
+
 def _docker_memory_args():
   """Return the ``--memory``/``--memory-swap`` flags for the build container.
 
@@ -2148,14 +2176,32 @@ def finaliseArgs(args, parser):
     # list (e.g. "0-7") which reflects actual hardware, not the caller's
     # cgroup CPU quota.  Only inject if the user hasn't already specified
     # --cpuset-cpus in --docker-extra-args.
+    # Rootless podman can only apply limits whose cgroup controller is delegated
+    # to the user; skip the others rather than fail to start the container.
+    _ctrls = _rootless_podman_controllers() if args.docker else None
+    _skipped = []
     if not any(a.startswith("--cpuset-cpus") for a in args.docker_extra_args):
-      args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
+      if _ctrls is None or "cpuset" in _ctrls:
+        args.docker_extra_args.append("--cpuset-cpus=" + _host_online_cpus())
+      else:
+        _skipped.append("cpuset")
 
     # Hard memory cap on the build container so that no single build can OOM
     # the HOST (see _docker_memory_args). Skipped when the user passes any
     # --memory* themselves.
     if not any(a.startswith("--memory") for a in args.docker_extra_args):
-      args.docker_extra_args.extend(_docker_memory_args())
+      if _ctrls is None or "memory" in _ctrls:
+        args.docker_extra_args.extend(_docker_memory_args())
+      else:
+        _skipped.append("memory")
+    if _skipped:
+      from bits_helpers.log import warning
+      warning("rootless podman: cgroup controller(s) %s not available to this user, "
+              "so the build container is not limited by them. To enable (root): put "
+              "'[Service]' and 'Delegate=cpu cpuset io memory pids' in "
+              "/etc/systemd/system/user@.service.d/delegate.conf, run "
+              "'systemctl daemon-reload', then log in again.",
+              ", ".join(_skipped))
 
     if args.docker and args.architecture.startswith("osx"):
       parser.error("cannot use `-a %s` and --docker" % args.architecture)

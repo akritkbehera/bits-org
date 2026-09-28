@@ -816,6 +816,18 @@ def resolve_registry_repo(args, name: str, work_dir: str, quiet: bool = False):
 
 # ── Iterative provider discovery ────────────────────────────────────────────
 
+def announce_providers(provider_dirs: dict) -> None:
+    """Print the 'Repository providers loaded' banner for *provider_dirs*."""
+    if provider_dirs:
+        banner(
+            "Repository providers loaded:\n%s",
+            "\n".join(
+                "  %s  ->  %s  (commit %s)" % (name, checkout, commit[:10])
+                for checkout, (name, commit) in provider_dirs.items()
+            ),
+        )
+
+
 def fetch_repo_providers_iteratively(
     packages: list,
     config_dir: str,
@@ -828,6 +840,7 @@ def fetch_repo_providers_iteratively(
     defaults: list = None,
     default_vars: dict = None,
     force_tracked: bool = False,
+    announce: bool = True,
 ) -> dict:
     """Discover, clone, and register all repository-provider packages
     reachable from the *packages* list.
@@ -966,13 +979,7 @@ def fetch_repo_providers_iteratively(
             MAX_PROVIDER_ITERATIONS,
         )
 
-    if provider_dirs:
-        banner(
-            "Repository providers loaded:\n%s",
-            "\n".join(
-                "  %s  ->  %s  (commit %s)" % (name, checkout, commit[:10])
-                for checkout, (name, commit) in provider_dirs.items()
-            ),
-        )
+    if announce:
+        announce_providers(provider_dirs)
 
     return provider_dirs

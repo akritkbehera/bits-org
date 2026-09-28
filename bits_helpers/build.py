@@ -7,7 +7,8 @@ from pathlib import Path
 from bits_helpers import __version__
 from bits_helpers.log import debug, info, banner, warning
 from bits_helpers.log import dieOnError
-from bits_helpers.repo_provider import fetch_repo_providers_iteratively, load_always_on_providers, MAX_PROVIDER_ITERATIONS
+from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
+                                        announce_providers, MAX_PROVIDER_ITERATIONS)
 from bits_helpers.memory import effective_jobs
 from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     enforcement_mode as checksum_enforcement_mode,
@@ -2849,7 +2850,9 @@ def doBuild(args, parser):
       defaults          = args.defaults,
       default_vars      = defaultsMeta.get("variables"),
       force_tracked     = getattr(args, "forceTracked", False),
+      announce          = False,  # once, after the loop converges
     )
+    _fetched_dirs = dict(provider_dirs)
     provider_dirs.update(always_on_dirs)
     # (provider, commit) pin set: order-independent and re-point-sensitive.
     _pin_sig = frozenset((_n, _h) for (_d, (_n, _h)) in provider_dirs.items())
@@ -2869,6 +2872,7 @@ def doBuild(args, parser):
     warning("Provider discovery did not reach a fixed point after %d passes; "
             "using the last resolved provider set (some provider pins may still "
             "be moving).", MAX_PROVIDER_ITERATIONS)
+  announce_providers(_fetched_dirs)
   # A defaults name with no defaults-<name>.sh anywhere on the (now complete)
   # search path is a typo or a missing repository, not a flavour: say so, rather
   # than a misleading "not found"/"not compatible" later. 'release' is injected and optional.
