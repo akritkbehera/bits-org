@@ -84,23 +84,25 @@ def _host_online_cpus():
     return "0-%d" % ((os.cpu_count() or 1) - 1)
 
 
-def _rootless_podman_controllers():
-  """cgroup controllers a build container may use when `docker` is rootless podman.
-
-  Rootless podman can only apply limits for the controllers systemd delegates
-  to the user (EL9 default: cpu memory pids, no cpuset); an undelegated one makes
-  crun refuse to start. Returns that set, or None when `docker` is not rootless
-  podman or the set cannot be read (then nothing is filtered).
-  """
+def _is_rootless_podman():
+  """True when `docker` is podman (podman-docker) run by a non-root user."""
   if platform.system() != "Linux" or os.geteuid() == 0:
-    return None
+    return False
   try:
     out = commands.run(["docker", "--version"], capture_output=True,
                        text=True, timeout=30).stdout
   except Exception:  # pylint: disable=broad-except
-    return None
-  if not isinstance(out, str) or "podman" not in out.lower():
-    return None
+    return False
+  return isinstance(out, str) and "podman" in out.lower()
+
+
+def _rootless_podman_controllers():
+  """cgroup controllers a rootless podman container may use.
+
+  Rootless podman can only apply limits for the controllers systemd delegates
+  to the user (EL9 default: cpu memory pids, no cpuset); an undelegated one makes
+  crun refuse to start. Returns that set, or None if unknown (nothing filtered).
+  """
   uid = os.getuid()
   try:
     with open("/sys/fs/cgroup/user.slice/user-%d.slice/user@%d.service/"
@@ -2179,7 +2181,15 @@ def finaliseArgs(args, parser):
     # --cpuset-cpus in --docker-extra-args.
     # Rootless podman can only apply limits whose cgroup controller is delegated
     # to the user; skip the others rather than fail to start the container.
-    _ctrls = _rootless_podman_controllers() if args.docker else None
+    # (build.py also runs such containers with --userns=keep-id, not --user.)
+    args.rootless_podman = bool(args.docker) and _is_rootless_podman()
+    _ctrls = _rootless_podman_controllers() if args.rootless_podman else None
+    # Podman labels containers for SELinux (docker-ce does not), which blocks
+    # the bind-mounted home-dir workdir/configdir; :z relabelling is too slow on
+    # SOURCES and impossible on /cvmfs, so turn labelling off instead.
+    if args.rootless_podman and not any(a.startswith("--security-opt")
+                                        for a in args.docker_extra_args):
+      args.docker_extra_args.append("--security-opt=label=disable")
     _skipped = []
     if not any(a.startswith("--cpuset-cpus") for a in args.docker_extra_args):
       if _ctrls is None or "cpuset" in _ctrls:

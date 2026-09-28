@@ -2564,6 +2564,9 @@ def build_one_package(p, ctx):
     _ro_sources = ("-v %s:%s/SOURCES:ro " % (quote(_src_dir), container_workDir)
                    if _ro_enabled and os.path.isdir(_src_dir)
                    else "")
+    # Run as the host uid so files in the mounted workdir stay the user's. Rootless
+    # podman cannot setresuid to the host uid (unmapped in its user namespace);
+    # --userns=keep-id maps it and runs as it.
     # --user $(id -u):$(id -g) runs as the host uid, which usually has no
     # passwd entry inside the image, so $HOME is unset and expands to "" — any
     # recipe that writes under ~/ then targets the filesystem root and fails
@@ -2582,7 +2585,7 @@ def build_one_package(p, ctx):
     # build keeps running). Label only; no hash impact.
     _job_id = (os.environ.get("BITS_JOB_ID") or os.environ.get("CI_JOB_ID") or "").strip()
     build_command = (
-      "docker run --rm --entrypoint= --user $(id -u):$(id -g) {jobLabel}"
+      "docker run --rm --entrypoint= {userArg}{jobLabel}"
       "{platformArg}"
       "-v {workdir}:{container_workDir} {roSources}-v{configDir}:/pkgdist.bits:ro "
       "-v {scriptDir}/build.sh:/build.sh:ro "
@@ -2591,6 +2594,8 @@ def build_one_package(p, ctx):
       "{mirrorVolume} {develVolumes} {additionalEnv} {additionalVolumes} "
       "-e HOME=/tmp -e SHELL=/bin/bash -e WORK_DIR_OVERRIDE={container_workDir} -e BITS_CONFIG_DIR_OVERRIDE=/pkgdist.bits {extraArgs} {image} bash -ex /build.sh"
     ).format(
+      userArg=("--userns=keep-id " if getattr(args, "rootless_podman", False)
+               else "--user $(id -u):$(id -g) "),
       jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
       # Mount /cvmfs read-only when reusing deployed components, so a reused
       # dep's init.sh (and its files under /cvmfs) resolve inside the container.
