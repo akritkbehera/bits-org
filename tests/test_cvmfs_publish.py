@@ -89,6 +89,27 @@ class TestResolvePkgPath(unittest.TestCase):
                              kind="path", tmpl_prefix="", arch="share"),
             "shared/noarch/1.0")
 
+    def test_build_templates_override_the_package_meta(self):
+        # A reused package carries its builder's layout; the publishing build's
+        # templates place it instead (no re-root).
+        d = self._meta(path="{prefix}/releases/{platform}/Packages/{pkg}/{tag}")
+        tm = {"prefix": "/cvmfs/r/lhcb/releases",
+              "path": "{prefix}/LCG_110/{pkg}/{version}/{arch}"}
+        self.assertEqual(
+            resolve_pkg_path(d, "r", "AIDA", "3.2.1-2", "3.2.1", "2", "x86_64-el9",
+                             "", "", "", "", kind="path", tmpl_prefix="",
+                             arch="x86_64-el9-gcc14-opt",
+                             prefix_fallback="/cvmfs/r", templates=tm),
+            "lhcb/releases/LCG_110/AIDA/3.2.1/x86_64-el9-gcc14-opt")
+
+    def test_unresolved_token_is_refused(self):
+        # An unknown token (e.g. {arch} for an older bits) must not publish
+        # to a literal "{...}" directory.
+        d = self._meta(path="{prefix}/{pkg}/{nope}")
+        with self.assertRaises(ValueError):
+            resolve_pkg_path(d, "r", "O2", "1.0", "1.0", "", "", "", "", "", "",
+                             kind="path", tmpl_prefix="", arch="el9")
+
 
 class TestExpandTmpl(unittest.TestCase):
     def test_family_carries_its_own_slash(self):
@@ -125,6 +146,22 @@ class TestRepoRelativePath(unittest.TestCase):
                                meta_root="/cvmfs/bits.cern.ch/alice",
                                prefix_fallback="/cvmfs/test.cvmfs.io"),
             "Packages/O2/1.0")
+
+    def test_root_below_the_community_prefix_is_kept(self):
+        # Testbed: /cvmfs/test.cvmfs.io/lhcb/releases is inside the community
+        # prefix /cvmfs/test.cvmfs.io and must not be flattened onto it.
+        self.assertEqual(
+            repo_relative_path("/cvmfs/test.cvmfs.io/lhcb/releases/LCG_110/X",
+                               "test.cvmfs.io",
+                               meta_root="/cvmfs/test.cvmfs.io/lhcb/releases",
+                               prefix_fallback="/cvmfs/test.cvmfs.io"),
+            "lhcb/releases/LCG_110/X")
+
+    def test_dot_segments_are_refused(self):
+        for bad in ("/cvmfs/r/g/../other/x", "/cvmfs/r/g/./x"):
+            with self.assertRaises(ValueError):
+                repo_relative_path(bad, "r", meta_root="/cvmfs/r/g",
+                                   prefix_fallback="/cvmfs/r")
 
     def test_prefix_community_mismatch_is_refused(self):
         # a path that ends up NOT under /cvmfs/<repo>/ is a misconfiguration.
@@ -487,6 +524,85 @@ class TestMainThreadsReplaceOnConflict(unittest.TestCase):
     def test_on_when_flag_passed(self):
         self.assertTrue(self._run_capture_ctx(
             ["--replace-on-conflict"]).get("replace_on_conflict"))
+
+
+class TestMainTemplatesAndSkipped(unittest.TestCase):
+    """The manifest's cvmfs_templates reach publish_one; a missing tar is reported."""
+
+    def _main(self, manifest, fake):
+        import io, contextlib
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        m = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump(manifest, m); m.close()
+        self.addCleanup(os.unlink, m.name)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cp, "publish_one", fake), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cp.main(["--manifest", m.name, "--repo", "r", "--tars-root", "/T"])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_manifest_templates_reach_ctx(self):
+        tm = {"prefix": "/cvmfs/r/g", "path": "{prefix}/{pkg}"}
+        seen = {}
+        rc, _, err = self._main({"cvmfs_templates": tm, "packages": [
+            {"package": "p", "version": "1"}]},
+            lambda spec, ctx: seen.update(ctx) or [("J", "p@1(pkg)")])
+        self.assertEqual((rc, seen["templates"]), (0, tm))
+        self.assertIn("{prefix}/{pkg} (this build's templates)", err)
+
+    def test_old_manifest_falls_back_to_package_meta(self):
+        seen = {}
+        _, _, err = self._main({"packages": [{"package": "p", "version": "1"}]},
+                               lambda spec, ctx: seen.update(ctx) or [("J", "x")])
+        self.assertIsNone(seen["templates"])
+        self.assertIn("each package's own .meta.json", err)
+
+    def test_missing_tar_is_reported_as_skipped(self):
+        rc, out, _ = self._main({"packages": [{"package": "p", "version": "1"}]},
+                                lambda spec, ctx: [])
+        self.assertEqual(rc, 0)
+        self.assertIn("SKIPPED p@1: no tarball in /T", out)
+
+
+class TestPublishOneLayout(unittest.TestCase):
+    """publish_one end to end up to the submit: paths and the relocate env."""
+
+    def test_modules_use_build_arch_and_hook_gets_templates(self):
+        import subprocess
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        # A package tar: <arch>/<pkg>/<ver>/ with .meta.json, modulefile and a
+        # relocate hook that records BITS_CVMFS_TEMPLATES.
+        src = os.path.join(t, "src"); root = os.path.join(src, "tc", "GCC", "14-1")
+        os.makedirs(os.path.join(root, "etc", "modulefiles"))
+        with open(os.path.join(root, ".meta.json"), "w") as fh:
+            json.dump({"cvmfs_templates": {"prefix": "/cvmfs/old", "path": "{prefix}/x"}}, fh)
+        with open(os.path.join(root, "etc", "modulefiles", "GCC"), "w") as fh:
+            fh.write("#%Module1.0\n")
+        with open(os.path.join(root, "relocate-me.sh"), "w") as fh:
+            fh.write('printf %%s "$BITS_CVMFS_TEMPLATES" > "%s"\n'
+                     % os.path.join(t, "seen.json"))
+        tars = os.path.join(t, "TARS", "tc", "store", "ab", "abc")
+        os.makedirs(tars)
+        tar = os.path.join(tars, "GCC-14-1.tc.tar.gz")
+        subprocess.run(["tar", "-czf", tar, "-C", src, "tc"], check=True)
+        tm = {"prefix": "/cvmfs/r/g", "path": "{prefix}/{pkg}/{version}/{arch}",
+              "modules": "{prefix}/{arch}/Modules/modulefiles/{pkg}"}
+        ctx = {"repo": "r", "tars_root": os.path.join(t, "TARS"),
+               "arch": "el9-gcc14-opt", "tmpl_prefix": "", "templates": tm,
+               "prefix_fallback": "/cvmfs/r", "tmp_dir": t}
+        spec = {"package": "GCC", "version": "14", "revision": "1",
+                "effective_architecture": "tc"}
+        paths = []
+        with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
+             mock.patch.object(cp, "_publish_tar",
+                               lambda c, p, *a, **k: paths.append(p) or "J"):
+            cp.publish_one(spec, ctx)
+        self.assertEqual(paths, ["g/GCC/14/tc", "g/el9-gcc14-opt/Modules/modulefiles/GCC"])
+        with open(os.path.join(t, "seen.json")) as fh:
+            self.assertEqual(json.load(fh), tm)
 
 
 def _boom(*a, **k):

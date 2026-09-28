@@ -26,6 +26,7 @@ from bits_helpers.log import debug, dieOnError
 from bits_helpers.utilities import git
 from bits_helpers.defaults import parseDefaults, readDefaults
 from bits_helpers.matchers import resolve_variables
+from bits_helpers.arch import compute_combined_arch
 from bits_helpers.cvmfs_layout import (
     resolve_cvmfs_templates, resolve_release, path_release, bake_release,
     resolve_day, bake_day)
@@ -112,6 +113,9 @@ def doCvmfsPath(args, parser):
         "version":     args.version or "",
         "revision":    "",
         "platform":    args.platform or "",
+        # The build-qualified arch the build would use (e.g. x86_64-el9-gcc14-opt).
+        "arch":        compute_combined_arch(defaults_meta, args.defaults,
+                                             args.architecture),
         "install_dir": args.installDir or "",
         "commit":      "",
         "user":        args.login or "",
@@ -122,5 +126,8 @@ def doCvmfsPath(args, parser):
     # reserve path this produces must match it byte-for-byte. ({release} is already
     # baked/collapsed above by the shared bake_release, exactly as the build does.)
     path = _expand(tmpl, subst)
+    left = re.search(r"\{\w+\}", path)
+    dieOnError(bool(left), "unresolved %s in CVMFS path %s"
+               % (left.group(0) if left else "", path))
     print(path)
     return True

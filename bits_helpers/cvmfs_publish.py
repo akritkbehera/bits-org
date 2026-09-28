@@ -24,22 +24,24 @@ from bits_helpers.arch import SHARED_ARCH
 
 # ── pure helpers (unit-testable, no I/O) ─────────────────────────────────────
 
-_TOKENS = ("pkg", "tag", "version", "revision", "platform",
+_TOKENS = ("pkg", "tag", "version", "revision", "platform", "arch",
            "install_dir", "commit", "user", "family")
 
 
 def expand_tmpl(tmpl, pkg="", tag="", version="", revision="", platform="",
-                install_dir="", commit="", user="", family=""):
+                install_dir="", commit="", user="", family="", arch=""):
     """Port of the CI `_expand_tmpl`: substitute {token}s into a path template.
 
     {family} carries its OWN trailing slash when non-empty (templates use the
     adjacent form {family}{pkg}); an empty family collapses to just {pkg}.
     {release} is already baked into the template by the build — untouched here.
+    {platform} is the console platform (x86_64-el9); {arch} is the package's
+    build arch (x86_64-el9-gcc14-opt), which keeps compiler/build types apart.
     """
     fam_seg = (family + "/") if family else ""
     subst = {"pkg": pkg, "tag": tag, "version": version, "revision": revision,
-             "platform": platform, "install_dir": install_dir, "commit": commit,
-             "user": user, "family": fam_seg}
+             "platform": platform, "arch": arch, "install_dir": install_dir,
+             "commit": commit, "user": user, "family": fam_seg}
     out = tmpl
     for k, v in subst.items():
         out = out.replace("{%s}" % k, v)
@@ -51,9 +53,14 @@ def repo_relative_path(p, repo, meta_root=None, prefix_fallback=None):
     path into a repo-relative lease path, re-rooting a reused artefact whose
     .meta.json root differs from the community prefix. Raises ValueError when the
     result is not under /cvmfs/<repo>/ (a prefix/community mismatch)."""
-    if (prefix_fallback and meta_root and meta_root != prefix_fallback
+    # A root at or below the community prefix is already inside it: keep it.
+    inside = bool(prefix_fallback and meta_root) and (
+        meta_root + "/").startswith(prefix_fallback.rstrip("/") + "/")
+    if (prefix_fallback and meta_root and not inside
             and p.startswith(meta_root + "/")):
         p = prefix_fallback + p[len(meta_root):]
+    if any(seg in (".", "..") for seg in p.split("/")):
+        raise ValueError("resolved path has . or .. segments: %s" % p)
     lead = "/cvmfs/%s/" % repo
     if p.startswith(lead):
         p = p[len(lead):]
@@ -149,13 +156,16 @@ def tree_fingerprint(root):
 
 def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
                      commit, user, family, kind, tmpl_prefix, arch,
-                     prefix_fallback=None):
-    """Resolve the repo-relative publish path from the package's own .meta.json
-    cvmfs_templates (kind='path' for the package tree, 'modules' for the module
-    file), mirroring the CI loop. Returns None when the kind has no template."""
-    meta = os.path.join(pkgroot, ".meta.json")
-    with open(meta) as fh:
-        tm = (json.load(fh).get("cvmfs_templates") or {})
+                     prefix_fallback=None, templates=None):
+    """Resolve the repo-relative publish path (kind='path' for the package tree,
+    'modules' for the module file). ``templates`` are the publishing build's
+    (from its manifest) and place every package of the closure; without them the
+    package's own .meta.json cvmfs_templates are used (older manifests). Returns
+    None when the kind has no template."""
+    tm = templates
+    if not tm:
+        with open(os.path.join(pkgroot, ".meta.json")) as fh:
+            tm = (json.load(fh).get("cvmfs_templates") or {})
     meta_root = tm.get("prefix") or None
     # Template selection is ARCH-DRIVEN, exactly as the CI loop: a shared (noarch)
     # package uses the shared template (falling back to path); everything else
@@ -178,7 +188,10 @@ def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
     key = key.replace("{prefix}", tmpl_prefix or meta_root or "")
     p = expand_tmpl(key, pkg=pkg, tag=vdir, version=ver, revision=rev,
                     platform=platform, install_dir=install_dir, commit=commit,
-                    user=user, family=family)
+                    user=user, family=family, arch=arch)
+    left = re.search(r"\{\w+\}", p)
+    if left:
+        raise ValueError("unresolved %s in CVMFS path %s" % (left.group(0), p))
     return repo_relative_path(p, repo, meta_root, prefix_fallback)
 
 
@@ -420,7 +433,7 @@ def publish_one(spec, ctx):
 
     tar_gz = tar_path(spec, ctx["tars_root"], ctx["arch"])
     if not os.path.isfile(tar_gz):
-        return []   # system-provided: no tar, nothing to publish
+        return []   # no tar (system-provided): the caller reports it as SKIPPED
 
     work_dir = tempfile.mkdtemp(prefix="pub-", dir=ctx.get("tmp_dir") or None)
     jobs = []
@@ -432,7 +445,8 @@ def publish_one(spec, ctx):
             pkgroot, ctx["repo"], pkg, vdir, ver, rev, ctx.get("platform", ""),
             ctx.get("install_dir", ""), commit, ctx.get("user", ""), family,
             kind="path", tmpl_prefix=ctx["tmpl_prefix"], arch=arch,
-            prefix_fallback=ctx.get("prefix_fallback"))
+            prefix_fallback=ctx.get("prefix_fallback"),
+            templates=ctx.get("templates"))
         if not path:
             raise SystemExit("%s@%s has no cvmfs_templates path in .meta.json"
                              % (pkg, vdir))
@@ -442,6 +456,9 @@ def publish_one(spec, ctx):
             env = dict(os.environ,
                        INSTALL_BASE="/cvmfs/%s/%s" % (ctx["repo"], path),
                        WORK_DIR=work_dir, BITS_RELOCATE_STRIP_PP="1")
+            # Views (lcg-view) place the packages they reference with these.
+            if ctx.get("templates"):
+                env["BITS_CVMFS_TEMPLATES"] = json.dumps(ctx["templates"])
             # Run it exactly as the CI does: cwd=work_dir, script named RELATIVE
             # to it (the CI passes ${_pkgpath}/relocate-me.sh), so $0 matches.
             _before = _files_under(work_dir)
@@ -487,8 +504,12 @@ def publish_one(spec, ctx):
             mod_path = resolve_pkg_path(
                 pkgroot, ctx["repo"], pkg, vdir, ver, rev, ctx.get("platform", ""),
                 ctx.get("install_dir", ""), commit, ctx.get("user", ""), family,
-                kind="modules", tmpl_prefix=ctx["tmpl_prefix"], arch=arch,
-                prefix_fallback=ctx.get("prefix_fallback"))
+                # One modules dir per build: {arch} is the build arch here, not
+                # the package's own (own_hash toolchain / noarch).
+                kind="modules", tmpl_prefix=ctx["tmpl_prefix"],
+                arch=ctx["arch"] or arch,
+                prefix_fallback=ctx.get("prefix_fallback"),
+                templates=ctx.get("templates"))
             if mod_path:
                 _mfd, mod_tar = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
                 os.close(_mfd)
@@ -696,9 +717,17 @@ def main(argv=None):
                  "(MEASUREMENTS §28)")
 
     with open(a.manifest) as fh:
-        pkgs = (json.load(fh).get("packages") or [])
+        _man = json.load(fh)
+    pkgs = _man.get("packages") or []
+    # The publishing build's layout places the whole closure (reused packages
+    # included); a manifest without it falls back to each package's .meta.json.
+    templates = _man.get("cvmfs_templates") or None
+    sys.stderr.write("[publish] layout: %s\n" % (
+        "%s (this build's templates)" % templates.get("path") if templates
+        else "each package's own .meta.json (manifest has no cvmfs_templates)"))
     ctx = {"repo": a.repo, "tars_root": a.tars_root, "arch": a.arch,
            "tmpl_prefix": a.tmpl_prefix, "prefix_fallback": a.prefix_fallback or None,
+           "templates": templates,
            "stratum0_url": a.stratum0_url, "prepub_url": a.prepub_url, "token": a.token,
            "platform": a.platform, "install_dir": a.install_dir, "user": a.user,
            "job_id_base": a.job_id_base, "swissknife": a.swissknife or None,
@@ -732,6 +761,9 @@ def main(argv=None):
         # without tearing down the pool. publish_one's own errors are SystemExit.
         try:
             jobs = publish_one(spec, ctx)
+            if not jobs:
+                return 0, ["SKIPPED %s@%s: no tarball in %s" % (
+                    spec.get("package"), spec.get("version"), ctx["tars_root"])]
             return 0, ["PUBLISHED %s %s" % (jid, label) for jid, label in jobs]
         except (SystemExit, Exception) as exc:
             return 1, ["FAILED %s: %s" % (spec.get("package"), exc)]

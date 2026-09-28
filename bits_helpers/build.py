@@ -2981,7 +2981,8 @@ def doBuild(args, parser):
   if _reuse_src == "cvmfs" and not (_cvmfs and _cvmfs.get("module_path")):
     _mp = reuse_module_path_from_templates(
         defaultsMeta, raw_architecture, os.environ.get("BITS_CVMFS_PREFIX") or None,
-        path_release(resolve_release(defaultsMeta, branch_basename)))
+        path_release(resolve_release(defaultsMeta, branch_basename)),
+        arch=args.architecture)
     if _mp:
       _reuse_layout = dict(_cvmfs or {}, module_path=_mp)
   try:
@@ -3316,6 +3317,8 @@ def doBuild(args, parser):
     defaults          = args.defaults,
     config_dir        = args.configDir,
     config_commit     = os.environ.get("BITS_DIST_HASH", ""),
+    # This build's CVMFS layout: the publish places the whole closure with it.
+    cvmfs_templates   = getattr(args, "cvmfsTemplates", None),
     # Use the last (top-level) requested package as the filename identifier.
     # This mirrors how mainPackage = buildOrder[-1] is resolved later; using
     # packages[-1] here avoids having to delay manifest creation until after

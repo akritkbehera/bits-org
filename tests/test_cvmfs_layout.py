@@ -138,6 +138,38 @@ class CvmfsTemplatesTest(unittest.TestCase):
                injected_prefix="/cvmfs/my-group/")
         self.assertEqual(t["prefix"], "/cvmfs/my-group/")
 
+    def test_prefix_below_injected_is_used(self):
+        # A narrower tree inside the authorized one is fine and wins.
+        t = RT({"system": {"prefix": "/cvmfs/t.io/lhcb/releases"}},
+               injected_prefix="/cvmfs/t.io")
+        self.assertEqual(t["prefix"], "/cvmfs/t.io/lhcb/releases")
+
+    def test_prefix_above_or_beside_injected_aborts(self):
+        for rec in ("/cvmfs/t.io", "/cvmfs/t.io-evil/x", "/cvmfs/t.io/../other"):
+            with self.assertRaises(SystemExit):
+                RT({"system": {"prefix": rec}}, injected_prefix="/cvmfs/t.io/lhcb")
+
+    def test_repository_swap_keeps_the_group_layout(self):
+        t = RT({"system": {"prefix": "/cvmfs/bits.cern.ch/lhcb/releases",
+                           "cvmfs_user_prefix": "/cvmfs/bits.cern.ch/lhcb/user",
+                           "cvmfs_repository": "test.cvmfs.io",
+                           "cvmfs_releases_template": "{prefix}/{release}/{pkg}"}},
+               injected_prefix="/cvmfs/test.cvmfs.io")
+        self.assertEqual(t["prefix"], "/cvmfs/test.cvmfs.io/lhcb/releases")
+        self.assertEqual(t["user_prefix"], "/cvmfs/test.cvmfs.io/lhcb/user")
+        self.assertEqual(t["path"], "{prefix}/{release}/{pkg}")
+
+    def test_repository_swap_cannot_escape_a_production_community(self):
+        # The overlay used in a production community fails closed.
+        with self.assertRaises(SystemExit):
+            RT({"system": {"prefix": "/cvmfs/bits.cern.ch/lhcb/releases",
+                           "cvmfs_repository": "test.cvmfs.io"}},
+               injected_prefix="/cvmfs/bits.cern.ch/lhcb/releases")
+
+    def test_repository_must_be_a_name(self):
+        with self.assertRaises(SystemExit):
+            RT({"system": {"prefix": "/cvmfs/a.io/g", "cvmfs_repository": "b.io/x"}})
+
     def test_recipe_prefix_is_local_dev_fallback(self):
         # With no injected prefix (local build), the recipe prefix is honoured.
         t = RT({"system": {"prefix": "/cvmfs/recipe"}}, injected_prefix=None)
@@ -332,6 +364,14 @@ class ReuseModulePathFromTemplatesTest(unittest.TestCase):
                          "/cvmfs/g/LCG_110/el9/Modules/modulefiles")
         self.assertEqual(reuse_module_path_from_templates(meta, "el9"),
                          "/cvmfs/g/el9/Modules/modulefiles")
+
+    def test_arch_token(self):
+        meta = {"system": {"prefix": "/cvmfs/g",
+                           "cvmfs_modules_template":
+                           "{prefix}/{arch}/Modules/modulefiles/{pkg}"}}
+        self.assertEqual(
+            reuse_module_path_from_templates(meta, "el9", arch="el9-gcc14-opt"),
+            "/cvmfs/g/el9-gcc14-opt/Modules/modulefiles")
 
     def test_none_when_no_prefix_or_template(self):
         self.assertIsNone(reuse_module_path_from_templates({}, "el9"))

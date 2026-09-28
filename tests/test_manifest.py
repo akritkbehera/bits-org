@@ -114,6 +114,15 @@ class TestManifestInit(unittest.TestCase):
         self.assertEqual(data["providers"], [])
         self.assertEqual(data["packages"], [])
 
+    def test_cvmfs_templates_recorded_only_when_given(self):
+        self.assertNotIn("cvmfs_templates", self._load(_make_manifest(self.tmp)))
+        tm = {"prefix": "/cvmfs/r/g", "path": "{prefix}/{pkg}/{version}/{arch}"}
+        m = BuildManifest(work_dir=self.tmp, requested_packages=["ROOT"],
+                          architecture="el9", defaults=["release"],
+                          config_dir=self.tmp, config_commit="abc",
+                          target="x", cvmfs_templates=tm)
+        self.assertEqual(self._load(m)["cvmfs_templates"], tm)
+
     def test_path_in_work_dir(self):
         m = _make_manifest(self.tmp)
         self.assertTrue(m.path.startswith(self.tmp))

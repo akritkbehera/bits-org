@@ -142,6 +142,29 @@ class CvmfsPathHandlerTest(unittest.TestCase):
             self._run(admin=True, prefix="/cvmfs/y.io/cms/releases"),
             "/cvmfs/y.io/cms/releases/x86_64-el9/Packages/GENIE/R-3_06_02")
 
+    def test_arch_token_is_the_build_qualified_arch(self):
+        CP.parseDefaults = lambda *a, **k: ("", {}, {}, {
+            "_append_arch_qualifiers": ["-gcc14-opt"],
+            "system": {"prefix": "/cvmfs/g",
+                       "cvmfs_releases_template": "{prefix}/{pkg}/{version}/{arch}"}})
+        self.assertEqual(self._run(admin=True, architecture="x86_64-el9"),
+                         "/cvmfs/g/GENIE/R-3_06_02/x86_64-el9-gcc14-opt")
+
+    def test_testbed_swaps_only_the_repository(self):
+        # The testbed overlay keeps the group's layout under test.cvmfs.io.
+        CP.parseDefaults = lambda *a, **k: ("", {}, {}, {"system": {
+            "prefix": "/cvmfs/bits.cern.ch/lhcb/releases",
+            "cvmfs_repository": "test.cvmfs.io",
+            "cvmfs_releases_template": "{prefix}/{pkg}/{version}"}})
+        self.assertEqual(self._run(admin=True, prefix="/cvmfs/test.cvmfs.io"),
+                         "/cvmfs/test.cvmfs.io/lhcb/releases/GENIE/R-3_06_02")
+
+    def test_unknown_token_aborts(self):
+        CP.parseDefaults = lambda *a, **k: ("", {}, {}, {"system": {
+            "prefix": "/cvmfs/g", "cvmfs_releases_template": "{prefix}/{pkg}/{nope}"}})
+        with self.assertRaises(SystemExit):
+            self._run(admin=True)
+
 
 if __name__ == "__main__":
     unittest.main()

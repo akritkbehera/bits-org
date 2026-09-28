@@ -52,6 +52,8 @@ fields as additive and key off ``schema_version``.
       "defaults":          [str],
       "config_dir":        str,         # absolute path to the .bits checkout
       "config_commit":     str,         # BITS_DIST_HASH of the config repo
+      "cvmfs_templates":   {str: str},  # this build's CVMFS layout (optional);
+                                        # bits cvmfs publish uses it for all packages
       "providers":         [ProviderEntry],
       "packages":          [PackageEntry]
     }
@@ -289,6 +291,7 @@ class BuildManifest:
         config_dir: str,
         config_commit: str,
         target: str = "",
+        cvmfs_templates: dict = None,
     ):
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self._work_dir = work_dir
@@ -330,6 +333,8 @@ class BuildManifest:
             "providers":          [],
             "packages":           [],
         }
+        if cvmfs_templates:
+            self._data["cvmfs_templates"] = dict(cvmfs_templates)
         self._save()
         self._write_pending()
         debug("manifest: initialised at %s", self._path)

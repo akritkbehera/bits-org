@@ -86,7 +86,7 @@ def resolve_reuse_from(reuse_from, layout):
 
 
 def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefix=None,
-                                     release=""):
+                                     release="", arch=None):
     """Derive the modulefiles BASE dir from the group's ``cvmfs_modules_template``.
 
     Lets ``--reuse-from cvmfs`` work off the single publish template a group
@@ -97,7 +97,8 @@ def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefi
     (the raw ``-a`` value / ``abi_tag``), not the build-qualified family, so the
     path matches where the packages actually live. ``release`` is the PATH form
     of the release (``path_release``), baked like the publish path so a
-    ``{release}`` template resolves; "" collapses the segment. Returns None when no
+    ``{release}`` template resolves; "" collapses the segment. ``arch`` fills
+    ``{arch}`` (the build-qualified arch). Returns None when no
     modules template (or no prefix) is configured. Pure.
     """
     templates = resolve_cvmfs_templates(defaults_meta, injected_prefix)
@@ -106,8 +107,10 @@ def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefi
     # Drop the trailing "/{token}" run (the per-package leaf, e.g. /{pkg} or
     # /{pkg}/{tag}) to get the fixed base the modulefiles live under.
     base = re.sub(r"(?:/\{[^}]*\})+$", "", bake_release(templates["modules"], release))
+    # {arch} is the build-qualified arch (e.g. x86_64-el9-gcc14-opt).
     return (base.replace("{prefix}", templates["prefix"])
-                .replace("{platform}", architecture))
+                .replace("{platform}", architecture)
+                .replace("{arch}", arch or architecture))
 
 
 def resolve_cvmfs_layout(defaults_meta, architecture):
@@ -287,6 +290,22 @@ def bake_day(template, day):
                     .replace("{day}", ""))
 
 
+def swap_repository(path, repository):
+    """Replace the leading /cvmfs/<repo> of an absolute path with
+    /cvmfs/<repository>. Template-relative values ({prefix}/...) and an empty
+    repository are returned unchanged."""
+    if not (path and repository):
+        return path
+    repository = str(repository).strip("/")
+    if repository.startswith("cvmfs/"):
+        repository = repository[len("cvmfs/"):]
+    from bits_helpers.log import dieOnError
+    dieOnError(not repository or "/" in repository,
+               "cvmfs_repository must be a repository name such as "
+               "test.cvmfs.io, got %r" % repository)
+    return re.sub(r"^/cvmfs/[^/]+(?=/|$)", "/cvmfs/" + repository, path)
+
+
 def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
     """Resolve the group's CVMFS publish-path templates from the defaults.
 
@@ -303,6 +322,11 @@ def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
     honoured as a fallback for local dev builds with no injected prefix; it can NOT
     override the injected one, so a recipe (or a user who can edit/point at one)
     cannot redirect a build into another group's CVMFS tree.
+
+    A declared prefix below the injected one is accepted and used (it is inside
+    the authorized tree). ``cvmfs_repository`` (set by the testbed overlay)
+    rewrites the /cvmfs/<repo> part of the declared prefix, user prefix and any
+    absolute template, so a wrapped group keeps its layout in another repository.
 
     Only a prefix is required; a group that sets any template but has no prefix at
     all is misconfigured (dieOnError).
@@ -321,21 +345,29 @@ def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
     # MUST agree with it. If both are set and differ, refuse (fail-closed) rather than
     # silently publishing into the wrong namespace. With no injection (local dev) the
     # declared prefix is used as-is.
-    recipe_prefix = opt("prefix") or opt("cvmfs_prefix")
+    # cvmfs_repository (e.g. the testbed overlay) swaps only the /cvmfs/<repo>
+    # part of every declared path, keeping the group's own layout under it.
+    swap = lambda v: swap_repository(v, opt("cvmfs_repository"))
+    recipe_prefix = swap(opt("prefix") or opt("cvmfs_prefix"))
+    # The declared prefix may equal the injected one or sit below it (a narrower
+    # tree is still inside the authorized one); anything else is refused.
+    inj = (injected_prefix or "").rstrip("/")
+    rec = (recipe_prefix or "").rstrip("/")
+    below = bool(inj and rec) and rec.startswith(inj + "/") and \
+        ".." not in rec.split("/")
     dieOnError(
-        bool(injected_prefix) and bool(recipe_prefix)
-        and injected_prefix.rstrip("/") != recipe_prefix.rstrip("/"),
-        "CVMFS prefix mismatch: the defaults/recipe prefix %r disagrees with the "
+        bool(inj and rec) and rec != inj and not below,
+        "CVMFS prefix mismatch: the defaults/recipe prefix %r is not the "
         "authoritative bits-console prefix %r (communities/<group>/ui-config.yaml: "
-        "cvmfs_prefix). Reconcile the two — a build will not publish while they "
-        "differ." % (recipe_prefix, injected_prefix))
-    root = (injected_prefix or None) or recipe_prefix
+        "cvmfs_prefix) or a path below it. Reconcile the two — a build will not "
+        "publish while they differ." % (recipe_prefix, injected_prefix))
+    root = recipe_prefix if below else ((injected_prefix or None) or recipe_prefix)
     # cvmfs_releases_template is the current name; cvmfs_path_template is the
     # legacy alias, still accepted.
-    rel = opt("cvmfs_releases_template") or opt("cvmfs_path_template")
-    mod = opt("cvmfs_modules_template")
-    shr = opt("cvmfs_shared_path_template")
-    usr = opt("cvmfs_user_prefix")
+    rel = swap(opt("cvmfs_releases_template") or opt("cvmfs_path_template"))
+    mod = swap(opt("cvmfs_modules_template"))
+    shr = swap(opt("cvmfs_shared_path_template"))
+    usr = swap(opt("cvmfs_user_prefix"))
 
     dieOnError(bool(rel or mod or shr or usr) and not root,
                "a CVMFS prefix is required for publishing (an injected/community "
