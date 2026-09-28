@@ -256,8 +256,16 @@ def _classify(spec: dict, work_dir: str, architecture: str,
         return ALREADY_INSTALLED
     if _scan_local_tars(spec, work_dir, architecture):
         return FROM_STORE
-    # Remote store probe (opt-in)
+    # Remote store probe (opt-in). List the store where possible (one request per
+    # hash); only stores that cannot list fall back to downloading the tarball.
     if sync_helper is not None:
+        from bits_helpers.plan import pick_revision, store_can_list
+        eff = effective_arch(spec, architecture)
+        if store_can_list(sync_helper):
+            for h in spec.get("remote_hashes", []):
+                if pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff) is not None:
+                    return FROM_REMOTE_STORE
+            return BUILD_FROM_SOURCE
         try:
             sync_helper.fetch_tarball(spec)
             tar_hash_dir = join(

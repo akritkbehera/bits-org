@@ -3732,6 +3732,9 @@ def doBuild(args, parser):
   debug("We will build packages in the following order: %s", " ".join(buildOrder))
 
   if args.dryRun:
+    from bits_helpers.plan import plan_build
+    plan_build(buildOrder, specs, args, workDir, syncHelper, raw_architecture,
+               cfg, lambda: trusted_reuse_index(args, workDir))
     info("--dry-run / -n specified. Not building.")
     return
 
