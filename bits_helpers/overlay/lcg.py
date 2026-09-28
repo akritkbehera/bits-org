@@ -21,23 +21,15 @@ written (currently empty — every LCGROOT is set from the externals file; a pro
 externals/generators split and the ``COMPILER:`` line, which AtlasLCG does not
 consume, are later refinements).
 
-``dir`` sources:
-  * default (local view): the absolute LOCAL install prefix — machine/CWD-bound,
-    for the pre-publish, build-from-cache case.
-  * ``--cvmfs``: the package's CVMFS publish path, expanded from the
-    ``cvmfs_templates`` recorded in its ``.meta.json`` (the same template
-    ``bits cvmfs-path`` resolves), so a *published* find_package(LCG) resolves
-    against CVMFS. Note the CVMFS template's ``{platform}`` segment is the bits
-    arch (``--architecture``), not the LCG platform string in the manifest
-    filename (``--platform``).
+``dir`` is the absolute LOCAL install prefix. Files carrying the build work dir
+are relocated like any other package; paths of OTHER packages on a CVMFS publish
+are only known at publish time, so a recipe that needs them rewrites the manifest
+then (see lhcb.bits/lcg-view.sh).
 
 Wiring: dispatched early in the ``bits`` entry script (like ``preload``/``cvmfs``).
 
 NOTE (verify on a real built tree): ``.meta.json`` is assumed to live at the
-install-prefix root (``<work-dir>/<arch>/<pkg>/<ver>-<rev>/.meta.json``); and the
-``--cvmfs`` expansion assumes each meta records ``cvmfs_templates.path`` (with
-``{release}`` already baked) and ``cvmfs_templates.prefix``. Confirm both against
-a real build-host ``.meta.json`` and adjust if they differ.
+install-prefix root (``<work-dir>/<arch>/<pkg>/<ver>-<rev>/.meta.json``).
 """
 
 import argparse
@@ -99,50 +91,6 @@ def collect(work_dir, arch):
     return {n: (v[0], v[1]) for n, v in chosen.items()}, warnings, errors
 
 
-def _expand_template(template, subst):
-    """Curly-brace token expansion, matching cvmfs_path._expand."""
-    for key, value in subst.items():
-        template = template.replace("{%s}" % key, value)
-    return template
-
-
-def resolve_dir(meta, install_dir, arch, cvmfs, cvmfs_prefix):
-    """The ``dir`` (LCGROOT) field for one package: local abspath, or the CVMFS
-    publish path from the recorded templates when ``cvmfs`` is set."""
-    if not cvmfs:
-        return os.path.abspath(install_dir)
-    pkg = meta["package"]
-    templates = meta.get("cvmfs_templates") or {}
-    template = templates.get("path")
-    if not template:
-        raise ValueError(
-            "package %r: --cvmfs requested but .meta.json records no "
-            "cvmfs_templates.path (this build was not CVMFS-destined)" % pkg["name"])
-    prefix = (cvmfs_prefix or templates.get("prefix") or "").rstrip("/")
-    if not prefix:
-        raise ValueError(
-            "package %r: no CVMFS prefix (.meta.json has no cvmfs_templates.prefix "
-            "and no --cvmfs-prefix given)" % pkg["name"])
-    subst = {
-        "prefix": prefix,
-        "pkg": pkg["name"],
-        "tag": pkg["version"],
-        "version": pkg["version"],
-        "platform": arch,              # CVMFS {platform} segment is the bits arch
-        "family": "",                  # per-package; templates use {family}{pkg}
-        "revision": str(pkg.get("revision", "")),
-        "commit": "",
-        "install_dir": "",
-        "user": "",
-    }
-    resolved = _expand_template(template, subst)
-    if "{" in resolved or "}" in resolved:
-        raise ValueError(
-            "package %r: unresolved placeholder in CVMFS path %r — e.g. {release} "
-            "was not baked into the .meta.json" % (pkg["name"], resolved))
-    return resolved
-
-
 def manifest_line(name, dir_path, meta):
     """Return one ``name;hash;version;dir;deps`` line. Raises ValueError if any
     delimiter-reserved character would corrupt the manifest."""
@@ -194,12 +142,6 @@ def main(argv=None):
     parser.add_argument("--out", default=".",
                         help="LCG_RELEASE_BASE root to write LCG_<num><postfix>/ under "
                              "(default: current directory).")
-    parser.add_argument("--cvmfs", action="store_true",
-                        help="Emit CVMFS publish paths (from each .meta.json's "
-                             "cvmfs_templates) instead of local install dirs.")
-    parser.add_argument("--cvmfs-prefix", dest="cvmfs_prefix", default="",
-                        help="Override the CVMFS prefix ({prefix}) used with --cvmfs "
-                             "(default: the prefix recorded in each .meta.json).")
     parser.add_argument("--build-view", dest="build_view", default="",
                         help="Also materialise the merged symlink-farm view over the "
                              "scanned closure into this directory, with a setup.sh that "
@@ -227,9 +169,7 @@ def main(argv=None):
     lines = []
     try:
         for name, (install_dir, meta) in records.items():
-            dir_path = resolve_dir(meta, install_dir, args.architecture,
-                                   args.cvmfs, args.cvmfs_prefix)
-            lines.append(manifest_line(name, dir_path, meta))
+            lines.append(manifest_line(name, os.path.abspath(install_dir), meta))
     except ValueError as exc:
         sys.stderr.write("lcg-view: error: %s\n" % exc)
         return 1
@@ -251,8 +191,7 @@ def main(argv=None):
                          % (dest, exc))
         return 1
 
-    sys.stderr.write("lcg-view: wrote %d packages to %s%s\n"
-                     % (len(lines), externals, " (CVMFS paths)" if args.cvmfs else ""))
+    sys.stderr.write("lcg-view: wrote %d packages to %s\n" % (len(lines), externals))
 
     if args.build_view:
         rc = _build_view_and_setup(records, args.build_view, args.lib_path_var)

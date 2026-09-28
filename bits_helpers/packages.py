@@ -7,6 +7,7 @@ build list: read each recipe, evaluate architecture/variable gates, apply system
 and fold in checksum-store data. The top of the dependency graph; imports from
 every lower layer (recipe, matchers, paths) plus the utilities primitives."""
 
+import os
 import re
 from collections import OrderedDict
 from shlex import quote
@@ -17,9 +18,22 @@ from bits_helpers.matchers import (_collect_version_pins, _matcher_active,
                                    disabledByArchitectureDefaults,
                                    filterByArchitectureDefaults, filterPatches)
 from bits_helpers.recipe import getRecipeReader, parseRecipe, getGeneratedPackages
-from bits_helpers.paths import resolveFilename
+from bits_helpers.paths import resolveFilename, getConfigPaths, checkForFilename
 from bits_helpers.utilities import recipeSourceLabel, resolve_version
 from bits_helpers.defaults import resolve_pkg_family
+
+def shadowed_defaults_repo(pkg_filename, won_dir, search_dirs, defaults_dirs):
+  """Return the first repo dir after *won_dir* in *search_dirs* that supplies an
+  active defaults file (a key of *defaults_dirs*) and also has a recipe for
+  *pkg_filename*, i.e. a group recipe hidden by an earlier repo; else None."""
+  won = os.path.abspath(won_dir) if won_dir else ""
+  if not defaults_dirs or won not in search_dirs:
+    return None
+  for later in search_dirs[search_dirs.index(won) + 1:]:
+    if later in defaults_dirs and os.path.exists(checkForFilename({}, pkg_filename, later)):
+      return later
+  return None
+
 
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
@@ -62,6 +76,18 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   # override.  Conflicts (two different pins for the same name, or a pin that
   # arrives after the dependency was already resolved) are fatal errors.
   _version_pins = {}
+  # Repos that supply an active defaults file (e.g. ship.bits for defaults-ship)
+  # usually carry that group's own versions of shared recipes: warn when one of
+  # them is searched AFTER the repo a recipe was taken from (see below).
+  _search_dirs = [os.path.abspath(d) for d in getConfigPaths(configDir)]
+  # The repo holding defaults-release (and usually the compiler/build-type axes)
+  # is the shared base that group repos override on purpose: not a group repo.
+  _ddirs = (defaults_meta or {}).get("_defaults_dirs") or {}
+  _base = os.path.abspath(_ddirs["release"]) if "release" in _ddirs else None
+  _defaults_dirs = {}
+  for _dname, _ddir in _ddirs.items():
+    if os.path.abspath(_ddir) != _base:
+      _defaults_dirs.setdefault(os.path.abspath(_ddir), []).append("defaults-" + _dname)
   while packages:
     p = packages.pop(0)
     if p in specs:
@@ -94,6 +120,14 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
 
     dieOnError(not filename, "Package {} not found in {}".format(p, configDir))
     assert(filename is not None)
+
+    if p != "defaults-release" and pkg_filename not in taps and not filename.startswith("generate:"):
+      _later = shadowed_defaults_repo(pkg_filename, pkgdir, _search_dirs, _defaults_dirs)
+      if _later:
+        warning("%s: using the recipe from %s; %s (which provides %s) also has one but is "
+                "searched later. Move it earlier in the repository order if its version "
+                "is the intended one.", p, recipeSourceLabel(pkgdir, provider_dirs),
+                recipeSourceLabel(_later, provider_dirs), ", ".join(_defaults_dirs[_later]))
 
     err, spec, recipe = parseRecipe(getRecipeReader(filename, configDir, generatedPackages[pkgdir]), generatedPackages)
     dieOnError(err, err)

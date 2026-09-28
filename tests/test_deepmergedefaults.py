@@ -110,3 +110,41 @@ class ReadDefaultsExemptTest(unittest.TestCase):
         metas = {"release": {"package": "defaults-release"}}
         meta, _ = self._read(["release"], metas)
         self.assertEqual(meta.get("_valid_defaults_exempt"), ["release"])
+
+
+class ReadDefaultsMissingTest(unittest.TestCase):
+    """readDefaults records defaults with no file and where the others came from."""
+
+    def test_missing_and_dirs(self):
+        import os
+        import tempfile
+        from bits_helpers.defaults import readDefaults
+        cfg = tempfile.mkdtemp()
+        with open(os.path.join(cfg, "defaults-o2.sh"), "w") as fh:
+            fh.write("package: defaults-o2\nversion: v1\n---\n")
+        meta, _ = readDefaults(cfg, ["release", "alice", "o2"], lambda m: None, "x86_64-el9")
+        self.assertEqual(meta.get("_missing_defaults"), ["release", "alice"])
+        self.assertEqual(meta.get("_defaults_dirs"), {"o2": os.path.abspath(cfg)})
+
+
+class ShadowedDefaultsRepoTest(unittest.TestCase):
+    """A recipe taken from an earlier repo while a defaults-providing repo later
+    in the search order has its own version is reported."""
+
+    def test_group_recipe_hidden_by_earlier_repo(self):
+        import os
+        import tempfile
+        from bits_helpers.packages import shadowed_defaults_repo
+        root = tempfile.mkdtemp()
+        lcg, ship = os.path.join(root, "lcg.bits"), os.path.join(root, "ship.bits")
+        for d in (lcg, ship):
+            os.makedirs(d)
+            open(os.path.join(d, "genie.sh"), "w").close()
+        open(os.path.join(lcg, "root.sh"), "w").close()
+        search = [os.path.join(root, "cfg"), lcg, ship]
+        dirs = {ship: ["defaults-ship"]}
+        self.assertEqual(shadowed_defaults_repo("genie", lcg, search, dirs), ship)
+        self.assertIsNone(shadowed_defaults_repo("root", lcg, search, dirs))      # not in ship
+        self.assertIsNone(shadowed_defaults_repo("genie", ship, search, dirs))    # ship won
+        # ship first: nothing later hides anything
+        self.assertIsNone(shadowed_defaults_repo("genie", ship, [search[0], ship, lcg], dirs))

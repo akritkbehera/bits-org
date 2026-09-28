@@ -349,7 +349,10 @@ def wrap_build_command(
     # pip-installing recipes flip the default once instead of annotating every
     # recipe.
     global_default = getattr(opts, "sandboxNetwork", "on") or "on"
-    sandbox_network = spec.get("sandbox_network", global_default)
+    # The recipe may set it top-level or under `system:` (as defaults files do).
+    recipe_system = spec.get("system") if isinstance(spec.get("system"), dict) else {}
+    sandbox_network = spec.get("sandbox_network",
+                               recipe_system.get("sandbox_network", global_default))
     # YAML's SafeLoader parses bare on/off/yes/no as booleans, so a recipe line
     # `sandbox_network: off` arrives here as Python False (not the string
     # "off"). Normalise both forms so quoted and unquoted recipes behave the

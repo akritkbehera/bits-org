@@ -425,6 +425,27 @@ class WrapSandboxExecTests(unittest.TestCase):
 
     @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
     @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_recipe_system_block_is_honoured(self, mock_profile, _r):
+        # `system: {sandbox_network: "off"}` in a recipe (the defaults-file form)
+        # overrides a blocking global default.
+        wrap_build_command(
+            LOCAL_CMD, {"package": "P", "system": {"sandbox_network": "off"}},
+            _opts(sandbox="sandbox-exec", sandbox_network="on"), workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(True, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
+    def test_top_level_field_beats_system_block(self, mock_profile, _r):
+        wrap_build_command(
+            LOCAL_CMD, {"package": "P", "sandbox_network": "on",
+                        "system": {"sandbox_network": "off"}},
+            _opts(sandbox="sandbox-exec", sandbox_network="off"), workdir="/sw",
+        )
+        mock_profile.assert_called_once_with(False, "/sw")
+
+    @patch("bits_helpers.sandbox.resolve_sandbox_mode", return_value="sandbox-exec")
+    @patch("bits_helpers.sandbox.make_sbpl_profile", return_value="/tmp/p.sb")
     def test_global_default_off_allows_when_recipe_silent(self, mock_profile, _r):
         # No per-recipe field -> fall back to global --sandbox-network/bits.rc.
         wrap_build_command(

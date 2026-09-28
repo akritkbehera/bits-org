@@ -4,5 +4,5 @@
 (`bits overlay lcg`). This re-exports it so `bits lcg-view` and existing imports
 keep working; prefer `from bits_helpers.overlay.lcg import ...`."""
 from bits_helpers.overlay.lcg import (  # noqa: F401
-    main, collect, resolve_dir, manifest_line, _build_view_and_setup,
+    main, collect, manifest_line, _build_view_and_setup,
 )

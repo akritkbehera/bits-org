@@ -27,7 +27,7 @@ from bits_helpers.defaults import validateDefaults, incompatibleFlavorDefaults
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import resolve_tag, resolve_version, short_commit_hash, resolve_spec_data
 from bits_helpers.utilities import apply_version_from
-from bits_helpers.paths import resolveLocalPath
+from bits_helpers.paths import resolveLocalPath, getConfigPaths
 from bits_helpers.git import Git, git
 from bits_helpers.sl import Sapling
 from bits_helpers.scm import SCMError
@@ -2869,6 +2869,15 @@ def doBuild(args, parser):
     warning("Provider discovery did not reach a fixed point after %d passes; "
             "using the last resolved provider set (some provider pins may still "
             "be moving).", MAX_PROVIDER_ITERATIONS)
+  # A defaults name with no defaults-<name>.sh anywhere on the (now complete)
+  # search path is a typo or a missing repository, not a flavour: say so, rather
+  # than a misleading "not found"/"not compatible" later. 'release' is injected and optional.
+  _missing_defaults = [d for d in defaultsMeta.get("_missing_defaults", []) if d != "release"]
+  dieOnError(bool(_missing_defaults),
+             "No defaults-%s.sh found for --defaults %s. Searched:\n  %s\n"
+             "Check the name, or add the repository that provides it."
+             % ("/defaults-".join(_missing_defaults), "::".join(args.defaults),
+                "\n  ".join(getConfigPaths(args.configDir))))
   # A defaults file may request the legacy (pre-modules) init.sh via
   # `system: legacy_initdotsh: true` (top-level key also honoured) — this is how
   # `--defaults alidist` makes bits reuse the alibuild-repo tarballs without any

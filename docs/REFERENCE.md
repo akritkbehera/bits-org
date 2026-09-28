@@ -1943,7 +1943,7 @@ When `provides_repository: true` is set, the package's `source` URL must point t
 
 | Field | Description |
 |-------|-------------|
-| `sandbox_network` | Controls outgoing network access when the build script runs inside a sandbox. `on` (default) — network is **blocked**. `off` — network is **allowed** (useful for recipes that `pip install` or `gem install` at build time). Ignored when `--sandbox=off`. See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
+| `sandbox_network` | Controls outgoing network access when the build script runs inside a sandbox. `on` (default) — network is **blocked**. `off` — network is **allowed** (useful for recipes that `pip install` or `gem install` at build time). May also be given under the recipe's `system:` block (the defaults-file form); the top-level field wins. Ignored when `--sandbox=off`. See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
 
 Example:
 

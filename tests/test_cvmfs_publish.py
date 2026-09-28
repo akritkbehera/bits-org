@@ -80,6 +80,15 @@ class TestResolvePkgPath(unittest.TestCase):
                              kind="path", tmpl_prefix="", arch="shared"),
             "shared/noarch/1.0")
 
+    def test_share_arch_uses_the_shared_template(self):
+        # Noarch packages carry effective_architecture "share" (arch.SHARED_ARCH).
+        d = self._meta(path="{prefix}/el9/Packages/{pkg}/{version}",
+                       shared="{prefix}/shared/{pkg}/{version}")
+        self.assertEqual(
+            resolve_pkg_path(d, "r", "noarch", "1.0", "1.0", "", "", "", "", "", "",
+                             kind="path", tmpl_prefix="", arch="share"),
+            "shared/noarch/1.0")
+
 
 class TestExpandTmpl(unittest.TestCase):
     def test_family_carries_its_own_slash(self):

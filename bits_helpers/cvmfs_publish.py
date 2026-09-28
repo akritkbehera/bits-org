@@ -20,6 +20,8 @@ import subprocess
 import sys
 import tempfile
 
+from bits_helpers.arch import SHARED_ARCH
+
 # ── pure helpers (unit-testable, no I/O) ─────────────────────────────────────
 
 _TOKENS = ("pkg", "tag", "version", "revision", "platform",
@@ -160,7 +162,10 @@ def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
     # uses the path template. Selecting shared unconditionally would resolve a
     # different repo path and change the relocated bytes → a different hash.
     if kind == "path":
-        key = (tm.get("shared") or tm.get("path")) if arch == "shared" else tm.get("path")
+        # Noarch packages carry effective_architecture "share" (SHARED_ARCH);
+        # "shared" is still accepted (it is the certify/BOM bucket name).
+        noarch = arch in (SHARED_ARCH, "shared")
+        key = (tm.get("shared") or tm.get("path")) if noarch else tm.get("path")
     elif kind == "modules":
         key = tm.get("modules")
     else:

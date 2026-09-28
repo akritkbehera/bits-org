@@ -159,10 +159,18 @@ def readDefaults(configDir, defaults, error, architecture):
   append_arch_qualifiers = []  # per-default append_arch values, in chain order
   own_hash_drop_qualifiers = []  # append_arch values own_hash pkgs drop (build-type)
   valid_defaults_exempt = []   # structural/overlay defaults, in chain order
+  missing_defaults = []        # names with no defaults-<name>.sh on the search path
+  defaults_dirs = {}           # name -> recipe dir its defaults file came from
 
   for xdefaults in defaults:
     xDefaults = resolveDefaultsFilename(xdefaults, configDir, failOnError=False)
     xMeta = {}
+    if xDefaults is None or not exists(xDefaults):
+      # Not fatal here: this also runs before repository providers are loaded.
+      # The build checks _missing_defaults once the search path is complete.
+      missing_defaults.append(xdefaults)
+    else:
+      defaults_dirs[xdefaults] = os.path.dirname(os.path.abspath(xDefaults))
     if xDefaults is not None and exists(xDefaults):
       err, xMeta, xBody = parseRecipe(getRecipeReader(xDefaults))
       if xBody.strip() != "":
@@ -210,6 +218,8 @@ def readDefaults(configDir, defaults, error, architecture):
   if "release" in defaults and "release" not in valid_defaults_exempt:
     valid_defaults_exempt.append("release")
   defaultsMeta["_valid_defaults_exempt"] = valid_defaults_exempt
+  defaultsMeta["_missing_defaults"] = missing_defaults
+  defaultsMeta["_defaults_dirs"] = defaults_dirs
 
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 
