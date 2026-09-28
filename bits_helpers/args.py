@@ -466,8 +466,9 @@ def add_doctor_arguments(subparsers, ctx):
   # Options for the doctor subcommand
   doctor_parser.add_argument("packages", metavar="PACKAGE", nargs="*", default=[],
                              help=("Check whether all system requirements of %(metavar)s are satisfied. "
-                                   "May be specified multiple times. "
-                                   "Optional when --runner is used."))
+                                   "May be specified multiple times. Without packages (and "
+                                   "without --runner), checks that this machine is set up to run "
+                                   "bits: Python modules, container engine, stores."))
   ctx.architecture(doctor_parser,
                    help=("Resolve requirements as if on the specified architecture. When used with "
                          "--docker, use a Docker image for the specified architecture. Default is "
@@ -542,7 +543,7 @@ def add_doctor_arguments(subparsers, ctx):
   doctor_parser.add_argument(
       "--json", dest="json_output", action="store_true", default=False,
       help="Emit a machine-readable JSON report.  "
-           "Applies to --runner and --check-store modes.",
+           "Applies to setup (no packages), --runner and --check-store modes.",
   )
   doctor_parser.add_argument(
       "--check-store", dest="checkStore", action="store_true", default=False,

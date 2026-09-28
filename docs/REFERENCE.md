@@ -870,7 +870,7 @@ bits [--config=FILE] [--debug|-d] [--dry-run|-n] <subcommand> [options]
 |---------------|-------------|
 | `--config=FILE` | Use the specified configuration file |
 | `-d`, `--debug` | Enable verbose debug output |
-| `-n`, `--dry-run` | Print what would happen without executing |
+| `-n`, `--dry-run` | Print what would happen without executing. For `bits build`: a per-package plan (installed / local tarball / from remote store / build) and a summary; the remote store is listed, never downloaded from (http(s):// and b3:// stores) |
 
 ---
 
@@ -1039,12 +1039,15 @@ not describe those rebuilt tarballs.
 Check that the system satisfies all requirements for the requested packages, validate the full build-runner environment with `--runner`, or probe the remote binary store with `--check-store`.
 
 ```bash
-bits doctor [options] [PACKAGE ...]          # recipe system-requirement check
+bits doctor [options]                        # is this machine set up to run bits?
+bits doctor [options] PACKAGE ...            # recipe system-requirement check
 bits doctor --runner [options]               # runner environment validation
 bits doctor --check-store PACKAGE ...        # pre-build store availability report
 ```
 
-**Recipe-check mode** (default) evaluates each package's `system_requirement` and `prefer_system` snippets in the dependency tree and reports which packages can be satisfied by the host and which will be built by bits. The `PACKAGE` positional argument is required in this mode.
+**Setup mode** (no `PACKAGE`) checks the machine itself: the Python bits runs with and its modules (boto3 is required when a `b3://` store is given), running as root, git, a C++ compiler, the container engine behind `docker` (for rootless podman: delegated cgroup controllers, `/etc/subuid`/`/etc/subgid` ranges, storage not on AFS/NFS, SELinux), disk space, and each `--remote-store`/`--write-store` (reachability; for `b3://`, credentials and bucket access; for `s3://`, s3cmd and `~/.s3cfg`). Each check is PASS / WARN / FAIL / SKIP with a one-line fix; any FAIL gives exit code 1. `--json` is supported.
+
+**Recipe-check mode** (with `PACKAGE`) evaluates each package's `system_requirement` and `prefer_system` snippets in the dependency tree and reports which packages can be satisfied by the host and which will be built by bits. The `PACKAGE` positional argument is required in this mode.
 
 **`--runner` mode** skips the recipe scan and instead runs a structured checklist of the build-runner environment. Each check returns PASS / FAIL / WARN / SKIP. WARN is advisory; only FAIL affects the exit code.
 

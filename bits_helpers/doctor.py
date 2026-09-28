@@ -4,6 +4,11 @@
 
 """bits doctor — system requirement checks and runner environment validation.
 
+Without packages (and without --runner / --check-store) ``bits doctor`` checks
+that this machine is set up to run bits: Python and its modules, running as
+root, git, compiler, the container engine (incl. rootless podman setup), disk
+space and store access. Exit code 1 if any check FAILs.
+
 In its default (recipe-check) mode ``bits doctor`` examines a package's
 dependency tree and reports which packages can be satisfied by the system and
 which will be built by bits.
@@ -676,9 +681,10 @@ def _run_runner_checks(args) -> List[CheckResult]:
 
 # ── Output emitters ────────────────────────────────────────────────────────────
 
-def _emit_runner_text(checks: List[CheckResult], arch: str) -> None:
+def _emit_runner_text(checks: List[CheckResult], arch: str,
+                      title: str = "bits doctor --runner") -> None:
     from bits_helpers.log import banner as _banner
-    _banner("bits doctor --runner  —  architecture: %s", arch)
+    _banner("%s  —  architecture: %s", title, arch)
     print()
     print("  %-32s %-6s  %s" % ("check", "status", "detail"))
     print("  " + "-" * 76)
@@ -703,9 +709,10 @@ def _emit_runner_text(checks: List[CheckResult], arch: str) -> None:
     ))
 
 
-def _emit_runner_json(checks: List[CheckResult], arch: str, exit_code: int) -> None:
+def _emit_runner_json(checks: List[CheckResult], arch: str, exit_code: int,
+                      mode: str = "runner") -> None:
     report = {
-        "mode":         "runner",
+        "mode":         mode,
         "architecture": arch,
         "checks": [
             {"name": name, "status": status, "detail": detail}
@@ -735,6 +742,18 @@ def doDoctor(args, parser):
             _emit_runner_json(checks, arch, exit_code)
         else:
             _emit_runner_text(checks, arch)
+        sys.exit(exit_code)
+
+    # ── No packages: check that this machine is set up to run bits ───────────
+    if not args.packages and not getattr(args, "checkStore", False):
+        from bits_helpers.doctor_setup import run_setup_checks
+        arch = getattr(args, "architecture", "")
+        checks = run_setup_checks(args)
+        exit_code = 1 if any(s == FAIL for _, s, _ in checks) else 0
+        if getattr(args, "json_output", False):
+            _emit_runner_json(checks, arch, exit_code, mode="setup")
+        else:
+            _emit_runner_text(checks, arch, title="bits doctor (setup)")
         sys.exit(exit_code)
 
     # ── Standard recipe-check mode ───────────────────────────────────────────
