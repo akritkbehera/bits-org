@@ -248,6 +248,11 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
                     s3_endpoint=None, s3_access_key=None, s3_secret_key=None,
                     s3_region=None, s3_addressing_style=None):
   """Parse remote store URLs and return the correct RemoteSync instance for them."""
+  # A write store alone is also the read store (as with ::rw); otherwise it would
+  # fall through to NoRemoteSync below and nothing would be uploaded.
+  dieOnError((write_url or "").startswith("cvmfs://"),
+             "Cannot use a cvmfs:// store as a --write-store: CVMFS is read-only.")
+  read_url = read_url or write_url or ""
   # For S3-backed stores, resolve + export the connection config before any S3
   # backend is built, so boto3 and the upload subprocess share one
   # endpoint/credentials. No-op for non-S3 stores (rsync/cvmfs/https).

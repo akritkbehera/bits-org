@@ -3099,6 +3099,11 @@ def doBuild(args, parser):
           args.writeStore = _rs
       args.remoteStore = _rs
 
+  # A write store alone is also the read store (as with ::rw). Set it here, not
+  # only in remote_from_url, so the signed-reuse checks below see that store.
+  if not getattr(args, "remoteStore", "") and getattr(args, "writeStore", ""):
+    args.remoteStore = args.writeStore
+
   # Trusted-reuse policy from the active defaults (system:), non-hashed. Lets a
   # community turn on signed reuse + point at its common manifest once, so a bare
   # `bits build` gets it. Precedence: CLI > system:.

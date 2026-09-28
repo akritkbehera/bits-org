@@ -1530,7 +1530,8 @@ def add_build_arguments(subparsers, ctx):
   with --s3-endpoint.
   """)
   build_remote.add_argument("--no-remote-store", action="store_true",
-                            help="Disable the use of the remote store, even if it is enabled by default.")
+                            help=("Disable the use of the remote store, even if it is enabled by default. "
+                                  "A --write-store is still read from."))
   build_remote.add_argument("--remote-store", dest="remoteStore", metavar="STORE", default="",
                             help="""\
                             Where to find prebuilt tarballs to reuse. See above for available remote stores.
