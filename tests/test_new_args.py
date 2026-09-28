@@ -292,6 +292,14 @@ class RemoteStoreUnificationTest(unittest.TestCase):
             _parse(["publish", "--store", "b3://x"])
         self.assertTrue(w.called)
 
+    def test_cern_s3_path_style_store_normalised(self):
+        args = _parse(["build", "zlib", "-a", _ARCH,
+                       "--remote-store", "https://s3.cern.ch/bkt::rw"])
+        self.assertEqual(args.remoteStore, "https://s3.cern.ch/swift/v1/bkt")
+        self.assertEqual(args.writeStore, "https://s3.cern.ch/swift/v1/bkt")
+        args = _parse(["doctor", "--remote-store", "https://s3.cern.ch/bkt"])
+        self.assertEqual(args.remoteStore, "https://s3.cern.ch/swift/v1/bkt")
+
     def test_remote_store_does_not_warn(self):
         with patch("bits_helpers.log.warning") as w:
             _parse(["publish", "--remote-store", "b3://x"])

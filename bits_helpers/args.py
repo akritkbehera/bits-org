@@ -2325,6 +2325,16 @@ def finaliseArgs(args, parser):
       args.remoteStore = args.remoteStore[0:-4]
       args.writeStore = args.remoteStore
 
+    # CERN S3 path-style store URLs cannot be listed; use the swift form.
+    # (Logging is not set up yet: build.py reports the rewrite.)
+    from bits_helpers.sync import normalise_store_url
+    args.normalisedStores = []
+    for _attr in ("remoteStore", "writeStore"):
+      _url = getattr(args, _attr)
+      if normalise_store_url(_url) != _url:
+        args.normalisedStores.append((_url, normalise_store_url(_url)))
+        setattr(args, _attr, normalise_store_url(_url))
+
   if args.action in ["build", "init"]:
     if "develPrefix" in args and args.develPrefix is None:
       if "chdir" in args:

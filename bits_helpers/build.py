@@ -270,8 +270,15 @@ def trusted_reuse_index(args, work_dir):
   if not sources:
     warning("--require-signed-reuse set without --trust-manifest; "
             "no remote tarball will be reused.")
+  guessed = getattr(args, "_guessedTrustManifests", None) or set()
+  absent = []
   for src in sources:
     kid, part = _load_trusted_index(src, work_dir, accept_groups)
+    if not kid and src in guessed and _url_not_found(src):
+      # A guessed name (e.g. the -shared manifest) that the store simply lacks.
+      debug("--require-signed-reuse: no manifest at %s (name guessed); skipped", src)
+      absent.append(src)
+      continue
     if not kid:
       warning("--require-signed-reuse: could not verify signed manifest %s; "
               "its tarballs will not be reused.", src)
@@ -280,8 +287,26 @@ def trusted_reuse_index(args, work_dir):
     debug("Trusted reuse index from %s (signed by %s): %d entries%s",
           src, kid, len(part),
           "" if accept_groups is None else " (groups: %s + common)" % ",".join(accept_groups))
+  if sources and len(absent) == len(sources):
+    warning("--require-signed-reuse: no signed manifest found in the store (%s); "
+            "no remote tarball will be reused.", ", ".join(absent))
   args._trustedReuseIndex = index
   return index
+
+
+def _url_not_found(url):
+  """True only if *url* is an http(s) URL answering 404 (not on other errors)."""
+  if not str(url).startswith(("http://", "https://")):
+    return False
+  import urllib.request
+  import urllib.error
+  try:
+    urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=10).close()
+  except urllib.error.HTTPError as exc:
+    return exc.code == 404
+  except Exception:  # pylint: disable=broad-except
+    return False
+  return False
 
 
 def trusted_reuse_records(args, work_dir):
@@ -3098,11 +3123,15 @@ def doBuild(args, parser):
     _rs = _system_opt("remote_store", None)
     if _rs:
       _rs = str(_rs).strip()
-      if _rs.endswith("::rw"):
-        _rs = _rs[:-4]
-        if not getattr(args, "writeStore", ""):
-          args.writeStore = _rs
+      from bits_helpers.sync import normalise_store_url
+      _rw = _rs.endswith("::rw")
+      _rs = normalise_store_url(_rs[:-4] if _rw else _rs)
+      if _rw and not getattr(args, "writeStore", ""):
+        args.writeStore = _rs
       args.remoteStore = _rs
+
+  for _old, _new in dict(getattr(args, "normalisedStores", None) or []).items():
+    info("Store %s -> %s (bits lists CERN S3 stores via swift)", _old, _new)
 
   # A write store alone is also the read store (as with ::rw). Set it here, not
   # only in remote_from_url, so the signed-reuse checks below see that store.
@@ -3161,6 +3190,7 @@ def doBuild(args, parser):
     if not _srcs:
       _srcs = derive_trust_manifest_srcs(
           _store, _prefix, str(getattr(args, "architecture", "") or ""), _ep)
+      args._guessedTrustManifests = set(_srcs)   # names guessed, may not exist
     if _srcs:
       args.trustManifest = ",".join(_srcs)
       info("--require-signed-reuse: trust manifests derived from store -> %s",

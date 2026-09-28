@@ -244,6 +244,17 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
   return {"endpoint": endpoint, "region": region, "addressing_style": addressing_style}
 
 
+def normalise_store_url(url):
+  """CERN S3 path-style ``https://s3.cern.ch/<bucket>[/path]`` -> the swift form.
+
+  bits lists http(s) stores through the swift API; the S3 path-style address
+  cannot be listed that way, so every package would look absent.
+  """
+  m = re.match(r"^(https?://s3\.cern\.ch)(?::443)?/(?!swift/)([^/?#]+(?:/[^?#]*)?)$",
+               str(url or ""), re.I)
+  return "%s/swift/v1/%s" % m.groups() if m else url
+
+
 def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
                     s3_endpoint=None, s3_access_key=None, s3_secret_key=None,
                     s3_region=None, s3_addressing_style=None):
@@ -252,7 +263,7 @@ def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
   # fall through to NoRemoteSync below and nothing would be uploaded.
   dieOnError((write_url or "").startswith("cvmfs://"),
              "Cannot use a cvmfs:// store as a --write-store: CVMFS is read-only.")
-  read_url = read_url or write_url or ""
+  read_url = normalise_store_url(read_url or write_url or "")
   # For S3-backed stores, resolve + export the connection config before any S3
   # backend is built, so boto3 and the upload subprocess share one
   # endpoint/credentials. No-op for non-S3 stores (rsync/cvmfs/https).

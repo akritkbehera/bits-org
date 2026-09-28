@@ -563,6 +563,42 @@ class TestCertifyEndToEnd(unittest.TestCase):
         idx = build.trusted_reuse_index(args, self.tmp)
         self.assertEqual(idx, {})
 
+    def test_guessed_absent_manifest_is_not_warned(self):
+        # A manifest name guessed by derive_trust_manifest_srcs that does not exist
+        # (e.g. no -shared manifest in the store) is skipped quietly; an absent
+        # manifest the user named still warns.
+        from unittest import mock
+        from bits_helpers import build
+        url = "https://s3.cern.ch/swift/v1/b/MANIFESTS/common-manifest-shared.json"
+        arch_url = url.replace("-shared", "-x86_64-el9")
+        found = lambda src: (("kid", {"h": "sha"}) if src == arch_url else (None, {}))
+        with mock.patch("bits_helpers.build._load_trusted_index",
+                        side_effect=lambda src, *a: found(src)), \
+             mock.patch("bits_helpers.build._url_not_found", return_value=True), \
+             mock.patch("bits_helpers.build.warning") as warn:
+            args = SimpleNamespace(trustManifest=arch_url + "," + url, trustGroups=None,
+                                   _guessedTrustManifests={arch_url, url})
+            self.assertEqual(build.trusted_reuse_index(args, self.tmp), {"h": "sha"})
+            warn.assert_not_called()
+            # All guessed manifests absent: one clear warning.
+            args = SimpleNamespace(trustManifest=url, trustGroups=None,
+                                   _guessedTrustManifests={url})
+            build.trusted_reuse_index(args, self.tmp)
+            self.assertIn("no signed manifest found", warn.call_args[0][0])
+            warn.reset_mock()
+            # Named by the user (not guessed): still warns per manifest.
+            args = SimpleNamespace(trustManifest=url, trustGroups=None)
+            build.trusted_reuse_index(args, self.tmp)
+            self.assertIn("could not verify", warn.call_args[0][0])
+        with mock.patch("bits_helpers.build._load_trusted_index", return_value=(None, {})), \
+             mock.patch("bits_helpers.build._url_not_found", return_value=False), \
+             mock.patch("bits_helpers.build.warning") as warn:
+            # Guessed but not a 404 (timeout, 403, bad signature): still warns.
+            args = SimpleNamespace(trustManifest=url, trustGroups=None,
+                                   _guessedTrustManifests={url})
+            build.trusted_reuse_index(args, self.tmp)
+            self.assertIn("could not verify", warn.call_args[0][0])
+
     def test_build_trusted_reuse_index_missing_local_file_degrades(self):
         from bits_helpers import build
         args = SimpleNamespace(
