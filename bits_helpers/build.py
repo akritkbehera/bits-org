@@ -3193,8 +3193,8 @@ def doBuild(args, parser):
       args._guessedTrustManifests = set(_srcs)   # names guessed, may not exist
     if _srcs:
       args.trustManifest = ",".join(_srcs)
-      info("--require-signed-reuse: %d signed manifest(s) in %s/",
-           len(_srcs), os.path.dirname(os.path.commonprefix(_srcs)))
+      banner("Signed reuse: %d trust manifest(s) from\n  %s/",
+             len(_srcs), os.path.dirname(os.path.commonprefix(_srcs)))
       debug("--require-signed-reuse: trust manifests -> %s", args.trustManifest)
 
   # The final target builds alone (every other package is one of its
