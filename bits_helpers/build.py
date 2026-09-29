@@ -3511,11 +3511,7 @@ def doBuild(args, parser):
            ", ".join(develPkgs),
            os.getcwd())
 
-  # Packages pulled in by some recipe via `untracked_requires`: linked at runtime
-  # but excluded from their consumers' identity hash, so editing one does not
-  # rebuild the stack above it. List them like development packages, and warn if a
-  # target has no stable install label — a reused consumer references it by
-  # <pkg>/<version-revision>, so that path must not move when the package changes.
+  # Check before storeHashes can inject a hash as force_revision.
   untrackedTargets = sorted({d for s in specs.values()
                              for d in s.get("untracked_requires", ()) if d in specs})
   if untrackedTargets:
@@ -3526,12 +3522,9 @@ def doBuild(args, parser):
            "in .meta.json. You are responsible for keeping them ABI-compatible.",
            ", ".join(untrackedTargets))
     for t in untrackedTargets:
-      if "force_revision" not in specs[t]:
-        warning("Untracked dependency %s has no stable install label "
-                "(force_revision): its install path moves when it changes, so "
-                "already-built consumers keep linking the previous build. Set "
-                "`force_revision:` on %s to keep <%s>/<version-revision> stable.",
-                t, t, t)
+      dieOnError(specs[t].get("force_revision") is None,
+                 "Untracked dependency %s requires an explicit force_revision "
+                 "(for example, empty or a fixed label)." % t)
 
   # A recipe may declare BOTH a git source (source:/tag:) and cached tarball
   # sources (sources:); the group's source_mode (defaults-release.sh) picks which

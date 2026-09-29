@@ -1871,7 +1871,7 @@ define it in **both** `variables:` and `env:`.
 | `requires` | Runtime + build-time dependencies. |
 | `build_requires` | Build-time-only dependencies (e.g. `cmake`, `ninja`). |
 | `runtime_requires` | Runtime-only dependencies. |
-| `untracked_requires` | Runtime-linked dependencies **excluded from this package's identity hash**. Editing one does **not** invalidate or rebuild this package or anything above it — only the dependency itself rebuilds (it is hashed normally). For iterating on a dependency you control without paying a full-stack rebuild. **You are responsible for ABI compatibility**: a reused consumer links the new dependency without recompiling, so an interface-breaking change can produce a broken build. Any build whose closure includes one is recorded `provenance: loose` in `.meta.json` (discoverable; still publishable). The dependency must keep a **stable install label** — set `force_revision:` on it — so its `<pkg>/<version-revision>` path does not move when it changes, or already-built consumers keep linking the previous build (bits warns if it lacks one). |
+| `untracked_requires` | Runtime-linked dependencies **excluded from this package's identity hash**. Editing one does **not** invalidate or rebuild this package or anything above it — only the dependency itself rebuilds (it is hashed normally). For iterating on a dependency you control without paying a full-stack rebuild. **You are responsible for ABI compatibility**: a reused consumer links the new dependency without recompiling, so an interface-breaking change can produce a broken build. Any build whose closure includes one is recorded `provenance: loose` in `.meta.json` (discoverable; still publishable). The dependency must have an explicit `force_revision`; `""` or a fixed label keeps its install path stable. Bits rejects a missing or null value. |
 
 Each entry in `requires` / `build_requires` is a string in one of these forms:
 
@@ -2515,6 +2515,8 @@ After computing each package's hash, bits injects
 `force_revision: "<remote_revision_hash>"` when `force_revision` is absent.
 Explicit recipe values, per-package overrides, and the global `force_revision`
 fallback retain precedence, including `force_revision: ""`.
+An untracked dependency must have an explicit `force_revision`; the hash policy
+alone cannot supply its install label.
 The hash includes tracked dependencies; this is the package build hash, not its
 source commit hash. Install paths and tarball names use `<version>-<hash>` with
 no `local` prefix, through the existing forced-revision mechanism. Uploads keep
