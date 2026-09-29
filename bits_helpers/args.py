@@ -930,9 +930,10 @@ def add_cvmfs_path_arguments(subparsers, ctx):
       help="Value for the {day} nightly slot; must match the build (pass the same "
            "--day). Default: auto UTC weekday when the template uses {day}.")
   cvmfs_path_parser.add_argument(
-      "--kind", dest="kind", choices=["releases", "modules", "shared"],
-      default="releases",
-      help="Which template to resolve (default: %(default)s).")
+      "--kind", dest="kind", choices=["releases", "packages", "modules", "shared"],
+      default=None,
+      help="Which template to resolve (default: packages when the group has a "
+           "cvmfs_packages_template, else releases).")
   cvmfs_path_parser.add_argument(
       "--admin", dest="admin", action="store_true", default=False,
       help="Resolve the admin (group-prefix) path. Without it, a user path "

@@ -156,9 +156,10 @@ def tree_fingerprint(root):
 
 def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
                      commit, user, family, kind, tmpl_prefix, arch,
-                     prefix_fallback=None, templates=None):
+                     prefix_fallback=None, templates=None, token_arch=None):
     """Resolve the repo-relative publish path (kind='path' for the package tree,
-    'modules' for the module file). ``templates`` are the publishing build's
+    'modules' for the module file, 'view' for its link in a release view: only
+    when a packages template puts the tree elsewhere). ``templates`` are the publishing build's
     (from its manifest) and place every package of the closure; without them the
     package's own .meta.json cvmfs_templates are used (older manifests). Returns
     None when the kind has no template."""
@@ -175,7 +176,13 @@ def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
         # Noarch packages carry effective_architecture "share" (SHARED_ARCH);
         # "shared" is still accepted (it is the certify/BOM bucket name).
         noarch = arch in (SHARED_ARCH, "shared")
-        key = (tm.get("shared") or tm.get("path")) if noarch else tm.get("path")
+        # A packages template is the tree's own home; the releases template
+        # ("path") is then only the release view (kind="view").
+        tree = tm.get("packages") or tm.get("path")
+        key = (tm.get("shared") or tree) if noarch else tree
+    elif kind == "view":
+        # Only a group with both templates has a release view.
+        key = tm.get("path") if tm.get("packages") and tm.get("path") != tm["packages"] else None
     elif kind == "modules":
         key = tm.get("modules")
     else:
@@ -188,7 +195,7 @@ def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
     key = key.replace("{prefix}", tmpl_prefix or meta_root or "")
     p = expand_tmpl(key, pkg=pkg, tag=vdir, version=ver, revision=rev,
                     platform=platform, install_dir=install_dir, commit=commit,
-                    user=user, family=family, arch=arch)
+                    user=user, family=family, arch=token_arch or arch)
     left = re.search(r"\{\w+\}", p)
     if left:
         raise ValueError("unresolved %s in CVMFS path %s" % (left.group(0), p))
@@ -416,6 +423,169 @@ def publish_overlay_tars(ctx, tars):
     return jids
 
 
+class AlreadyPublished(Exception):
+    """The package is already published at this path by the same build."""
+
+
+def _spec_path(spec, ctx, kind, arch=None):
+    """Repo-relative path of *kind* for a manifest spec, from the build's
+    templates (no tarball needed)."""
+    ver = spec.get("version", "")
+    rev = spec.get("revision", "")
+    arch = arch or spec.get("effective_architecture") or ctx["arch"]
+    return resolve_pkg_path(
+        None, ctx["repo"], spec["package"], ver + ("-" + rev if rev else ""), ver,
+        rev, ctx.get("platform", ""), ctx.get("install_dir", ""),
+        spec.get("commit", ""), ctx.get("user", ""), spec.get("pkg_family", ""),
+        kind=kind, tmpl_prefix=ctx["tmpl_prefix"], arch=arch,
+        prefix_fallback=ctx.get("prefix_fallback"), templates=ctx["templates"],
+        # One view / modules dir per build: {arch} is the build's, not the
+        # package's own (own_hash toolchain, noarch).
+        token_arch=(ctx["arch"] or arch) if kind in ("view", "modules") else None)
+
+
+def package_path(spec, ctx):
+    return _spec_path(spec, ctx, "path")
+
+
+def published_state(ctx, path):
+    """Ask prepub whether *path* is published: {"exists": bool, "hash": str}, or
+    None when prepub cannot tell (older prepub, no stratum0) — then publish."""
+    import hashlib
+    from bits_helpers import prepub as _pp
+    url = "%s/api/v1/published" % ctx["prepub_url"].rstrip("/")
+    body = json.dumps({"repo": ctx["repo"], "path": path}).encode()
+    headers = _pp._auth_headers(ctx["token"], "POST", _pp._signed_uri(url),
+                                body_hash=hashlib.sha256(body).hexdigest(),
+                                bearer_auth=ctx.get("bearer_auth", False),
+                                no_verify_tls=ctx.get("no_verify_tls", False))
+    headers["Content-Type"] = "application/json"
+    session = _pp._make_session(ctx.get("no_verify_tls", False),
+                                signed=not ctx.get("bearer_auth", False))
+    try:
+        resp = session.post(url, data=body, headers=headers, timeout=120)
+    except Exception as exc:
+        sys.stderr.write("[publish] cannot ask prepub whether %s is published (%s); "
+                         "publishing it\n" % (path, exc))
+        return None
+    if resp.status_code == 200:
+        return resp.json() or {}
+    if resp.status_code == 403:
+        raise SystemExit("prepub refused %s: outside the authorized namespace" % path)
+    if resp.status_code not in (404, 405, 501):   # 404/405: older prepub
+        sys.stderr.write("[publish] published check for %s: HTTP %s; publishing it\n"
+                         % (path, resp.status_code))
+    return None
+
+
+def fixed_dir(ctx, key):
+    """Repo-relative directory a template fixes for the whole build: the
+    template with {prefix}, {arch} (build arch) and {platform} filled, cut at
+    the last "/" before its first per-package token. None when that is not a
+    directory below the prefix."""
+    tm = ctx["templates"]
+    prefix = ctx["tmpl_prefix"] or tm.get("prefix") or ""
+    t = (tm[key].replace("{prefix}", prefix).replace("{arch}", ctx["arch"])
+         .replace("{platform}", ctx.get("platform", "")))
+    fixed = t[:t.index("{")] if "{" in t else t + "/"
+    root = fixed[:fixed.rfind("/")]
+    if not root.startswith(prefix.rstrip("/") + "/"):
+        return None
+    return repo_relative_path(root, ctx["repo"], tm.get("prefix"), ctx.get("prefix_fallback"))
+
+
+def view_root(ctx):
+    """Repo-relative root of the release view (see fixed_dir)."""
+    root = fixed_dir(ctx, "path")
+    if not root:
+        raise SystemExit("the releases template %r has no fixed release directory "
+                         "for the release view" % ctx["templates"]["path"])
+    return root
+
+
+def base_module(ctx):
+    """(modules dir, BASE/1.0 text) for a publish-once build, or None. BASE sets
+    BASEDIR, which bits modulefiles resolve their package root against
+    ($BASEDIR/<pkg>/<ver-rev>); it is written relative to the modulefile's own
+    location, so it holds wherever the tree is mounted (e.g. the testbed)."""
+    tm = ctx.get("templates") or {}
+    if not (tm.get("packages") and tm.get("modules")):
+        return None
+    mods, pkgs = fixed_dir(ctx, "modules"), fixed_dir(ctx, "packages")
+    if not (mods and pkgs):
+        return None
+    rel = os.path.relpath(pkgs, os.path.join(mods, "BASE"))
+    return mods, (
+        "#%%Module1.0\n"
+        "## BASEDIR: the Packages directory of this tree (%s from here)\n"
+        "set base_path [file normalize [file join [file dirname $ModulesCurrentModulefile] %s]]\n"
+        "setenv BASEDIR $base_path\n"
+        "set osname [uname sysname]\n"
+        "set osarchitecture [uname machine]\n" % (rel, rel))
+
+
+def native_path(spec, ctx):
+    """Where BASE-relative modulefiles look for a package: the packages template
+    with the BUILD arch, even for noarch / own_hash packages published elsewhere."""
+    tm = dict(ctx["templates"], shared=None)
+    return _spec_path(spec, dict(ctx, templates=tm), "path", arch=ctx["arch"])
+
+
+def publish_links(ctx, root, links, label):
+    """Publish relative symlinks (view path, target) rooted at *root* as one job.
+    Returns (job id, None) or (None, error). Ingest first and never replace: the
+    root is shared (other platforms / earlier publishes), so the links must merge
+    into it; a prepub without ingest gets the configured path, which only works
+    while *root* is new."""
+    import shutil
+    tar = build_view_tar(links, root, ctx["tmp_dir"])
+    tries = ["ingest"] + ([ctx["publish_path"]] if ctx.get("publish_path") != "ingest" else [])
+    errs = []
+    try:
+        for how in tries:
+            vtar = tar if how == tries[-1] else tar + ".copy"
+            if vtar != tar:
+                shutil.copyfile(tar, vtar)
+            try:
+                return _publish_tar(dict(ctx, publish_path=how, replace_on_conflict=False),
+                                    root, vtar, label), None
+            except (SystemExit, Exception) as exc:
+                errs.append("%s: %s" % (how, exc))
+    finally:
+        _safe_rm(tar)   # left over when the first try published a copy
+    return None, ("adding to an existing directory needs prepub's ingest path: %s"
+                  % "; ".join(errs))
+
+
+def build_view_tar(links, root, tmp_dir=None):
+    """Tar of relative symlinks, one per (view path, package path), rooted at
+    *root* (all repo-relative). Returns the tar path."""
+    import tarfile
+    fd, tar = tempfile.mkstemp(suffix=".tar", dir=tmp_dir)
+    os.close(fd)
+    import time
+    now = int(time.time())
+    dirs = set()
+    with tarfile.open(tar, "w") as tf:
+        for view, target in sorted(links):
+            rel = os.path.relpath(view, root)
+            if rel.startswith(".."):
+                raise SystemExit("view link %s is not under the view root %s" % (view, root))
+            parts = rel.split("/")
+            for i in range(1, len(parts)):
+                d = "/".join(parts[:i])
+                if d not in dirs:
+                    dirs.add(d)
+                    ti = tarfile.TarInfo(d)
+                    ti.type, ti.mode, ti.mtime = tarfile.DIRTYPE, 0o755, now
+                    tf.addfile(ti)
+            ti = tarfile.TarInfo(rel)
+            ti.type, ti.mtime = tarfile.SYMTYPE, now
+            ti.linkname = os.path.relpath(target, os.path.dirname(view))
+            tf.addfile(ti)
+    return tar
+
+
 def publish_one(spec, ctx):
     """Full producer pipeline for ONE package, staged OR ingest path. Mirrors the CI loop
     body: locate tar -> untar -> resolve path -> relocate -> relativise -> tar ->
@@ -431,8 +601,29 @@ def publish_one(spec, ctx):
     commit = spec.get("commit", "")
     arch = spec.get("effective_architecture") or ctx["arch"]
 
+    # Publish once: with a packages template a package's path is its identity,
+    # so one that is already there (same build hash) is not sent again.
+    skip_pkg = False   # the tree is there: publish only its missing modulefile
+    if (ctx.get("templates") or {}).get("packages") and ctx.get("submit", True):
+        path = package_path(spec, ctx)
+        state = published_state(ctx, path)
+        if state and state.get("exists"):
+            if state.get("hash") and state["hash"] == spec.get("hash"):
+                mod = _spec_path(spec, ctx, "modules")
+                mstate = published_state(ctx, "%s/%s" % (mod, vdir)) if mod else None
+                if mstate is None or mstate.get("exists"):
+                    raise AlreadyPublished(path)
+                skip_pkg = True
+            elif not ctx.get("replace_on_conflict"):
+                raise SystemExit(
+                    "%s@%s: %s is already published by another build (hash %s, this "
+                    "build %s); not overwriting it (--replace-on-conflict would)" % (
+                        pkg, vdir, path, state.get("hash") or "unknown", spec.get("hash")))
+
     tar_gz = tar_path(spec, ctx["tars_root"], ctx["arch"])
     if not os.path.isfile(tar_gz):
+        if skip_pkg:
+            raise AlreadyPublished(path)   # published; no tar here for its modulefile
         return []   # no tar (system-provided): the caller reports it as SKIPPED
 
     work_dir = tempfile.mkdtemp(prefix="pub-", dir=ctx.get("tmp_dir") or None)
@@ -440,6 +631,8 @@ def publish_one(spec, ctx):
     try:
         subprocess.run(["tar", "-xzf", tar_gz, "-C", work_dir], check=True)
         pkgroot = _locate_pkgroot(work_dir)
+        if skip_pkg and not os.path.isfile(os.path.join(pkgroot, "etc", "modulefiles", pkg)):
+            raise AlreadyPublished(path)   # no modulefile to add: skip the relocate
 
         path = resolve_pkg_path(
             pkgroot, ctx["repo"], pkg, vdir, ver, rev, ctx.get("platform", ""),
@@ -489,13 +682,14 @@ def publish_one(spec, ctx):
         sanitize(pkgroot)
         _fp = tree_fingerprint(pkgroot)   # content of the tree that goes into the tar
 
-        _tfd, pkg_tar = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
-        os.close(_tfd)
-        subprocess.run(["tar", "-cf", pkg_tar, "--hard-dereference",
-                        "-C", pkgroot, "."], check=True)
-        _lbl = "%s@%s(pkg)" % (pkg, vdir)
-        jid = _publish_tar(ctx, path, pkg_tar, _lbl, fp=_fp)
-        jobs.append((jid, _lbl))
+        if not skip_pkg:
+            _tfd, pkg_tar = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
+            os.close(_tfd)
+            subprocess.run(["tar", "-cf", pkg_tar, "--hard-dereference",
+                            "-C", pkgroot, "."], check=True)
+            _lbl = "%s@%s(pkg)" % (pkg, vdir)
+            jid = _publish_tar(ctx, path, pkg_tar, _lbl, fp=_fp)
+            jobs.append((jid, _lbl))
 
         # Modulefile: a package that ships etc/modulefiles/<pkg> publishes it as
         # a SECOND prepub job at the modules path (mirrors the CI loop).
@@ -531,6 +725,8 @@ def publish_one(spec, ctx):
                 jobs.append((mjid, _mlbl))
     finally:
         _safe_rmtree(work_dir)
+    if skip_pkg and not jobs:
+        raise AlreadyPublished(path)
     return jobs
 
 
@@ -677,6 +873,11 @@ def main(argv=None):
                          "first (MEASUREMENTS §31). Default 1 = serial, manifest "
                          "order (today's behaviour). Staged path only: N>1 needs "
                          "--no-stats-db + --no-prepare-lock (concurrent prepares).")
+    ap.add_argument("--release-view", action="store_true",
+                    help="also create the release view: one relative symlink per "
+                         "package at its releases-template path, pointing at the "
+                         "package (needs cvmfs_packages_template). Published only "
+                         "when every package published.")
     ap.add_argument("--dry-run", action="store_true",
                     help="stage but do NOT submit — prints DRYRUN(prefix|hashC), "
                          "so the catalog hash can be checked without a graft")
@@ -756,6 +957,19 @@ def main(argv=None):
         return True
     publishable = [s for s in pkgs if _publishable(s)]
 
+    if a.release_view and a.one:
+        ap.error("--release-view publishes a whole release; it cannot be combined with --one")
+    if a.release_view:
+        tm = templates or {}
+        why = ("the group has no cvmfs_packages_template and cvmfs_releases_template"
+               if not (tm.get("packages") and tm.get("path") and tm["path"] != tm["packages"])
+               else "the build has no release (the main line)" if not tm.get("release")
+               else "")
+        if why:
+            sys.stderr.write("[publish] no release view: %s\n" % why)
+            a.release_view = False
+    in_view = []   # specs the release view links to (published now or before)
+
     def _run_one(spec):
         # Returns (rc, lines) — never raises, so one bad package fails the batch
         # without tearing down the pool. publish_one's own errors are SystemExit.
@@ -764,7 +978,12 @@ def main(argv=None):
             if not jobs:
                 return 0, ["SKIPPED %s@%s: no tarball in %s" % (
                     spec.get("package"), spec.get("version"), ctx["tars_root"])]
+            in_view.append(spec)
             return 0, ["PUBLISHED %s %s" % (jid, label) for jid, label in jobs]
+        except AlreadyPublished as exc:
+            in_view.append(spec)
+            return 0, ["SKIPPED %s@%s: already published at %s" % (
+                spec.get("package"), spec.get("version"), exc)]
         except (SystemExit, Exception) as exc:
             return 1, ["FAILED %s: %s" % (spec.get("package"), exc)]
 
@@ -798,6 +1017,62 @@ def main(argv=None):
     else:
         for spec in publishable:               # serial, manifest order = today
             r, out = _run_one(spec); rc |= r; _emit(out)
+
+    # BASE/1.0 for the modulefiles, once per arch (a failure here is reported,
+    # not fatal: the next publish adds it).
+    base = base_module(ctx) if not rc and not a.one else None
+    if base:
+        mods, text = base
+        state = published_state(ctx, mods + "/BASE/1.0") if ctx["submit"] else None
+        if state and state.get("exists"):
+            _emit(["SKIPPED BASE: already published at %s/BASE" % mods])
+        else:
+            import shutil
+            stage = tempfile.mkdtemp(prefix="base-", dir=ctx["tmp_dir"])
+            try:
+                with open(os.path.join(stage, "1.0"), "w") as fh:
+                    fh.write(text)
+                fd, btar = tempfile.mkstemp(suffix=".tar", dir=ctx["tmp_dir"])
+                os.close(fd)
+                subprocess.run(["tar", "-cf", btar, "-C", stage, "1.0"], check=True)
+                label = "BASE@%s(modules)" % mods
+                _emit(["PUBLISHED %s %s" % (_publish_tar(ctx, mods + "/BASE", btar, label), label)])
+            except (SystemExit, Exception) as exc:
+                sys.stderr.write("[publish] WARNING: BASE module not published: %s\n" % exc)
+            finally:
+                shutil.rmtree(stage, ignore_errors=True)
+
+        # Packages that live outside <build arch>/Packages (noarch, the own_hash
+        # toolchain) get a symlink there, so $BASEDIR/<pkg>/<ver-rev> finds them.
+        pkgs_root = fixed_dir(ctx, "packages")
+        aliases = []
+        for s_ in in_view:
+            alias, real = native_path(s_, ctx), package_path(s_, ctx)
+            if alias != real and os.path.dirname(os.path.dirname(alias)) == pkgs_root:
+                st = published_state(ctx, alias) if ctx["submit"] else None
+                if not (st and st.get("exists")):
+                    aliases.append((alias, real))
+        if aliases:
+            label = "aliases@%s" % pkgs_root
+            jid, err = publish_links(ctx, pkgs_root, aliases, label)
+            _emit(["PUBLISHED %s %s" % (jid, label)] if jid else
+                  ["FAILED %d package alias(es) in %s: %s" % (len(aliases), pkgs_root, err)])
+            rc |= 0 if jid else 1
+
+    # The release view goes in only over a complete set of packages.
+    if a.release_view:
+        if rc:
+            _emit(["FAILED release view: not created, some packages failed"])
+        elif in_view:
+            root = view_root(ctx)
+            links = [(_spec_path(s, ctx, "view"), package_path(s, ctx)) for s in in_view]
+            label = "release-view@%s" % root
+            jid, err = publish_links(ctx, root, [lk for lk in links if lk[0]], label)
+            if jid:
+                _emit(["PUBLISHED %s %s" % (jid, label)])
+            else:
+                rc = 1
+                _emit(["FAILED release view (%s)" % err])
     return rc
 
 

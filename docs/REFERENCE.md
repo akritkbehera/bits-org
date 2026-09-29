@@ -1548,6 +1548,25 @@ bits cvmfs stage   …                  # producer-side staging (was `bits cvmfs
 bits cvmfs publish …                  # producer-side staged publish (was `bits cvmfs-publish`)
 ```
 
+`bits cvmfs publish` places every package of the build with the build's own CVMFS
+templates (recorded in its manifest). A group that sets `cvmfs_packages_template`
+(e.g. `{prefix}/{arch}/{family}{pkg}/{tag}`) publishes each package once at that
+path: one already published by the same build hash is skipped, one published by a
+different build is refused. Its `cvmfs_releases_template` is then the **release
+view**, created only with `--release-view` (bits-console: *Create release view*),
+and only after every package published: one relative symlink per package, sent
+via prepub's ingest path so it merges into a release directory other platforms
+already use (without ingest, only a new release directory works). Such a publish
+also adds, once per arch, a `BASE/1.0` modulefile in the modules directory that
+sets `BASEDIR` (relative to itself) to the packages directory, which is what bits
+modulefiles resolve against ($BASEDIR/<pkg>/<ver-rev>). Packages published
+elsewhere (noarch, the own_hash toolchain) get a relative symlink there. With the
+ALICE-style templates
+`{prefix}/{arch}/Packages/…` and `{prefix}/{arch}/Modules/modulefiles/{pkg}`,
+`BITS_MODULEDIR=<prefix> BITS_PLATFORM=<arch> bitsenv …` then works unchanged. Template tokens: `{pkg} {version} {revision} {tag}`
+(version-revision) `{family} {platform}` (console platform, e.g. `x86_64-el9`)
+`{arch}` (build arch, e.g. `x86_64-el9-gcc15-opt`) `{release}`.
+
 The deprecated hyphenated names (`store-stats`, `cvmfs-stage`, `cvmfs-publish`) still
 work for one release and warn; `bits gc` and `bits publish --to s3` were removed outright.
 

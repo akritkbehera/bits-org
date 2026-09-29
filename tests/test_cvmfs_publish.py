@@ -604,6 +604,269 @@ class TestPublishOneLayout(unittest.TestCase):
         with open(os.path.join(t, "seen.json")) as fh:
             self.assertEqual(json.load(fh), tm)
 
+        # With a packages template, an already published tree (same hash) whose
+        # modulefile is missing gets only the modulefile.
+        ptm = dict(tm, packages="{prefix}/{arch}/{pkg}/{tag}")
+        pctx = dict(ctx, templates=ptm, prepub_url="http://p", token="", submit=True)
+        spec2 = dict(spec, hash="H")
+        paths.clear()
+        with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
+             mock.patch.object(cp, "published_state",
+                               lambda c, p: {"exists": "Modules" not in p, "hash": "H"}), \
+             mock.patch.object(cp, "_publish_tar",
+                               lambda c, p, *a, **k: paths.append(p) or "J"):
+            jobs = cp.publish_one(spec2, pctx)
+        self.assertEqual(paths, ["g/el9-gcc14-opt/Modules/modulefiles/GCC"])
+        self.assertEqual([lbl for _, lbl in jobs], ["GCC@14-1(modules)"])
+
+
+class TestPackagesAndReleaseView(unittest.TestCase):
+    """cvmfs_packages_template: publish once per package, release view as links."""
+
+    TM = {"prefix": "/cvmfs/r/g",
+          "packages": "{prefix}/{arch}/{family}{pkg}/{tag}",
+          "path": "{prefix}/releases/LCG_110/{family}{pkg}/{version}/{platform}",
+          "shared": "{prefix}/noarch/{pkg}/{tag}",
+          "modules": "{prefix}/{arch}/Modules/{pkg}", "release": "LCG_110"}
+
+    def _ctx(self, **kw):
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        ctx = {"repo": "r", "arch": "el9-gcc15-opt", "tmpl_prefix": "",
+               "templates": self.TM, "prefix_fallback": "/cvmfs/r",
+               "platform": "x86_64-el9", "tars_root": os.path.join(t, "TARS"),
+               "tmp_dir": t, "prepub_url": "http://p", "token": "", "submit": True}
+        ctx.update(kw)
+        return ctx
+
+    SPEC = {"package": "ROOT", "version": "6.36", "revision": "2", "hash": "h1",
+            "effective_architecture": "el9-gcc15-opt"}
+
+    def test_tree_goes_to_packages_and_view_to_releases(self):
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        self.assertEqual(cp.package_path(self.SPEC, ctx), "g/el9-gcc15-opt/ROOT/6.36-2")
+        self.assertEqual(cp._spec_path(self.SPEC, ctx, "view"),
+                         "g/releases/LCG_110/ROOT/6.36/x86_64-el9")
+        noarch = dict(self.SPEC, package="six", effective_architecture="share")
+        self.assertEqual(cp.package_path(noarch, ctx), "g/noarch/six/6.36-2")
+        # Without a packages template there is no view: the releases path is the tree.
+        tm = {k: v for k, v in self.TM.items() if k != "packages"}
+        self.assertIsNone(cp._spec_path(self.SPEC, self._ctx(templates=tm), "view"))
+
+    def test_already_published_is_skipped_or_refused(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "h1"}):
+            with self.assertRaises(cp.AlreadyPublished):
+                cp.publish_one(self.SPEC, ctx)
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "other"}):
+            with self.assertRaises(SystemExit):
+                cp.publish_one(self.SPEC, ctx)
+        # Not there / prepub cannot tell: carry on (here: no tar -> nothing).
+        for st in ({"exists": False}, None):
+            with mock.patch.object(cp, "published_state", lambda c, p, st=st: st):
+                self.assertEqual(cp.publish_one(self.SPEC, ctx), [])
+
+    def test_view_tar_has_relative_links(self):
+        import tarfile
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        self.assertEqual(cp.view_root(ctx), "g/releases/LCG_110")
+        tar = cp.build_view_tar([("g/releases/LCG_110/ROOT/6.36/x86_64-el9",
+                                  "g/el9-gcc15-opt/ROOT/6.36-2")],
+                                "g/releases/LCG_110", ctx["tmp_dir"])
+        with tarfile.open(tar) as tf:
+            m = {i.name: i for i in tf.getmembers()}
+        self.assertEqual(sorted(m), ["ROOT", "ROOT/6.36", "ROOT/6.36/x86_64-el9"])
+        link = m["ROOT/6.36/x86_64-el9"]
+        self.assertTrue(link.issym())
+        self.assertEqual(link.linkname, "../../../../el9-gcc15-opt/ROOT/6.36-2")
+        self.assertEqual(os.path.normpath(os.path.join(
+            "g/releases/LCG_110/ROOT/6.36", link.linkname)), "g/el9-gcc15-opt/ROOT/6.36-2")
+
+    def _main(self, fake, extra=(), templates=None, base_state={"exists": True}):
+        import io, contextlib
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        m = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump({"cvmfs_templates": templates or self.TM, "architecture": "el9-gcc15-opt",
+                   "packages": [self.SPEC, dict(self.SPEC, package="six", hash="h2")]}, m)
+        m.close(); self.addCleanup(os.unlink, m.name)
+        sent = []
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cp, "publish_one", fake), \
+             mock.patch.object(cp, "published_state", lambda c, p: base_state), \
+             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, fp=None:
+                               sent.append((p, lbl, c["publish_path"])) or "JV"), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cp.main(["--manifest", m.name, "--repo", "r", "--arch", "el9-gcc15-opt",
+                          "--platform", "x86_64-el9", "--prefix-fallback", "/cvmfs/r"]
+                         + list(extra))
+        return rc, sent, out.getvalue(), err.getvalue()
+
+    def test_release_view_published_once_over_all_packages(self):
+        import bits_helpers.cvmfs_publish as cp
+
+        def fake(spec, ctx):
+            if spec["package"] == "six":
+                raise cp.AlreadyPublished("g/el9-gcc15-opt/six/6.36-2")
+            return [("J1", "ROOT@6.36-2(pkg)")]
+        rc, sent, out, _ = self._main(fake, ["--release-view"])
+        self.assertEqual(rc, 0)
+        self.assertIn("SKIPPED six@6.36: already published", out)
+        # One view job, always via ingest (merges into a shared release dir).
+        self.assertEqual(sent, [("g/releases/LCG_110", "release-view@g/releases/LCG_110", "ingest")])
+        self.assertIn("SKIPPED BASE: already published", out)
+        # Without the flag: packages only.
+        rc, sent, _, _ = self._main(fake)
+        self.assertEqual((rc, sent), (0, []))
+
+    def test_view_falls_back_to_the_configured_path_without_ingest(self):
+        import io, contextlib
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        m = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump({"cvmfs_templates": self.TM, "packages": [self.SPEC]}, m); m.close()
+        self.addCleanup(os.unlink, m.name)
+        for ok_paths, want_rc in ((("staged",), 0), ((), 1)):
+            tried = []
+
+            def pub(c, p, t, lbl, fp=None, ok_paths=ok_paths):
+                tried.append(c["publish_path"])
+                self.assertFalse(c["replace_on_conflict"])
+                if c["publish_path"] not in ok_paths:
+                    raise SystemExit("HTTP 400: ingest not enabled")
+                return "JV"
+            err = io.StringIO()
+            with mock.patch.object(cp, "publish_one", lambda s, c: [("J", "x")]), \
+                 mock.patch.object(cp, "published_state", lambda c, p: {"exists": True}), \
+                 mock.patch.object(cp, "_publish_tar", pub), \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = cp.main(["--manifest", m.name, "--repo", "r", "--arch", "el9-gcc15-opt",
+                              "--publish-path", "staged", "--replace-on-conflict",
+                              "--release-view"])
+            self.assertEqual((rc, tried), (want_rc, ["ingest", "staged"]))
+            if want_rc:
+                self.assertIn("needs prepub's ingest path", err.getvalue())
+
+    def test_no_release_view_when_a_package_failed(self):
+        def fake(spec, ctx):
+            if spec["package"] == "six":
+                raise SystemExit("boom")
+            return [("J1", "ROOT(pkg)")]
+        rc, sent, _, err = self._main(fake, ["--release-view"])
+        self.assertEqual((rc, sent), (1, []))
+        self.assertIn("release view: not created", err)
+
+    def test_no_view_without_both_templates_or_a_release(self):
+        fake = lambda s, c: [("J", "x(pkg)")]
+        no_pkgs = {k: v for k, v in self.TM.items() if k != "packages"}
+        no_rel = dict(self.TM, path=self.TM["packages"])   # no releases template given
+        main_line = dict(self.TM, release="")
+        for tm, why in ((no_pkgs, "no cvmfs_packages_template"),
+                        (no_rel, "no cvmfs_packages_template and cvmfs_releases_template"),
+                        (main_line, "no release")):
+            rc, sent, _, err = self._main(fake, ["--release-view"], templates=tm)
+            self.assertEqual((rc, sent), (0, []), why)
+            self.assertIn("no release view", err)
+
+    def test_release_view_is_not_for_one_package(self):
+        with self.assertRaises(SystemExit):
+            self._main(lambda s, c: [], ["--release-view", "--one", "ROOT"])
+
+    def test_skipped_package_still_gets_a_missing_modulefile(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        asked = []
+
+        def state(c, p):
+            asked.append(p)
+            return {"exists": True, "hash": "h1"} if "Modules" not in p else {"exists": False}
+        # Modulefile missing -> both paths are asked; with no tar here to take
+        # it from, the package still counts as published (and stays in the view).
+        with mock.patch.object(cp, "published_state", state):
+            with self.assertRaises(cp.AlreadyPublished):
+                cp.publish_one(self.SPEC, ctx)
+        self.assertEqual(asked, ["g/el9-gcc15-opt/ROOT/6.36-2",
+                                 "g/el9-gcc15-opt/Modules/ROOT/6.36-2"])
+        # A noarch package's modulefile goes to the build arch, not "share".
+        noarch = dict(self.SPEC, effective_architecture="share")
+        self.assertEqual(cp._spec_path(noarch, ctx, "modules"), "g/el9-gcc15-opt/Modules/ROOT")
+
+    def test_replace_on_conflict_overrides_a_different_build(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "other"}):
+            self.assertEqual(cp.publish_one(self.SPEC, self._ctx(replace_on_conflict=True)), [])
+
+    def test_view_root_is_a_whole_directory(self):
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, path="{prefix}/releases/rel-{version}/{pkg}")
+        self.assertEqual(cp.view_root(self._ctx(templates=tm)), "g/releases")
+        # {arch}/{platform} are fixed for a build, so they stay in the root.
+        tm = dict(self.TM, path="{prefix}/releases/{arch}/{pkg}")
+        self.assertEqual(cp.view_root(self._ctx(templates=tm)), "g/releases/el9-gcc15-opt")
+
+    def test_base_module_points_at_the_packages_dir(self):
+        import subprocess
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, packages="{prefix}/{arch}/Packages/{family}{pkg}/{tag}",
+                  modules="{prefix}/{arch}/Modules/modulefiles/{pkg}")
+        mods, text = cp.base_module(self._ctx(templates=tm))
+        self.assertEqual(mods, "g/el9-gcc15-opt/Modules/modulefiles")
+        self.assertIn("[file join [file dirname $ModulesCurrentModulefile] ../../../Packages]", text)
+        self.assertIn("setenv BASEDIR $base_path", text)
+        # Resolves to the Packages dir (checked with tclsh when available).
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        mf = os.path.join(d, mods, "BASE", "1.0")
+        os.makedirs(os.path.dirname(mf))
+        want = os.path.normpath(os.path.join(d, "g/el9-gcc15-opt/Packages"))
+        self.assertEqual(os.path.normpath(os.path.join(os.path.dirname(mf), "../../../Packages")), want)
+        if shutil.which("tclsh"):
+            script = ("set ModulesCurrentModulefile %s\n" % mf + "proc setenv {k v} {puts $v}\n"
+                      "proc uname {x} {return x}\n" + text.split("\n", 1)[1])
+            out = subprocess.run(["tclsh"], input=script, capture_output=True, text=True).stdout
+            self.assertEqual(out.strip(), want)
+        # Groups without a packages template get no BASE from publish.
+        self.assertIsNone(cp.base_module(self._ctx(templates={k: v for k, v in tm.items()
+                                                              if k != "packages"})))
+
+    def test_packages_outside_the_arch_dir_get_an_alias(self):
+        import io, contextlib, tarfile
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        specs = [dict(self.SPEC, package="GCC", hash="g", effective_architecture="el9-gcc15"),
+                 dict(self.SPEC, package="six", hash="s", effective_architecture="share"),
+                 self.SPEC]
+        m = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump({"cvmfs_templates": self.TM, "packages": specs}, m); m.close()
+        self.addCleanup(os.unlink, m.name)
+        got = {}
+
+        def pub(c, p, t, lbl, fp=None):
+            if lbl.startswith("aliases@"):
+                with tarfile.open(t) as tf:
+                    got.update({i.name: i.linkname for i in tf.getmembers() if i.issym()})
+                got["root"], got["how"] = p, c["publish_path"]
+            return "J"
+        with mock.patch.object(cp, "publish_one", lambda s, c: [("J", "x")]), \
+             mock.patch.object(cp, "published_state", lambda c, p: {"exists": "BASE" in p}), \
+             mock.patch.object(cp, "_publish_tar", pub), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = cp.main(["--manifest", m.name, "--repo", "r", "--arch", "el9-gcc15-opt"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(got, {"root": "g/el9-gcc15-opt", "how": "ingest",
+                               "GCC/6.36-2": "../../el9-gcc15/GCC/6.36-2",
+                               "six/6.36-2": "../../noarch/six/6.36-2"})
+
+    def test_base_module_published_when_missing(self):
+        fake = lambda s, c: [("J", "x(pkg)")]
+        rc, sent, _, _ = self._main(fake, base_state={"exists": False})
+        self.assertEqual(rc, 0)
+        self.assertEqual(sent, [("g/el9-gcc15-opt/Modules/BASE", "BASE@g/el9-gcc15-opt/Modules(modules)", "ingest")])
+
 
 def _boom(*a, **k):
     raise AssertionError("must not be called")

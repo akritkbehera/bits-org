@@ -165,6 +165,16 @@ class CvmfsPathHandlerTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._run(admin=True)
 
+    def test_default_kind_is_packages_when_the_group_has_one(self):
+        CP.parseDefaults = lambda *a, **k: ("", {}, {}, {"system": {
+            "prefix": "/cvmfs/g",
+            "cvmfs_packages_template": "{prefix}/{arch}/{pkg}/{tag}",
+            "cvmfs_releases_template": "{prefix}/releases/{pkg}/{version}/{platform}"}})
+        self.assertEqual(self._run(admin=True, kind=None),
+                         "/cvmfs/g/el9_x86-64/GENIE/R-3_06_02")
+        self.assertEqual(self._run(admin=True, kind="releases"),
+                         "/cvmfs/g/releases/GENIE/R-3_06_02/x86_64-el9")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -166,6 +166,16 @@ class CvmfsTemplatesTest(unittest.TestCase):
                            "cvmfs_repository": "test.cvmfs.io"}},
                injected_prefix="/cvmfs/bits.cern.ch/lhcb/releases")
 
+    def test_packages_template_is_resolved_and_swapped(self):
+        t = RT({"system": {"prefix": "/cvmfs/bits.cern.ch/k4h",
+                           "cvmfs_repository": "test.cvmfs.io",
+                           "cvmfs_packages_template": "{prefix}/{arch}/{pkg}/{tag}"}})
+        self.assertEqual(t["packages"], "{prefix}/{arch}/{pkg}/{tag}")
+        self.assertEqual(t["prefix"], "/cvmfs/test.cvmfs.io/k4h")
+        self.assertNotIn("packages", RT({"system": {"prefix": "/cvmfs/x.io"}}))
+        # No releases template given: no view, the releases path is the packages one.
+        self.assertEqual(t["path"], t["packages"])
+
     def test_repository_must_be_a_name(self):
         with self.assertRaises(SystemExit):
             RT({"system": {"prefix": "/cvmfs/a.io/g", "cvmfs_repository": "b.io/x"}})

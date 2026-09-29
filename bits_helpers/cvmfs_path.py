@@ -81,8 +81,9 @@ def doCvmfsPath(args, parser):
                    "--login is required to resolve a non-admin (user) path")
         root = tmpls["user_prefix"].rstrip("/") + "/" + args.login
 
-    kind = args.kind or "releases"
+    kind = args.kind or ("packages" if tmpls.get("packages") else "releases")
     tmpl = {"releases": tmpls["path"],
+            "packages": tmpls.get("packages") or tmpls["path"],
             "modules":  tmpls["modules"],
             "shared":   tmpls["shared"]}[kind]
 

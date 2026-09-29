@@ -3059,7 +3059,7 @@ def doBuild(args, parser):
     # {day} is a nightly deploy-path slot (layout-only: never hashed, never in the
     # store or manifest key). Resolve it only when a template actually uses it, so
     # non-nightly builds stay byte-identical. Frozen on args for the whole run.
-    _tmpl_keys = ("path", "modules", "shared", "prefix", "user_prefix")
+    _tmpl_keys = ("path", "packages", "modules", "shared", "prefix", "user_prefix")
     _has_day = any("{day}" in (args.cvmfsTemplates.get(_k) or "") for _k in _tmpl_keys)
     _day_override = getattr(args, "day", None)
     _day = resolve_day(defaultsMeta, _day_override) if _has_day else None
@@ -3075,6 +3075,8 @@ def doBuild(args, parser):
       if args.cvmfsTemplates.get(_k):
         _t = bake_release(args.cvmfsTemplates[_k], _release_path)
         args.cvmfsTemplates[_k] = bake_day(_t, _day) if _day is not None else _t
+    # The release (path form, "" on the main line): a release view needs one.
+    args.cvmfsTemplates["release"] = _release_path
 
   # Global build-time network policy for the recipe sandbox. Precedence:
   #   explicit --sandbox-network  >  defaults system.sandbox_network  >  "on".
