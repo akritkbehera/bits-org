@@ -7,8 +7,11 @@ from unittest.mock import patch
 
 from bits_helpers.build import create_version_link, storeHashes
 from bits_helpers.sync import RsyncRemoteSync
+from bits_helpers.sync import HttpRemoteSync
 from bits_helpers.packages import getPackageList
-from bits_helpers.utilities import ver_rev
+from bits_helpers.utilities import resolve_store_path, ver_rev
+from bits_helpers.rev_index import marker_key, revision_from_tarball, revision_of
+from bits_helpers.status import _scan_local_tars
 
 
 class RevisionPolicyTest(unittest.TestCase):
@@ -85,3 +88,30 @@ class RevisionPolicyTest(unittest.TestCase):
             command = sync.upload_shell_command(spec)
             self.assertIn(filename, command)
             self.assertIn("store/{}/{}".format(spec["hash"][:2], spec["hash"]), command)
+
+    def test_hash_revision_round_trips_through_marker_and_local_caches(self):
+        spec = self.specs({"revision_policy": "hash"})["app"]
+        spec["revision"] = spec["force_revision"]
+        arch = "slc9_x86-64"
+        filename = "app-1-{}.{}.tar.gz".format(spec["hash"], arch)
+        marker = marker_key(arch, "app", "1", spec["revision"])
+        self.assertEqual(revision_from_tarball(filename, "app", "1", arch),
+                         spec["revision"])
+        self.assertEqual(revision_of(marker, arch, "app", "1"),
+                         spec["revision"])
+
+        with tempfile.TemporaryDirectory() as workdir:
+            create_version_link(spec, arch, workdir)
+            store_dir = os.path.join(workdir, resolve_store_path(arch, spec["hash"]))
+            os.makedirs(store_dir)
+            open(os.path.join(store_dir, filename), "wb").close()
+            spec["remote_hashes"] = [spec["hash"]]
+            spec["local_hashes"] = []
+            self.assertTrue(_scan_local_tars(spec, workdir, arch))
+
+            # The HTTP backend's early local-cache path must recognize the
+            # uploaded content-object basename and avoid a remote request.
+            sync = HttpRemoteSync("https://example.invalid", arch, workdir, False)
+            with patch("bits_helpers.sync.requests.get",
+                       side_effect=AssertionError("unexpected network fetch")):
+                sync.fetch_tarball(spec)
