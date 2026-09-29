@@ -443,6 +443,9 @@ class BuildManifest:
             # SPDX license id (hash-excluded metadata). Carried so the publish step
             # can aggregate a per-release NOTICE / attribution file.
             "license":                (spec.get("license") or ""),
+            # The recipe's `view:` rules (hash-excluded presentation), applied
+            # when a release's merged view is built. Only recorded when set.
+            **({"view": spec["view"]} if spec.get("view") is not None else {}),
             "hash":                   spec.get("hash", ""),
             "commit_hash":            spec.get("commit_hash", ""),
             "outcome":                outcome,

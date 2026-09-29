@@ -1567,6 +1567,22 @@ ALICE-style templates
 (version-revision) `{family} {platform}` (console platform, e.g. `x86_64-el9`)
 `{arch}` (build arch, e.g. `x86_64-el9-gcc15-opt`) `{release}`.
 
+A group that also sets `cvmfs_views_template` (e.g. `{prefix}/views/{release}/{arch}`)
+gets, with each release, a **merged view** like an LCG view: `bin lib lib64 include
+share cmake python libexec man` of every package merged into one tree of relative,
+file-level symlinks to the published packages (the dependent package wins a
+collision; each is logged), plus `setup.sh` (locates itself under bash/zsh) and
+`setup.csh`. `system.cvmfs_view_exclude: [pkg, …]` leaves packages out. The file
+lists come from `.bits-view.json`, which every build writes into the package just
+before packing (so later changes to the local tree don't leak in); for a tarball
+built before that, from the tarball itself. A recipe shapes its own part of the
+view with `view:`: `false` keeps the package out, `exclude: [share/doc, lib/*.a]`
+drops paths, `include: [etc/root]` adds paths beyond the default directories.
+`view:` is presentation only: it is not hashed (no rebuild), and the rules of the
+build that creates the view (recorded in its manifest) apply. A view
+already published is kept unless `--replace-on-conflict` (on the staged path that
+replaces it; the ingest path merges, keeping links of packages since removed).
+
 The deprecated hyphenated names (`store-stats`, `cvmfs-stage`, `cvmfs-publish`) still
 work for one release and warn; `bits gc` and `bits publish --to s3` were removed outright.
 

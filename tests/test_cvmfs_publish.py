@@ -620,6 +620,11 @@ class TestPublishOneLayout(unittest.TestCase):
         self.assertEqual([lbl for _, lbl in jobs], ["GCC@14-1(modules)"])
 
 
+def cp_tar_path(spec, ctx):
+    import bits_helpers.cvmfs_publish as cp
+    return cp.tar_path(spec, ctx["tars_root"], ctx["arch"])
+
+
 class TestPackagesAndReleaseView(unittest.TestCase):
     """cvmfs_packages_template: publish once per package, release view as links."""
 
@@ -860,6 +865,143 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertEqual(got, {"root": "g/el9-gcc15-opt", "how": "ingest",
                                "GCC/6.36-2": "../../el9-gcc15/GCC/6.36-2",
                                "six/6.36-2": "../../noarch/six/6.36-2"})
+
+    def _tarball(self, ctx, spec, files, links=()):
+        """A package tarball as bits writes it: <arch>/<pkg>/<ver-rev>/..."""
+        import subprocess
+        arch = spec["effective_architecture"]
+        vdir = spec["version"] + "-" + spec["revision"]
+        src = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, src, True)
+        root = os.path.join(src, arch, spec["package"], vdir)
+        for f in files + [".meta.json"]:
+            os.makedirs(os.path.dirname(os.path.join(root, f)), exist_ok=True)
+            open(os.path.join(root, f), "w").close()
+        for name, target in links:
+            os.makedirs(os.path.dirname(os.path.join(root, name)) or root, exist_ok=True)
+            os.symlink(target, os.path.join(root, name))
+        tar = cp_tar_path(spec, ctx)
+        os.makedirs(os.path.dirname(tar), exist_ok=True)
+        subprocess.run(["tar", "-czf", tar, "-C", src, arch], check=True)
+
+    def test_merged_view_links_files_into_the_packages(self):
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        dep = dict(self.SPEC, package="zlib", hash="z")
+        top = dict(self.SPEC, package="ROOT")
+        # zlib's lib64 is a symlink to lib: walked as a directory, not linked whole.
+        self._tarball(ctx, dep, ["lib/libz.so", "include/zlib.h", "etc/profile.d/init.sh",
+                                 "lib/libz.so.unrelocated"], links=[("lib64", "lib")])
+        self._tarball(ctx, top, ["bin/root", "lib/libz.so", "lib64/libCore.so",
+                                 "lib/python3.12/site-packages/ROOT.py"])
+        staging = os.path.join(ctx["tmp_dir"], "stage")
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        res = cp.merged_view(ctx, [dep, top], staging, vp)
+        # The dependent (later) package wins; etc/ and .unrelocated stay out.
+        self.assertEqual(sorted(res["linked"]), [
+            "bin/root", "include/zlib.h", "lib/libz.so", "lib/python3.12/site-packages/ROOT.py",
+            "lib64/libCore.so", "lib64/libz.so"])
+        self.assertEqual(res["conflicts"], [("lib/libz.so", "ROOT", "zlib")])
+
+        def resolved(rel):
+            link = os.readlink(os.path.join(staging, rel))
+            return os.path.normpath(os.path.join(vp, os.path.dirname(rel), link))
+        self.assertEqual(resolved("lib/libz.so"), "g/el9-gcc15-opt/ROOT/6.36-2/lib/libz.so")
+        self.assertEqual(resolved("include/zlib.h"), "g/el9-gcc15-opt/zlib/6.36-2/include/zlib.h")
+        self.assertTrue(os.path.isdir(os.path.join(staging, "lib64")))
+        # Through zlib's lib64 -> lib symlink, which the published tree also has.
+        self.assertEqual(resolved("lib64/libz.so"), "g/el9-gcc15-opt/zlib/6.36-2/lib64/libz.so")
+        # Excluded packages stay out.
+        ctx["templates"] = dict(self.TM, view_exclude=["ROOT"])
+        res = cp.merged_view(ctx, [dep, top], os.path.join(ctx["tmp_dir"], "s2"), vp)
+        self.assertEqual(sorted(res["linked"]), ["include/zlib.h", "lib/libz.so", "lib64/libz.so"])
+
+    def test_view_list_from_the_build_is_used_and_rules_apply(self):
+        import subprocess
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        spec = dict(self.SPEC, package="ROOT", hash="h1")
+        # The local install of this very build, with the list the build wrote.
+        work = os.path.dirname(ctx["tars_root"])
+        root = os.path.join(work, spec["effective_architecture"], "ROOT", "6.36-2")
+        for f in ("bin/root", "share/doc/README", "etc/root/system.rootrc", "lib/libCore.so"):
+            os.makedirs(os.path.dirname(os.path.join(root, f)), exist_ok=True)
+            open(os.path.join(root, f), "w").close()
+        with open(os.path.join(root, ".meta.json"), "w") as fh:
+            json.dump({"package": {"hash": "h1"}}, fh)
+        subprocess.run(["bash", os.path.join(os.path.dirname(cp.__file__), "view-list.sh"), root],
+                       check=True)
+        # A file added to the local tree after the build is not in the list.
+        open(os.path.join(root, "bin", "added-later"), "w").close()
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        res = cp.merged_view(ctx, [spec], os.path.join(ctx["tmp_dir"], "a"), vp)
+        self.assertEqual(sorted(res["linked"]), ["bin/root", "lib/libCore.so", "share/doc/README"])
+        # The recipe's view rules (from the manifest): drop share/doc, add etc/root.
+        rules = dict(spec, view={"exclude": ["share/doc"], "include": ["etc/root"]})
+        res = cp.merged_view(ctx, [rules], os.path.join(ctx["tmp_dir"], "b"), vp)
+        self.assertEqual(sorted(res["linked"]), ["bin/root", "etc/root/system.rootrc", "lib/libCore.so"])
+        res = cp.merged_view(ctx, [dict(spec, view=False)], os.path.join(ctx["tmp_dir"], "c"), vp)
+        self.assertEqual(res["linked"], [])
+        # A different build at that local path is not trusted: its tarball is used.
+        self._tarball(ctx, dict(spec, hash="h2"), ["bin/other"])
+        res = cp.merged_view(ctx, [dict(spec, hash="h2")], os.path.join(ctx["tmp_dir"], "d"), vp)
+        self.assertEqual(res["linked"], ["bin/other"])
+
+    def test_tarball_view_list_is_preferred_over_listing(self):
+        import subprocess
+        import bits_helpers.cvmfs_publish as cp
+        src = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, src, True)
+        root = os.path.join(src, "a", "p", "1-1")
+        os.makedirs(os.path.join(root, "bin"))
+        open(os.path.join(root, "bin", "x"), "w").close()
+        open(os.path.join(root, ".meta.json"), "w").close()
+        subprocess.run(["bash", os.path.join(os.path.dirname(cp.__file__), "view-list.sh"), root],
+                       check=True)
+        open(os.path.join(root, "bin", "not-listed"), "w").close()
+        tar = os.path.join(src, "p.tar.gz")
+        subprocess.run(["tar", "-czf", tar, "-C", src, "a"], check=True)
+        self.assertEqual(sorted(p for p, (k, _) in cp._tar_tree(tar).items() if k == "file"), ["bin/x"])
+
+    def test_view_setup_locates_itself(self):
+        import subprocess
+        import bits_helpers.cvmfs_publish as cp
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        for sub in ("bin", "lib", "lib/python3.12/site-packages"):
+            os.makedirs(os.path.join(d, sub))
+        cp.write_view_setup(d, "/cvmfs/r/g/views/X/a")
+        real = os.path.realpath(d)
+        want = "%s/bin:/usr/bin:/bin|%s/lib/python3.12/site-packages|%s" % (real, real, real)
+        for sh in ("bash", "zsh"):   # locate themselves: the mounted dir, not /cvmfs/...
+            if shutil.which(sh):
+                out = subprocess.run([sh, "-c", 'cd / && PATH=/usr/bin:/bin; source "%s/setup.sh" && '
+                                      'echo "$PATH|$PYTHONPATH|$BITS_VIEW"' % d],
+                                     capture_output=True, text=True).stdout.strip()
+                self.assertEqual(out, want, sh)
+        if shutil.which("dash"):     # no way to locate itself: the published path
+            out = subprocess.run(["dash", "-c", '. "%s/setup.sh" 2>/dev/null; echo "$BITS_VIEW"' % d],
+                                 capture_output=True, text=True).stdout.strip()
+            self.assertIn(out, ("/cvmfs/r/g/views/X/a", ""))
+        self.assertIn('set _v = "/cvmfs/r/g/views/X/a"', open(os.path.join(d, "setup.csh")).read())
+        if shutil.which("tcsh"):
+            out = subprocess.run(["tcsh", "-f", "-c", 'source "%s/setup.csh"; echo $BITS_VIEW' % d],
+                                 capture_output=True, text=True).stdout.strip()
+            self.assertEqual(out, "/cvmfs/r/g/views/X/a")
+
+    def test_merged_view_published_once(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")   # {release} baked by the build
+        ctx = self._ctx(templates=tm)
+        self._tarball(ctx, self.SPEC, ["bin/root"])
+        lines, sent = [], []
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True}):
+            self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
+        self.assertEqual(lines, ["SKIPPED merged view: already published at g/views/LCG_110/el9-gcc15-opt"])
+        lines.clear()
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, fp=None: sent.append(p) or "JM"):
+            self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
+        self.assertEqual(sent, ["g/views/LCG_110/el9-gcc15-opt"])
+        self.assertEqual(lines, ["PUBLISHED JM merged-view@g/views/LCG_110/el9-gcc15-opt"])
 
     def test_base_module_published_when_missing(self):
         fake = lambda s, c: [("J", "x(pkg)")]

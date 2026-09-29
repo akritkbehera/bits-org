@@ -465,6 +465,10 @@ if [ -w "$INSTALLROOT" ]; then
   ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH" && \
     { grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } \
       | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate" )
+  # The package's file list for release merged views (.bits-view.json).
+  # Not fatal: without it a view lists the package from its tarball.
+  bash "${BITS_SCRIPT_DIR}/bits_helpers/view-list.sh" "$INSTALLROOT" \
+    || echo "bits: WARNING: could not write $PKGNAME's .bits-view.json" >&2
 fi
 
 # Archive creation

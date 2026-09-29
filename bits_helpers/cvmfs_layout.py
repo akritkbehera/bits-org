@@ -368,6 +368,10 @@ def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
     # Optional: the packages' own home. With it, the releases template is only
     # the release view (symlinks), created by `bits cvmfs publish --release-view`.
     pkgs = swap(opt("cvmfs_packages_template"))
+    # Optional: the release's merged view (one per release and arch, e.g.
+    # {prefix}/views/{release}/{arch}), created together with the release view.
+    views = swap(opt("cvmfs_views_template"))
+    view_exclude = opt("cvmfs_view_exclude") or []
     mod = swap(opt("cvmfs_modules_template"))
     shr = swap(opt("cvmfs_shared_path_template"))
     usr = swap(opt("cvmfs_user_prefix"))
@@ -395,4 +399,8 @@ def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
     }
     if pkgs:
         out["packages"] = pkgs
+    if pkgs and views:
+        out["views"] = views
+        if view_exclude:
+            out["view_exclude"] = sorted(str(p) for p in view_exclude)
     return out

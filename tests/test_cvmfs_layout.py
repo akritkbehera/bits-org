@@ -175,6 +175,14 @@ class CvmfsTemplatesTest(unittest.TestCase):
         self.assertNotIn("packages", RT({"system": {"prefix": "/cvmfs/x.io"}}))
         # No releases template given: no view, the releases path is the packages one.
         self.assertEqual(t["path"], t["packages"])
+        v = RT({"system": {"prefix": "/cvmfs/x/g",
+                           "cvmfs_packages_template": "{prefix}/{arch}/Packages/{pkg}/{tag}",
+                           "cvmfs_views_template": "{prefix}/views/{release}/{arch}",
+                           "cvmfs_view_exclude": ["cmake", "ninja"]}})
+        self.assertEqual((v["views"], v["view_exclude"]),
+                         ("{prefix}/views/{release}/{arch}", ["cmake", "ninja"]))
+        self.assertNotIn("views", RT({"system": {"prefix": "/cvmfs/x/g",
+                                                 "cvmfs_views_template": "{prefix}/v"}}))
 
     def test_repository_must_be_a_name(self):
         with self.assertRaises(SystemExit):

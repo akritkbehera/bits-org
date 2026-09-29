@@ -29,6 +29,9 @@ _HASH_EXCLUDED_META_KEYS = frozenset({
     # preload: CVMFS filebundle test list, consumed post-publish by `bits preload`;
     # it never affects the build, so editing it must not force a rebuild.
     "preload",
+    # view: what the package exports to a release's merged view — presentation
+    # only, applied at publish time from the build manifest.
+    "view",
 })
 
 # Source-selection keys are ALSO dropped from the recipe TEXT hash — not because

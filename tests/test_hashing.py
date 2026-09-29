@@ -163,6 +163,19 @@ class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
             "redistributable: false\n")
         self.assertEqual(self._n(base), self._n(extra))
 
+    def test_view_rules_are_hash_invariant(self):
+        # view: only shapes a release's merged view (presentation, applied at
+        # publish time), so it must not change the build hash input.
+        withv = self.HEADER.replace(
+            "requires:\n",
+            "view:\n"
+            "  exclude: [share/doc]\n"
+            "  include: [etc/root]\n"
+            "requires:\n")
+        self.assertEqual(self._n(self.HEADER), self._n(withv))
+        self.assertEqual(self._n(self.HEADER),
+                         self._n(self.HEADER.replace("requires:\n", "view: false\nrequires:\n")))
+
     def test_adding_preload_block_is_hash_invariant(self):
         # The preload: test list (consumed post-publish by `bits preload`) is
         # hash-excluded — its indented block is dropped and editing it must not

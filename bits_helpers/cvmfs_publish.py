@@ -557,6 +557,208 @@ def publish_links(ctx, root, links, label):
                   % "; ".join(errs))
 
 
+# What a merged release view unions (per-package metadata such as etc/, .meta.json
+# and modulefiles stays out: it would collide on every package).
+VIEW_SUBDIRS = ("bin", "lib", "lib64", "include", "share", "cmake", "python",
+                "libexec", "man")
+
+
+def _list_tree(entries):
+    """{path: (kind, linkname)} from a .bits-view.json entry list, with the
+    directories it lists only implicitly."""
+    tree = {p: (k, t) for p, k, t in entries}
+    for rel in list(tree):
+        d = os.path.dirname(rel)
+        while d and d not in tree:
+            tree[d] = ("dir", "")
+            d = os.path.dirname(d)
+    return tree
+
+
+def _package_tree(spec, ctx):
+    """The package's view entries: its .bits-view.json (written by the build),
+    from the local install tree when that holds this very build, else from the
+    tarball; a tarball without one (built before) is listed in full."""
+    rev = spec.get("revision", "")
+    vdir = spec.get("version", "") + ("-" + rev if rev else "")
+    fam = spec.get("pkg_family", "")
+    local = os.path.join(os.path.dirname(ctx["tars_root"].rstrip("/")),
+                         spec.get("effective_architecture") or ctx["arch"],
+                         *([fam] if fam else []), spec["package"], vdir)
+    try:
+        with open(os.path.join(local, ".meta.json")) as fh:
+            same = (json.load(fh).get("package") or {}).get("hash") == spec.get("hash")
+        if same:
+            with open(os.path.join(local, ".bits-view.json")) as fh:
+                return _list_tree(json.load(fh)["entries"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    tar = tar_path(spec, ctx["tars_root"], ctx["arch"])
+    if not os.path.isfile(tar):
+        raise SystemExit("%s@%s: no tarball to list its files from (%s)"
+                         % (spec["package"], vdir, tar))
+    return _tar_tree(tar)
+
+
+def _tar_tree(tar):
+    """{package-relative path: (kind, linkname)} of a package tarball, kind in
+    "dir" / "file" / "link", as published (without .unrelocated backups). Uses
+    the tarball's .bits-view.json when it has one (sorted early in the tar)."""
+    import tarfile
+    members, lists, meta_depth, meta_dir = {}, {}, None, None
+    with tarfile.open(tar, "r:*") as tf:
+        for m in tf:
+            n = m.name
+            while n.startswith("./"):
+                n = n[2:]
+            n = os.path.normpath(n or ".")
+            base, d = os.path.basename(n), os.path.dirname(n)
+            if base == ".bits-view.json" and m.isfile():
+                try:
+                    lists[d] = _list_tree(json.load(tf.extractfile(m))["entries"])
+                except (ValueError, KeyError, TypeError):
+                    pass   # unreadable: list the tarball instead
+            elif base == ".meta.json":
+                # The package root's own list: next to the shallowest .meta.json.
+                depth = n.count("/")
+                if meta_depth is None or depth < meta_depth:
+                    meta_depth, meta_dir = depth, d
+                    if d in lists:
+                        return lists[d]   # bits tarballs are sorted: found early
+            members[n] = m
+    if meta_dir in lists:
+        return lists[meta_dir]
+    metas = [n for n in members if os.path.basename(n) == ".meta.json"]
+    if not metas:
+        raise SystemExit("%s has no .meta.json" % tar)
+    top = os.path.dirname(min(metas, key=len))
+    tree = {}
+    for name, m in members.items():
+        rel = os.path.relpath(name, top) if top else name
+        if rel.startswith("..") or rel == "." or rel.endswith(".unrelocated"):
+            continue
+        tree[rel] = ("dir" if m.isdir() else "link" if m.issym() else "file",
+                     m.linkname if m.issym() else "")
+    for rel in list(tree):   # directories a tar lists only implicitly
+        d = os.path.dirname(rel)
+        while d and d not in tree:
+            tree[d] = ("dir", "")
+            d = os.path.dirname(d)
+    return tree
+
+
+def _view_entries(tree, subdirs):
+    """(view-relative path, package-relative path) for every file or symlink the
+    view links, walking *subdirs* of a package tree from _tar_tree. A symlinked
+    directory whose target stays inside the package is walked like a directory
+    (under its own name, which the published tree also has); others are linked."""
+    children = {}
+    for path in tree:
+        children.setdefault(os.path.dirname(path), []).append(path)
+
+    def resolve(path, depth=0):
+        kind, target = tree.get(path, (None, ""))
+        if kind != "link" or depth > 16:
+            return path if kind else None
+        t = os.path.normpath(os.path.join(os.path.dirname(path), target))
+        return None if target.startswith("/") or t.startswith("..") else resolve(t, depth + 1)
+
+    out = []
+
+    def walk(logical, real, seen):
+        for child in sorted(children.get(real, [])):
+            name = os.path.join(logical, os.path.basename(child))
+            real_child = resolve(child)
+            if real_child and tree[real_child][0] == "dir" and real_child not in seen:
+                walk(name, real_child, seen | {real_child})
+            else:
+                out.append((name, name))
+    for sub in subdirs:
+        real = resolve(sub)
+        if real and tree[real][0] == "dir":
+            walk(sub, real, {real})
+    return out
+
+
+def _excluded(path, patterns):
+    """True if *path* or one of its parent directories matches a pattern."""
+    import fnmatch
+    parts = path.split("/")
+    return any(fnmatch.fnmatchcase("/".join(parts[:i]), pat)
+               for pat in patterns for i in range(1, len(parts) + 1))
+
+
+def merged_view(ctx, specs, staging, view_path):
+    """Build the release's merged view in *staging*: file-level relative symlinks
+    from *view_path* (repo-relative) into each package's published path, listed
+    from the package tarballs (what was published). *specs* are in dependency
+    order; the dependent (later) package wins a collision.
+    Returns {"linked": [...], "conflicts": [(path, winner, loser)]}."""
+    exclude = set(ctx["templates"].get("view_exclude") or [])
+    owner, dirs, res = {}, set(), {"linked": [], "conflicts": []}
+    for spec in reversed(specs):
+        rules = spec.get("view", True)
+        if spec["package"] in exclude or rules is False:
+            continue
+        rules = rules if isinstance(rules, dict) else {}
+        drop = [str(p).strip("/") for p in (rules.get("exclude") or [])]
+        subdirs = list(VIEW_SUBDIRS) + [str(p).strip("/") for p in (rules.get("include") or [])]
+        pkg_path = package_path(spec, ctx)
+        for vrel, prel in _view_entries(_package_tree(spec, ctx), subdirs):
+            if _excluded(prel, drop):
+                continue
+            parents = [os.path.dirname(vrel)]
+            while parents[-1]:
+                parents.append(os.path.dirname(parents[-1]))
+            clash = vrel in owner or vrel in dirs or any(p in owner for p in parents)
+            if clash:
+                res["conflicts"].append((vrel, owner.get(vrel, "(a directory)"), spec["package"]))
+                continue
+            dest = os.path.join(staging, vrel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            dirs.update(p for p in parents if p)
+            target = os.path.join(pkg_path, prel)
+            os.symlink(os.path.relpath(target, os.path.join(view_path, os.path.dirname(vrel))), dest)
+            owner[vrel] = spec["package"]
+            res["linked"].append(vrel)
+    return res
+
+
+def write_view_setup(staging, published_at):
+    """setup.sh / setup.csh for a merged view; one entry per variable, prepended.
+    setup.sh locates itself under bash and zsh (so the view works wherever the
+    repository is mounted); other shells, and csh which cannot, use the path it
+    is published at (*published_at*, absolute)."""
+    import glob
+    from bits_helpers.view import view_env
+    def _ver(site):
+        mm = os.path.basename(os.path.dirname(site))[len("python"):]
+        return tuple(int(x) for x in mm.split(".") if x.isdigit()), mm
+    sites = glob.glob(os.path.join(staging, "lib*", "python*", "site-packages"))
+    python_mm = max(map(_ver, sites))[1] if sites else None
+    env = view_env(staging, python_mm=python_mm)
+    env = {k: v.replace(staging, "@V@") for k, v in sorted(env.items())}
+    sh = ["# Source this file (bash/zsh/sh) to use this release view.",
+          'if [ -n "${BASH_SOURCE:-}" ]; then _s="${BASH_SOURCE[0]}"',
+          "elif [ -n \"${ZSH_VERSION:-}\" ]; then eval '_s=${(%):-%x}'",
+          "else _s='%s/setup.sh'; fi" % published_at,
+          '_v="$(cd "$(dirname "$_s")" 2>/dev/null && pwd)" || _v="$(dirname "$_s")"',
+          'export BITS_VIEW="$_v"']
+    csh = ["# Source this file (csh/tcsh) to use this release view.",
+           'set _v = "%s"' % published_at,
+           "setenv BITS_VIEW $_v"]
+    for var, val in env.items():
+        sh.append('export %s="%s${%s:+:$%s}"' % (var, val.replace("@V@", "$_v"), var, var))
+        csh.append('if ($?%s) then\n  setenv %s "%s:${%s}"\nelse\n  setenv %s "%s"\nendif'
+                   % (var, var, val.replace("@V@", "$_v"), var, var, val.replace("@V@", "$_v")))
+    sh.append("unset _s _v")
+    csh.append("unset _v")
+    for name, body in (("setup.sh", sh), ("setup.csh", csh)):
+        with open(os.path.join(staging, name), "w") as fh:
+            fh.write("\n".join(body) + "\n")
+        os.chmod(os.path.join(staging, name), 0o755)
+
+
 def build_view_tar(links, root, tmp_dir=None):
     """Tar of relative symlinks, one per (view path, package path), rooted at
     *root* (all repo-relative). Returns the tar path."""
@@ -1073,7 +1275,47 @@ def main(argv=None):
             else:
                 rc = 1
                 _emit(["FAILED release view (%s)" % err])
+            if jid and ctx["templates"].get("views"):
+                order = {id(sp): i for i, sp in enumerate(publishable)}
+                rc |= _publish_merged_view(ctx, sorted(in_view, key=lambda sp: order[id(sp)]), _emit)
     return rc
+
+
+def _publish_merged_view(ctx, specs, emit):
+    """The release's merged view (cvmfs_views_template), one per release and
+    arch. A new directory, so it publishes on any path; one already there is
+    kept unless --replace-on-conflict. Returns the rc contribution."""
+    import shutil
+    view_path = fixed_dir(ctx, "views")
+    if not view_path:
+        emit(["FAILED merged view: cvmfs_views_template %r is not a fixed directory"
+              % ctx["templates"]["views"]])
+        return 1
+    state = published_state(ctx, view_path) if ctx["submit"] else None
+    if state and state.get("exists") and not ctx.get("replace_on_conflict"):
+        emit(["SKIPPED merged view: already published at %s" % view_path])
+        return 0
+    staging = tempfile.mkdtemp(prefix="mview-", dir=ctx["tmp_dir"])
+    try:
+        res = merged_view(ctx, specs, staging, view_path)
+        for path, winner, loser in res["conflicts"]:
+            sys.stderr.write("[publish] merged view: %s from %s, not %s\n"
+                             % (path, winner, loser))
+        write_view_setup(staging, "/cvmfs/%s/%s" % (ctx["repo"], view_path))
+        open(os.path.join(staging, ".cvmfscatalog"), "w").close()  # one catalog per view
+        fd, tar = tempfile.mkstemp(suffix=".tar", dir=ctx["tmp_dir"])
+        os.close(fd)
+        subprocess.run(["tar", "-cf", tar, "-C", staging, "."], check=True)
+        label = "merged-view@%s" % view_path
+        sys.stderr.write("[publish] merged view %s: %d links, %d conflicts\n"
+                         % (view_path, len(res["linked"]), len(res["conflicts"])))
+        emit(["PUBLISHED %s %s" % (_publish_tar(ctx, view_path, tar, label), label)])
+        return 0
+    except (SystemExit, Exception) as exc:
+        emit(["FAILED merged view: %s" % exc])
+        return 1
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 if __name__ == "__main__":

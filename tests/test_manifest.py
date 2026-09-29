@@ -123,6 +123,16 @@ class TestManifestInit(unittest.TestCase):
                           target="x", cvmfs_templates=tm)
         self.assertEqual(self._load(m)["cvmfs_templates"], tm)
 
+    def test_view_rules_recorded_only_when_set(self):
+        m = _make_manifest(self.tmp)
+        spec = {"package": "ROOT", "version": "6", "revision": "1", "hash": "h",
+                "view": {"exclude": ["share/doc"]}}
+        m.add_package(spec, "built_from_source")
+        m.add_package(dict(spec, package="zlib", view=None), "built_from_source")
+        pkgs = self._load(m)["packages"]
+        self.assertEqual(pkgs[0]["view"], {"exclude": ["share/doc"]})
+        self.assertNotIn("view", pkgs[1])
+
     def test_path_in_work_dir(self):
         m = _make_manifest(self.tmp)
         self.assertTrue(m.path.startswith(self.tmp))
