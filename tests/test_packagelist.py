@@ -288,3 +288,76 @@ class ForceRebuildTestCase(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+RECIPES["CONFIG_DIR/pinned.sh"] = dedent("""\
+    package: pinned
+    version: v1
+    tag: v1
+    source: https://example.com/pinned.git
+    ---
+    """)
+
+
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReader)
+@mock.patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
+class ChecksumStoreTestCase(unittest.TestCase):
+    """The checksum files are read after the overrides; a legacy pin needs the
+    recipe's own tag."""
+
+    STORE = {"tag": "a" * 40, "commits": {"v2": "b" * 40}, "sources": {}, "patches": {}}
+
+    def _specs(self, overrides):
+        specs = {}
+        with patch("bits_helpers.packages.load_for_spec", return_value=self.STORE) as load:
+            getPackageList(packages=["pinned"], specs=specs, configDir="CONFIG_DIR",
+                           preferSystem=False, noSystem=None, architecture="ARCH",
+                           disable=[], defaults=["release"],
+                           performPreferCheck=lambda *_: (1, ""),
+                           performRequirementCheck=lambda *_: (1, ""),
+                           performValidateDefaults=lambda spec: (True, "", ["release"]),
+                           overrides=dict({"defaults-release": {}}, **overrides), taps={},
+                           log=lambda *_: None,
+                           defaults_meta={"_defaults_dirs": {"release": "STACK_DIR"}})
+        extra = [c.args[1] for c in load.call_args_list if c.args[0]["package"] == "pinned"]
+        return specs["pinned"], extra
+
+    def test_legacy_pin_kept_for_recipe_tag(self):
+        spec, extra = self._specs({})
+        self.assertEqual(spec["pin_commit"], "a" * 40)
+        self.assertEqual(spec["pin_commits"], {"v2": "b" * 40})
+        self.assertEqual(extra, [["STACK_DIR"]])
+
+    def test_legacy_pin_dropped_when_overridden(self):
+        spec, _ = self._specs({"pinned": {"tag": "v2"}})
+        self.assertEqual(spec["tag"], "v2")
+        self.assertIsNone(spec["pin_commit"])
+        self.assertEqual(spec["pin_commits"], {"v2": "b" * 40})
+
+
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReader)
+@mock.patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
+class ChecksumsDirTestCase(ChecksumStoreTestCase):
+    """A package whose sources a profile override changed records new checksums
+    in that profile's repository."""
+
+    def _dir(self, overrides):
+        specs = {}
+        with patch("bits_helpers.packages.load_for_spec", return_value=self.STORE):
+            getPackageList(packages=["pinned"], specs=specs, configDir="CONFIG_DIR",
+                           preferSystem=False, noSystem=None, architecture="ARCH",
+                           disable=[], defaults=["release"],
+                           performPreferCheck=lambda *_: (1, ""),
+                           performRequirementCheck=lambda *_: (1, ""),
+                           performValidateDefaults=lambda spec: (True, "", ["release"]),
+                           overrides=dict({"defaults-release": {}}, **overrides), taps={},
+                           log=lambda *_: None,
+                           defaults_meta={"_override_dirs": {"pinned": "STACK_DIR"}})
+        return specs["pinned"].get("checksums_dir")
+
+    def test_source_override_sets_the_dir(self):
+        self.assertEqual(self._dir({"pinned": {"tag": "v2"}}), "STACK_DIR")
+
+    def test_other_override_does_not(self):
+        self.assertIsNone(self._dir({"pinned": {"env": {"X": "1"}}}))
+        self.assertIsNone(self._dir({}))

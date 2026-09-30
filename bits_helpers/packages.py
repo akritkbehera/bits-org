@@ -22,6 +22,10 @@ from bits_helpers.paths import resolveFilename, getConfigPaths, checkForFilename
 from bits_helpers.utilities import recipeSourceLabel, resolve_version
 from bits_helpers.defaults import resolve_pkg_family
 
+# Override keys that change what a recipe fetches.
+_SOURCE_KEYS = {"version", "tag", "source", "sources", "patches"}
+
+
 def shadowed_defaults_repo(pkg_filename, won_dir, search_dirs, defaults_dirs):
   """Return the first repo dir after *won_dir* in *search_dirs* that supplies an
   active defaults file (a key of *defaults_dirs*) and also has a recipe for
@@ -87,6 +91,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   # The repo holding defaults-release (and usually the compiler/build-type axes)
   # is the shared base that group repos override on purpose: not a group repo.
   _ddirs = (defaults_meta or {}).get("_defaults_dirs") or {}
+  _odirs = (defaults_meta or {}).get("_override_dirs") or {}
   _base = os.path.abspath(_ddirs["release"]) if "release" in _ddirs else None
   _defaults_dirs = {}
   for _dname, _ddir in _ddirs.items():
@@ -142,6 +147,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     dieOnError(spec["package"].lower() != pkg_filename,
                "{}.sh has different package field: {}".format(p, spec["package"]))
     spec["pkgdir"] = pkgdir
+    # The recipe's own git identity: a legacy single-SHA checksum pin is only
+    # valid for it (see the checksum-store merge below).
+    _as_written = (spec.get("tag", spec.get("version")), spec.get("version"), spec.get("source"))
 
     # Per-recipe origin trace: record which repository@commit actually supplied
     # this recipe — for every package, not only provider-sourced ones.  This is
@@ -152,10 +160,6 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     recipe_sources[spec["package"]] = spec["recipe_source"]
     debug("Recipe '%s' resolved from %s  (dir: %s)",
           spec["package"], spec["recipe_source"], pkgdir)
-
-    # Load the optional external checksum store (checksums/<pkg>.checksum)
-    # and merge source/patch checksums + commit pin into the spec.
-    merge_into_spec(spec, load_for_spec(spec))
 
     # Track which repository provider supplied this recipe so that
     # storeHashes can fold the provider's commit hash into the build hash.
@@ -201,6 +205,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # gate it, e.g. "ROOT:osx" applies only on macOS architectures. Package
     # names never contain ":", so splitting on the first ":" is unambiguous.
     _ovr_vars = (defaults_meta or {}).get("variables")
+    _ovr_dir = None   # repo of the profile whose override changed the sources
     for override in overrides:
       # We downcase the regex in parseDefaults(), so downcase the package name
       # as well. FIXME: This is probably a bad idea; we should use
@@ -213,6 +218,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         continue
       log("Overrides for package %s: %s", spec["package"], overrides[override])
       spec.update(overrides.get(override, {}) or {})
+      if _SOURCE_KEYS & set(overrides.get(override) or {}):
+        _ovr_dir = _odirs.get(override) or _ovr_dir
 
     # Apply global force_revision from the top-level defaults field as a
     # fallback.  Per-package overrides (set via spec.update() above) take
@@ -414,6 +421,21 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
             spec.get("version"), _pin)
       spec["version"] = _pin
       spec["tag"] = _pin
+    # External checksum store: the recipe repo's checksums/<pkg>.checksum, with
+    # those of the repos providing the active defaults profiles merged over it
+    # (for the sources their overrides introduce). Loaded only now, after the
+    # overrides and pins, because a legacy single-SHA pin names no tag: it is
+    # kept only while the tag, version and source are the recipe's own.
+    _legacy = _as_written == (spec["tag"], spec["version"], spec.get("source"))
+    _store = load_for_spec(spec, list(_ddirs.values())) or {}
+    if _store.get("tag") and not _legacy:
+      debug("%s: tag/version/source overridden, legacy commit pin %s not applied",
+            spec["package"], _store["tag"][:10])
+    merge_into_spec(spec, _store, legacy_pin=_legacy)
+    # --write-checksums records what a profile's override introduced in that
+    # profile's repository, as `bits checksums --defaults` does.
+    if _ovr_dir:
+      spec["checksums_dir"] = _ovr_dir
     spec["version"] = spec["version"].replace("/", "_")
     # Resolve version-/arch-/defaults-conditional patches now that the version is
     # final (after overrides + pins). filterPatches drops inactive entries and

@@ -94,7 +94,7 @@ def apply_defaults_legacy_initdotsh(args, defaults_meta, explicit) -> bool:
   return True
 
 
-def _prefetch_package(spec, sync_helper, work_dir, build_arch) -> None:
+def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None) -> None:
   """Background task: prefetch the prebuilt tarball + all source archives.
 
   Uses the sentinel-file mechanism (``<path>.downloading`` files; see
@@ -155,22 +155,30 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch) -> None:
       _wait_for_sentinel(tar_hash_dir)
 
   # --- Source archive prefetch ------------------------------------------------
-  # download() already uses _acquire_download/_wait_for_sentinel internally, so
-  # concurrent prefetch threads coordinate automatically.
-  source_parent = os.path.join(work_dir, "SOURCES", spec["package"], spec["version"])
+  # Warms the download cache (SOURCES/cache) only; checkout_sources copies from
+  # there. download() uses _acquire_download/_wait_for_sentinel internally, so
+  # concurrent prefetch threads coordinate automatically. The entries are
+  # resolved exactly as checkout_sources resolves them ((arch)url gates,
+  # $(...) expressions), for the raw build architecture it uses.
+  from bits_helpers.workarea import active_source_entries
   # Same source-upload gate as checkout_sources: prefetch may be the first
   # fetch of an upstream archive, and a redistribution-forbidden source must
   # not be archived to a (possibly world-readable) store from here either.
   from bits_helpers.sync import source_sync_for
   sync_helper = source_sync_for(spec, sync_helper)
   checksums = spec.get("source_checksums") or {}
-  for s in spec.get("sources", []):
+  try:
+    entries = active_source_entries(spec, source_arch or build_arch)
+  except OSError as exc:
+    debug("Prefetch: cannot resolve sources of %s: %s", spec.get("package", "?"), exc)
+    return
+  for s in entries:
     url, inline_checksum = _pe(s)
     src_checksum = checksums.get(url) or inline_checksum
     try:
-      download(url, source_parent, work_dir, checksum=src_checksum,
+      download(url, None, work_dir, checksum=src_checksum,
                enforce_mode="off", sync_helper=sync_helper)
-    except Exception:
+    except (Exception, SystemExit):  # dieOnError (bad URL) raises SystemExit
       # Prefetch is best-effort: log the error but don't abort.
       debug("Prefetch: error downloading %s for %s (will retry at build time)",
             url, spec.get("package", "?"))
@@ -1606,67 +1614,68 @@ def _download_time_mode(mode: str) -> str:
   return mode if mode in ("warn", "enforce") else "off"
 
 
-def _print_checksums_for_spec(spec, work_dir):
+def _cached_sources(spec, work_dir, architecture):
+  """``[(url, path_or_None)]`` for the tarball sources *spec* fetches on
+  *architecture* (arch-gated entries resolved as checkout_sources resolves
+  them), found in the download cache ``SOURCES/cache/`` or, failing that, the
+  package's source directory."""
+  from bits_helpers.checksum import parse_entry as _pe
+  from bits_helpers.download import fixUrl, getUrlChecksum
+  from bits_helpers.utilities import short_commit_hash
+  from bits_helpers.workarea import active_source_entries
+  src_dir = join(work_dir, "SOURCES", spec.get("package", ""), spec.get("version", ""),
+                 short_commit_hash(spec))
+  out = []
+  try:
+    entries = active_source_entries(spec, architecture)
+  except OSError as exc:
+    warning("Cannot resolve the sources of %s: %s", spec.get("package", "?"), exc)
+    entries = []
+  for entry in entries:
+    url, _ = _pe(entry)
+    fixed = fixUrl(url)
+    url_hash = getUrlChecksum(fixed)
+    fname = fixed.rsplit("/", 1)[-1]
+    path = next((c for c in (join(work_dir, "SOURCES", "cache", url_hash[:2], url_hash, fname),
+                             join(src_dir, fname)) if exists(c)), None)
+    out.append((url, path))
+  return out
+
+
+def _recipe_patches(spec):
+  """``[(name, path)]`` of *spec*'s active patches, in the recipe's patches/."""
+  from bits_helpers.checksum import parse_entry as _pe
+  return [(name, join(spec.get("pkgdir", ""), "patches", name))
+          for name in (_pe(p)[0] for p in spec.get("patches") or [])]
+
+
+def _print_checksums_for_spec(spec, work_dir, architecture=""):
   """Print computed checksums for all sources and patches of *spec*.
 
   Reads from the download cache (``SOURCES/cache/``) so that this works even
   when the package tarball was cached and ``checkout_sources()`` was not called
   this run.  Missing cache entries are warned about but do not abort.
   """
-  from bits_helpers.checksum import parse_entry as _pe, checksum_file as _cf
-  from bits_helpers.download import getUrlChecksum as _guc
-  from bits_helpers.utilities import short_commit_hash
-
   pkgname = spec.get("package", "")
-  version = spec.get("version", "")
-  src_dir = join(work_dir, "SOURCES", pkgname, version, short_commit_hash(spec))
-
-  printed_header = [False]   # mutable cell so the nested helper can set it
-
-  def _header():
-    if not printed_header[0]:
-      print("# %s" % pkgname)
-      printed_header[0] = True
-
-  if "sources" in spec:
-    sources_printed = False
-    for s in spec["sources"]:
-      url, _ = _pe(s)
-      fname = url.rsplit("/", 1)[-1]
-      url_hash = _guc(url)
-      # Primary cache location written by download(); fall back to src_dir.
-      candidate = join(work_dir, "SOURCES", "cache", url_hash[:2], url_hash, fname)
-      if not exists(candidate):
-        candidate = join(work_dir, "TMP", url_hash, fname)   # legacy path
-      if not exists(candidate):
-        candidate = join(src_dir, fname)
-      if exists(candidate):
-        _header()
-        if not sources_printed:
-          print("sources:")
-          sources_printed = True
-        print("  %s: %s" % (url, _cf(candidate)))
-      else:
-        warning("--print-checksums: cannot find cached source for %s in %s",
-                pkgname, url)
-
-  if "patches" in spec:
-    patches_printed = False
-    for patch_entry in spec["patches"]:
-      patch_name, _ = _pe(patch_entry)
-      patch_path = join(spec.get("pkgdir", ""), "patches", patch_name)
-      if exists(patch_path):
-        _header()
-        if not patches_printed:
-          print("patches:")
-          patches_printed = True
-        print("  %s: %s" % (patch_name, _cf(patch_path)))
-
-  if printed_header[0]:
+  sources, patches = [], []
+  for url, path in _cached_sources(spec, work_dir, architecture):
+    if path:
+      sources.append("  %s: %s" % (url, compute_checksum_file(path)))
+    else:
+      warning("--print-checksums: cannot find cached source for %s in %s", pkgname, url)
+  for name, path in _recipe_patches(spec):
+    if exists(path):
+      patches.append("  %s: %s" % (name, compute_checksum_file(path)))
+  if sources or patches:
+    print("# %s" % pkgname)
+    for title, lines in (("sources:", sources), ("patches:", patches)):
+      if lines:
+        print(title)
+        print("\n".join(lines))
     print()   # blank line between packages
 
 
-def _run_post_build_checksum_phase(specs, work_dir, do_print, do_write):
+def _run_post_build_checksum_phase(specs, work_dir, do_print, do_write, architecture=""):
   """Run print / write checksum operations for *all* packages in one pass.
 
   Called after the main build loop so that:
@@ -1685,76 +1694,78 @@ def _run_post_build_checksum_phase(specs, work_dir, do_print, do_write):
     banner("Checksums")
   for spec in specs:
     if do_print:
-      _print_checksums_for_spec(spec, work_dir)
+      _print_checksums_for_spec(spec, work_dir, architecture)
     if do_write:
-      _write_checksums_for_spec(spec, work_dir)
+      _write_checksums_for_spec(spec, work_dir, architecture)
 
 
-def _write_checksums_for_spec(spec, work_dir):
-  """Compute and write the checksums/<pkg>.checksum file for *spec*.
+def _write_checksums_for_spec(spec, work_dir, architecture=""):
+  """Record *spec*'s checksums in a ``checksums/<pkgname>.checksum`` file.
 
-  Called when ``--write-checksums`` is active.  Computes the actual SHA-256 of
-  every downloaded source tarball and patch file, reads back the current HEAD
-  commit for ``source:`` + ``tag:`` packages, and writes the result to
-  ``<pkgdir>/checksums/<pkgname>.checksum``.
-
-  Silently skips entries whose files cannot be found (e.g. cached tarballs that
-  were not re-downloaded).
+  Called when ``--write-checksums`` is active: the SHA-256 of every source
+  tarball in the download cache, of every patch in the recipe's patches/, and
+  the checked-out commit of a git ``tag:`` (not of a branch, which moves).
+  Entries not yet recorded are added to the recipe repository's file, or to
+  the file of the profile repository whose override changed the sources; a
+  recorded one that disagrees is kept and warned about.  Entries whose files
+  cannot be found are skipped.
   """
-  from bits_helpers.checksum_store import write_checksum_file as _write_ck
+  from bits_helpers.checksum_store import update_checksum_file
   from bits_helpers.utilities import short_commit_hash
 
   pkgdir = spec.get("pkgdir", "")
   pkgname = spec.get("package", "")
-  if not pkgdir or not pkgname:
+  if not pkgdir or not pkgname or spec.get("is_devel_pkg"):
     return
 
-  store = {"tag": None, "sources": {}, "patches": {}}
+  new = {"commits": {}, "sources": {}, "patches": {}}
+  for url, path in _cached_sources(spec, work_dir, architecture):
+    if path:
+      new["sources"][url] = compute_checksum_file(path)
+    else:
+      warning("--write-checksums: could not find downloaded file for %s", url)
+  for name, path in _recipe_patches(spec):
+    if exists(path):
+      new["patches"][name] = compute_checksum_file(path)
 
-  # --- sources (downloaded tarballs) ----------------------------------------
-  source_parent = join(work_dir, "SOURCES", pkgname, spec.get("version", ""))
-  src_dir = join(source_parent, short_commit_hash(spec))
-  if "sources" in spec:
-    from bits_helpers.checksum import parse_entry as _pe
-    from bits_helpers.download import getUrlChecksum as _guc
-    import hashlib
-    for s in spec["sources"]:
-      url, _ = _pe(s)
-      # download() stores files under a subdirectory keyed by md5(url)
-      url_hash = _guc(url)
-      from os.path import basename as _bn
-      fname = _bn(url)
-      candidate = join(work_dir, "TMP", url_hash, fname)
-      if not exists(candidate):
-        candidate = join(src_dir, fname)
-      if exists(candidate):
-        store["sources"][url] = compute_checksum_file(candidate)
-      else:
-        warning("--write-checksums: could not find downloaded file for %s", url)
+  # A tag, not a branch: the build resolves a branch to its tip commit_hash.
+  tag = str(spec.get("tag") or "")
+  scm = spec.get("scm")
+  if spec.get("source") and tag and scm is not None and spec.get("commit_hash") == tag:
+    src_dir = join(work_dir, "SOURCES", pkgname, spec.get("version", ""), short_commit_hash(spec))
+    try:
+      new["commits"][tag] = scm.checkedOutCommitName(src_dir).strip().lower()
+    except Exception as exc:  # noqa: BLE001
+      warning("--write-checksums: could not read HEAD for %s: %s", pkgname, exc)
 
-  # --- patches --------------------------------------------------------------
-  if "patches" in spec:
-    from bits_helpers.checksum import parse_entry as _pe
-    for patch_entry in spec["patches"]:
-      patch_name, _ = _pe(patch_entry)
-      patch_path = join(src_dir, patch_name)
-      if exists(patch_path):
-        store["patches"][patch_name] = compute_checksum_file(patch_path)
-
-  # --- git commit pin -------------------------------------------------------
-  if "source" in spec and "tag" in spec:
-    scm = spec.get("scm")
-    if scm is not None:
-      try:
-        store["tag"] = scm.checkedOutCommitName(src_dir).strip()
-      except Exception as exc:  # noqa: BLE001
-        warning("--write-checksums: could not read HEAD for %s: %s", pkgname, exc)
-
-  if store["tag"] or store["sources"] or store["patches"]:
-    path = _write_ck(pkgdir, pkgname, store)
+  # Entries the build already knows (from any checksum file) stay where they
+  # are; the rest go to the recipe repository or, for a package a defaults
+  # profile's override changed, to that profile's repository.
+  from bits_helpers.checksum_store import _same_checksum
+  known = {"sources": spec.get("source_checksums") or {},
+           "patches": spec.get("patch_checksums") or {},
+           "commits": spec.get("pin_commits") or {}}
+  for section, entries in new.items():
+    for key, value in list(entries.items()):
+      have = known[section].get(key)
+      if have:
+        del entries[key]
+        if not _same_checksum(have, value):
+          warning("--write-checksums: %s %s %s: kept the recorded %s, computed %s",
+                  pkgname, section, key, have, value)
+  target = spec.get("checksums_dir") or pkgdir
+  try:
+    path, conflicts = update_checksum_file(target, pkgname, new)
+  except (OSError, ValueError) as exc:
+    warning("--write-checksums: %s: %s", pkgname, exc)
+    return
+  for section, key, old, value in conflicts:
+    warning("--write-checksums: %s %s %s: kept the recorded %s, computed %s",
+            pkgname, section, key, old, value)
+  if path:
     info("Wrote checksum file: %s", path)
   else:
-    debug("--write-checksums: nothing to record for %s", pkgname)
+    debug("--write-checksums: nothing new to record for %s", pkgname)
 
 
 @dataclass
@@ -3949,7 +3960,8 @@ def doBuild(args, parser):
     )
     for _pkg in buildOrder:
       _pspec = specs[_pkg]
-      _prefetch_executor.submit(_prefetch_package, _pspec, syncHelper, workDir, args.architecture)
+      _prefetch_executor.submit(_prefetch_package, _pspec, syncHelper, workDir, args.architecture,
+                                raw_architecture)
     # Do NOT call executor.shutdown() here — we let it run in the background
     # and join lazily via a daemon-thread finaliser registered below.
     import atexit
@@ -4031,7 +4043,8 @@ def doBuild(args, parser):
   _do_write = write_checksums_enabled(args, defaultsMeta)
   if (_do_print or _do_write) and specs_for_checksum_phase:
     _run_post_build_checksum_phase(specs_for_checksum_phase, workDir,
-                                   do_print=_do_print, do_write=_do_write)
+                                   do_print=_do_print, do_write=_do_write,
+                                   architecture=raw_architecture)
 
   if not args.onlyDeps:
       # Resolve the main package's install root (sw/<arch>/<pkg>/<ver-rev>) so

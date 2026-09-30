@@ -195,8 +195,9 @@ def is_writeable(dirpath):
 def _verify_commit_pin(scm, spec, source_dir: str, enforce_mode: str) -> None:
   """Check that the checked-out HEAD matches the pinned commit SHA, if any.
 
-  The pin is stored in ``spec["pin_commit"]`` and comes from the recipe
-  repository's ``checksums/<pkgname>.checksum`` file (``tag:`` field).
+  The pin for the checked-out tag comes from ``spec["pin_commits"]`` (the
+  ``commits:`` map of the ``checksums/<pkgname>.checksum`` files), falling
+  back to the legacy single ``spec["pin_commit"]`` (``tag:`` field).
 
   Behaviour follows the standard enforcement modes:
   - ``"off"``     — no check performed (pin is stored but ignored).
@@ -204,7 +205,7 @@ def _verify_commit_pin(scm, spec, source_dir: str, enforce_mode: str) -> None:
   - ``"enforce"`` — mismatch aborts the build.
   - ``"print"``   — actual commit SHA is printed; no verification.
   """
-  pin = spec.get("pin_commit")
+  pin = (spec.get("pin_commits") or {}).get(str(spec.get("tag", ""))) or spec.get("pin_commit")
   package = spec.get("package", "?")
 
   if enforce_mode == "print":
@@ -296,7 +297,7 @@ def _resolve_source_entry(entry, architecture):
     # glob pattern via fnmatch so recipe authors can use either style.
     try:
       include = bool(re.match(arch_pat, architecture))
-    except re.PatternError:
+    except re.error:  # re.PatternError is 3.13+ only
       include = fnmatch.fnmatch(architecture, arch_pat)
     return rest, include
 
@@ -316,6 +317,27 @@ def _resolve_source_entry(entry, architecture):
     return result, True
 
   return entry, True
+
+
+def active_source_entries(spec, architecture):
+  """The ``url[,checksum]`` entries of *spec*'s ``sources:`` fetched on
+  *architecture*: arch-gated entries filtered, ``$(...)`` evaluated, and
+  ``%(name)s`` / ``%(version)s`` substituted. Shared by the checkout, the
+  prefetcher and the checksum writer, so all of them see the same URLs."""
+  fmt = {"name": spec["package"], "version": spec["version"]}
+  out = []
+  for s in spec.get("sources") or []:
+    resolved, include = _resolve_source_entry(s, architecture)
+    if not include:
+      debug("Skipping source %r: architecture %r does not match", s, architecture)
+      continue
+    # Recipes may write https://example.com/%(name)s-%(version)s.tar.gz
+    try:
+      resolved = resolved % fmt
+    except (KeyError, ValueError, TypeError):
+      pass  # leave the string as-is if substitution fails
+    out.append(resolved)
+  return out
 
 
 def _archive_prefix_depth(archive_path):
@@ -767,21 +789,7 @@ def checkout_sources(spec, work_dir, reference_sources, containerised_build,
     # knows raw_architecture); fall back to the env var for backwards
     # compatibility with tests and external callers, then to "".
     _arch = architecture or os.environ.get("ARCHITECTURE", "")
-    _fmt = {"name": spec["package"], "version": spec["version"]}
-    active_sources = []
-    for s in spec["sources"]:
-      resolved, include = _resolve_source_entry(s, _arch)
-      if not include:
-        debug("Skipping source %r: architecture %r does not match", s, _arch)
-        continue
-      # Substitute %(name)s and %(version)s in the resolved URL so recipes
-      # can write concise entries like:
-      #   https://example.com/%(name)s-%(version)s.tar.gz
-      try:
-        resolved = resolved % _fmt
-      except (KeyError, ValueError):
-        pass  # leave the string as-is if substitution fails
-      active_sources.append(resolved)
+    active_sources = active_source_entries(spec, _arch)
 
     # Fail early with a clear message when no source entry matched the current
     # architecture.  Without this check the build would silently continue with
