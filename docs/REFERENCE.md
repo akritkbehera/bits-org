@@ -941,7 +941,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--check-checksums` | Warn on source/patch checksum mismatch; continue the build. |
 | `--enforce-checksums` | Abort on source/patch checksum mismatch or missing checksum. |
 | `--print-checksums` | Print checksums for all sources/patches in YAML format after the build. |
-| `--write-checksums` | Write or update `checksums/<package>.checksum` after the build. |
+| `--write-checksums` | Add the fetched sources', patches' and git tags' checksums to `checksums/<package>.checksum` after the build. For a whole repository, use `bits checksums`. |
 | `--store-integrity` | Record and verify SHA-256 of every recalled tarball. Persist it with `bits use build --store-integrity`. See [§21 Store integrity verification](#store-integrity-verification). |
 | `--provider-policy POLICY` | Control `BITS_PATH` insertion order for repository providers. Format: `name:prepend\|append` pairs. See [§13 Provider policy](#provider-policy). |
 | `--from-manifest FILE` | Replay a build from a manifest JSON file; verifies each tarball against `tarball_sha256`. See [§25 Build Manifest](#25-build-manifest). |
@@ -1266,6 +1266,54 @@ expression is kept verbatim (a licence name in CycloneDX, a declared
 is not exported. The output is deterministic: the same manifest and bits
 version give byte-identical files. The SBOMs `bits publish` uploads carry the
 stored tarballs' sha256, as the BOM does.
+
+---
+
+### bits checksums
+
+Compute, check and record the checksums of every recipe in a recipe
+repository, without building. Writes the [external checksum
+files](#external-checksum-files).
+
+```bash
+bits checksums [PACKAGE ...] [-c DIR] [--recipes DIR ...] [--defaults all|P1,P2]
+               [--write] [-w WORKDIR] [-a ARCH] [--remote-store URL] [-j N]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `PACKAGE ...` | all | Only these packages. |
+| `-c DIR`, `--config-dir DIR` | `.` | The recipe repository to check and write (`DIR/checksums/`). |
+| `--recipes DIR` | — | Another repository, searched after `-c`, for the recipes the profiles override (repeatable). |
+| `--defaults PROFILES` | — | Also check the overrides of `DIR`'s `defaults-*.sh`: `all` or a comma list. |
+| `--write` | off | Record new entries. Without it the command only reports. |
+| `-w WORKDIR` | `sw` | Holds the download cache (`SOURCES/cache/`), shared with builds. |
+| `-a ARCH` | detected | Architecture for `$(...)` sources. |
+| `--remote-store URL` | `$BITS_REMOTE_STORE` | Source mirror tried before upstream (read only). |
+| `-j N` | 8 | Parallel downloads and git queries. |
+
+Sources and tags are resolved as a build resolves them (`%(version)s` etc.;
+the group's `source_mode` picks between a recipe's git and tarball sources).
+Each tarball is downloaded through the download cache and hashed (SHA-256),
+every `(arch)url` variant included; each patch is hashed from the recipe's
+`patches/`; each git tag is resolved to its commit with `git ls-remote` (a
+branch is reported as moving and never pinned). A profile's entries are those
+its overrides add over the release profile, or, for `defaults-release`, over
+the recipe as written; they belong to the profile's repository:
+
+```bash
+bits checksums -c lcg.bits --write                                     # the recipes' own
+bits checksums -c stacks.bits --write --defaults all --recipes lcg.bits  # the overrides
+```
+
+Each result is compared with the existing file (including a legacy `tag:`
+pin, for the recipe's own tag) and with inline `url,algo:hex` suffixes and
+printed as `new`, `ok`, `MISMATCH`, `failed`, `moving` or
+`skipped` (e.g. a `file://` source), or `unverified` when the recorded
+checksum uses another algorithm. A disagreeing entry is never overwritten;
+new ones are added to their section, keeping the file's comments.
+A profile override that cannot be resolved is reported as `failed`, as the
+build would stop there too. Exit status 1 on any `MISMATCH` or `failed`.
 
 ---
 
@@ -2090,9 +2138,10 @@ The `checksums/` directory is optional. If the file does not exist, bits falls b
 
 ```yaml
 # checksums/mylib.checksum
-# Re-generate with:  bits build --write-checksums mylib
+# Re-generate with:  bits checksums --write mylib
 
-tag: abc123def456abc123def456abc123def456abc1   # pinned commit SHA
+commits:                  # git tag -> pinned commit SHA
+  v1.0: abc123def456abc123def456abc123def456abc1
 
 sources:
   https://example.com/mylib-1.0.tar.gz: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
@@ -2103,13 +2152,15 @@ patches:
   add-missing-header.patch: md5:d41d8cd98f00b204e9800998ecf8427e
 ```
 
-All sections are optional. The `tag` field holds the **pinned git commit SHA** expected after checking out `source:` + `tag:`. This protects against tag movement (force-pushed tags pointing to a different commit). The value is a bare 40-character (SHA-1) or 64-character (SHA-256) hex string without an algorithm prefix.
+All sections are optional. `commits` maps a git `tag:` to the **pinned commit SHA** expected after checking out `source:` + `tag:`. This protects against tag movement (force-pushed tags pointing to a different commit). Keyed by tag, pins for the recipe's own tag and for the tags defaults profiles override it to coexist; a branch is never pinned, since it moves. The value is a bare 40-character (SHA-1) or 64-character (SHA-256) hex string without an algorithm prefix. The older single `tag: <sha>` pin is still honoured, but only while the recipe's own tag, version and source are built: an override or version pin that changes them drops it.
+
+**Profile repositories:** a repository providing an active `defaults-*.sh` profile (e.g. `stacks.bits`) may carry `checksums/<pkgname>.checksum` files for the sources and tags its overrides introduce. They are merged over the recipe repository's file, per entry. `bits checksums --defaults` writes them.
 
 **Merge semantics — external file wins:** if a URL or patch filename appears in both the checksum file and as an inline comma-suffix in the recipe, the checksum file value takes precedence. This makes the checksum file the single authoritative security artefact while retaining the inline syntax as a convenient fallback for simple cases.
 
-**Generating checksum files:** run `bits build --write-checksums <package>` to download sources, compute checksums, record the checked-out commit SHA, and write (or update) the file automatically. Subsequent builds will pick it up without any further changes to the recipe `.sh` file.
+**Generating checksum files:** run `bits checksums --write` in a recipe repository to record every recipe's checksums without building (see [bits checksums](#bits-checksums)), or `bits build --write-checksums <package>` to record those of the packages a build fetched (for a package whose sources a defaults profile's override changed, into that profile's repository). Both add new entries to the existing file, keeping its comments, and never overwrite one that disagrees. Subsequent builds will pick it up without any further changes to the recipe `.sh` file.
 
-**Commit pin enforcement:** the `tag:` pin is verified using the same `--check-checksums` / `--enforce-checksums` modes as source and patch checksums. A mismatch means the tag has been moved to a different commit since the checksum file was generated.
+**Commit pin enforcement:** the commit pin is verified using the same `--check-checksums` / `--enforce-checksums` modes as source and patch checksums. A mismatch means the tag has been moved to a different commit since the checksum file was generated.
 
 #### Miscellaneous
 

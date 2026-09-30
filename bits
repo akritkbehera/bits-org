@@ -116,6 +116,7 @@ Usage: $0 \\
         ${ET}eval "\`bits shell-helper\`"${EZ}
 
     ${EM}build${EZ}   Build a package. Use ${ET}bits build --help${EZ} for details.
+    ${EM}checksums${EZ} Compute/record a recipe repository's checksums. Use ${ET}bits checksums --help${EZ} for details.
     ${EM}clean${EZ}   Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
     ${EM}cleanup${EZ} Evict stale packages from a persistent workDir. Use ${ET}bits cleanup --help${EZ} for details.
     ${EM}compliance${EZ} Audit licence metadata and the store. Use ${ET}bits compliance --help${EZ} for details.
@@ -368,7 +369,7 @@ fi
 for arg in "$@"
 do
   case $arg in
-    architecture|brew|build|certify|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|-debug|-d)
+    architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?

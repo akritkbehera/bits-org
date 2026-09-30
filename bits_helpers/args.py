@@ -1291,6 +1291,47 @@ def add_sbom_arguments(subparsers, ctx):
   return sbom_parser
 
 
+def add_checksums_arguments(subparsers, ctx):
+  """`bits checksums` — compute/record the checksums of a whole recipe repository."""
+  cp = subparsers.add_parser(
+      "checksums",
+      help="compute and record source/patch checksums and git commit pins of a recipe repository",
+      description=(
+          "Check every recipe of a recipe repository without building: download each "
+          "tarball source (through the download cache; the remote store first when "
+          "given) and hash it, hash each patch, and resolve each git tag to its commit "
+          "(a branch moves and is never pinned). With --defaults, also the sources the "
+          "repository's defaults-*.sh profiles override recipes to (from --recipes "
+          "repositories), recorded in this repository's checksums/. Results are compared "
+          "with the existing checksums/<pkg>.checksum files and inline url,algo:hex "
+          "suffixes; --write adds the new entries and never overwrites one that "
+          "disagrees. Exit status 1 on a mismatch or a failure."),
+  )
+  cp.add_argument("pkgname", nargs="*", metavar="PACKAGE",
+                  help="Only these packages (default: all).")
+  ctx.config_dir(cp, help="The recipe repository to check and write (default: %(default)s).")
+  cp.add_argument("--recipes", dest="recipeDirs", action="append", default=[], metavar="DIR",
+                  help=("Another recipe repository, searched after CONFIGDIR for the recipes "
+                        "the profiles override (repeatable; e.g. lcg.bits)."))
+  cp.add_argument("--defaults", dest="defaultsProfiles", metavar="PROFILES", default=None,
+                  help=("Also check the overrides of CONFIGDIR's defaults-*.sh profiles: "
+                        "'all' or a comma-separated list (e.g. dev3,dev4)."))
+  cp.add_argument("--write", dest="write", action="store_true", default=False,
+                  help="Record new entries in CONFIGDIR/checksums/. Default: report only.")
+  ctx.work_dir(cp, help="Work directory holding the download cache (SOURCES/cache). Default: %(default)s.")
+  ctx.architecture(cp, help=("Architecture for $(...) source expressions; every (arch)url "
+                             "variant is checked regardless. Default: %(default)s."))
+  cp.add_argument("--remote-store", dest="remoteStore", metavar="URL", default="",
+                  help=("Store whose source mirror is tried before upstream (read only). "
+                        "Default: upstream only."))
+  cp.add_argument("--fresh", dest="fresh", action="store_true", default=False,
+                  help=("Download every source again from upstream into a private cache, "
+                        "ignoring the download cache and the remote store."))
+  cp.add_argument("-j", "--jobs", dest="jobs", type=int, default=8, metavar="N",
+                  help="Parallel downloads / git queries. Default: %(default)s.")
+  return cp
+
+
 def add_build_arguments(subparsers, ctx):
   """`bits build` — build a package."""
   build_parser = subparsers.add_parser("build", help="build a package",
@@ -1824,6 +1865,7 @@ def doParseArgs():
   status_parser = add_status_arguments(subparsers, ctx)
   verify_parser = add_verify_arguments(subparsers, ctx)
   add_sbom_arguments(subparsers, ctx)
+  add_checksums_arguments(subparsers, ctx)
   stats_parser = add_stats_arguments(subparsers, ctx)
 
   import_parser = add_import_arguments(subparsers, ctx)
@@ -2062,7 +2104,7 @@ def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify", "stats", "sbom"]:
+  if args.action in ["version", "architecture", "verify", "stats", "sbom", "checksums"]:
     return args
 
   # Minimal finalisation for cvmfs-path: only the defaults profile is loaded
