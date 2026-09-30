@@ -20,11 +20,7 @@ from bits_helpers.matchers import (_collect_version_pins, _matcher_active,
 from bits_helpers.recipe import getRecipeReader, parseRecipe, getGeneratedPackages
 from bits_helpers.paths import resolveFilename, getConfigPaths, checkForFilename
 from bits_helpers.utilities import recipeSourceLabel, resolve_version
-from bits_helpers.defaults import resolve_pkg_family
-
-# Override keys that change what a recipe fetches.
-_SOURCE_KEYS = {"version", "tag", "source", "sources", "patches"}
-
+from bits_helpers.defaults import SOURCE_KEYS, resolve_pkg_family
 
 def shadowed_defaults_repo(pkg_filename, won_dir, search_dirs, defaults_dirs):
   """Return the first repo dir after *won_dir* in *search_dirs* that supplies an
@@ -218,7 +214,7 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         continue
       log("Overrides for package %s: %s", spec["package"], overrides[override])
       spec.update(overrides.get(override, {}) or {})
-      if _SOURCE_KEYS & set(overrides.get(override) or {}):
+      if SOURCE_KEYS & set(overrides.get(override) or {}):
         _ovr_dir = _odirs.get(override) or _ovr_dir
 
     # Apply global force_revision from the top-level defaults field as a

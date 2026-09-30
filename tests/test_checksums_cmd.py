@@ -422,10 +422,27 @@ class TestSmallerPoints(unittest.TestCase):
         _w(os.path.join(a, "defaults-release.sh"),
            "package: defaults-release\nversion: v1\noverrides:\n  ROOT:\n    tag: v1\n---\n")
         _w(os.path.join(b, "defaults-dev.sh"),
-           "package: defaults-dev\nversion: v1\noverrides:\n  ROOT:osx:\n    tag: v2\n  Boost@x:\n    version: '1'\n---\n")
+           "package: defaults-dev\nversion: v1\noverrides:\n  ROOT:osx:\n    tag: v2\n  Boost@x:\n    version: '1'\n"
+           "  ROOT:\n    env: {X: '1'}\n---\n")
         with patch.dict(os.environ, {"BITS_PATH": b}):
             meta, _ = readDefaults(a, ["release", "dev"], lambda *_: None, "slc9_x86-64")
         self.assertEqual(meta["_override_dirs"], {"root": a, "root:osx": b, "boost": b})
+
+    def test_build_write_respects_a_legacy_pin(self):
+        from unittest.mock import MagicMock
+        from bits_helpers.build import _write_checksums_for_spec
+        repo = os.path.join(self.tmp, "r")
+        scm = MagicMock()
+        scm.checkedOutCommitName.return_value = "b" * 40
+        spec = {"package": "g", "version": "v1", "tag": "v1", "commit_hash": "v1", "pkgdir": repo,
+                "source": "https://example.com/g.git", "scm": scm, "pin_commit": "a" * 40}
+        with patch("bits_helpers.build.warning") as warn:
+            _write_checksums_for_spec(spec, self.tmp, "slc9_x86-64")
+        self.assertFalse(os.path.exists(os.path.join(repo, "checksums")))   # B never supersedes A
+        warn.assert_called_once()
+        _write_checksums_for_spec(dict(spec, pin_commit="b" * 40), self.tmp, "slc9_x86-64")
+        got = parse_checksum_file(os.path.join(repo, "checksums", "g.checksum"))
+        self.assertEqual(got["commits"], {"v1": "b" * 40})                  # migrated
 
     def test_build_write_goes_to_the_profile_repo_and_skips_known(self):
         from unittest.mock import MagicMock

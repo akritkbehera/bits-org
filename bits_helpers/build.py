@@ -1745,9 +1745,12 @@ def _write_checksums_for_spec(spec, work_dir, architecture=""):
   known = {"sources": spec.get("source_checksums") or {},
            "patches": spec.get("patch_checksums") or {},
            "commits": spec.get("pin_commits") or {}}
+  legacy = spec.get("pin_commit")   # the recipe's own tag: a match migrates it
   for section, entries in new.items():
     for key, value in list(entries.items()):
       have = known[section].get(key)
+      if section == "commits" and not have and legacy and not _same_checksum(legacy, value):
+        have = legacy
       if have:
         del entries[key]
         if not _same_checksum(have, value):
