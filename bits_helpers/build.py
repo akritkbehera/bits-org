@@ -3336,6 +3336,7 @@ def doBuild(args, parser):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
         return getstatusoutput_docker(cmd, cwd=temp_dir)
 
+    _satisfied_reqs = set()   # system_requirement packages found present (SBOM)
     systemPackages, ownPackages, failed, validDefaults = \
       getPackageList(packages                = packages,
                      specs                   = specs,
@@ -3353,7 +3354,8 @@ def doBuild(args, parser):
                      taps                    = taps,
                      log                     = debug,
                      provider_dirs          = provider_dirs,
-                     defaults_meta           = defaultsMeta)
+                     defaults_meta           = defaultsMeta,
+                     satisfied_requirements  = _satisfied_reqs)
 
     # Read the container fingerprint (only present in a bits-containers image), so
     # own_hash packages can fold the build environment — bison/flex/glibc/binutils
@@ -3407,6 +3409,17 @@ def doBuild(args, parser):
   # $SOURCEDIR and exports $PATCH0..$PATCH_COUNT, but the recipe applies them.
   _global_auto_patch = (bool(cfg.auto_patch)
                         and bool(defaultsMeta.get("auto_patch", True)))
+  # The system-provided dependencies are about to leave the specs' requires;
+  # the manifest keeps them for the SBOM dependency graph.
+  if getattr(args, "manifest", None) is not None:
+    # prefer_system replacements, plus system_requirement packages found present.
+    _sys = set(systemPackages or ()) | _satisfied_reqs
+    _edges = {}
+    for n, x in specs.items():
+      _u = x.get("unfiltered_requires") or {}
+      _edges[n] = ([r for r in _u.get("runtime") or [] if r in _sys],
+                   [r for r in _u.get("build") or [] if r in _sys])
+    args.manifest.set_system_packages(_sys, _edges)
   for x in specs.values():
     x["requires"] = [r for r in x["requires"] if r not in args.disable]
     x["build_requires"] = [r for r in x["build_requires"] if r not in args.disable]

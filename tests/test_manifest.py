@@ -345,9 +345,42 @@ class TestAddPackage(unittest.TestCase):
         self.assertEqual(pkg["patches"], [])
         self.assertEqual(pkg["variables"], {})
 
-    def test_schema_version_is_3(self):
+    def test_schema_version_is_4(self):
         m = _make_manifest(self.tmp)
-        self.assertEqual(self._load(m)["schema_version"], 3)
+        self.assertEqual(self._load(m)["schema_version"], 4)
+
+    def test_system_dependencies_and_untracked_recorded(self):
+        # The build drops system-provided packages from the specs' requires;
+        # the manifest gets them back from set_system_packages.
+        m = _make_manifest(self.tmp)
+        m.set_system_packages({"zlib", "OpenSSL"}, {"ROOT": (["zlib"], ["OpenSSL"])})
+        spec = dict(self.spec, package="ROOT", runtime_requires=["Python"],
+                    untracked_requires=["xrootd"], build_requires=["CMake"])
+        m.add_package(spec, "already_installed")
+        data = self._load(m)
+        self.assertEqual(data["system_packages"], ["OpenSSL", "zlib"])
+        pkg = data["packages"][0]
+        self.assertEqual(pkg["requires"], ["Python", "xrootd", "zlib"])
+        self.assertEqual(pkg["build_requires"], ["CMake", "OpenSSL"])
+
+    def test_dependency_edges_recorded(self):
+        m = _make_manifest(self.tmp)
+        spec = dict(self.spec, runtime_requires=["zlib", "defaults-release", "zlib", "Python"],
+                    build_requires=["CMake"], source="https://github.com/root-project/root",
+                    tag="v6-36-02")
+        m.add_package(spec, "already_installed")
+        pkg = self._load(m)["packages"][0]
+        self.assertEqual(pkg["requires"], ["zlib", "Python"])
+        self.assertEqual(pkg["build_requires"], ["CMake"])
+        self.assertEqual((pkg["source"], pkg["tag"]),
+                         ("https://github.com/root-project/root", "v6-36-02"))
+        m.add_package(dict(_make_spec(pkg="Tok"), source="https://gitlab-ci-token:s3cr3t@gitlab.cern.ch/a/b.git"),
+                      "already_installed")
+        self.assertEqual(self._load(m)["packages"][1]["source"], "https://gitlab.cern.ch/a/b.git")
+        m.add_package(dict(_make_spec(pkg="Leaf"), source=None, tag=None), "already_installed")
+        leaf = self._load(m)["packages"][2]
+        self.assertEqual((leaf["requires"], leaf["build_requires"], leaf["source"], leaf["tag"]),
+                         ([], [], "", ""))
 
     def test_multiple_packages_recorded(self):
         m = _make_manifest(self.tmp)
@@ -598,10 +631,10 @@ class TestSourceChecksums(unittest.TestCase):
         self.assertIsNone(entry["checksum"])
 
     def test_schema_version_current(self):
-        """Schema version reflects the latest additions (v3: patches + variables)."""
+        """Schema version reflects the latest additions (v4: dependency edges)."""
         m = _make_manifest(self.tmp)
         data = self._load(m)
-        self.assertEqual(data["schema_version"], 3)
+        self.assertEqual(data["schema_version"], 4)
 
 
 if __name__ == "__main__":

@@ -38,8 +38,12 @@ def shadowed_defaults_repo(pkg_filename, won_dir, search_dirs, defaults_dirs):
 def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                    architecture, disable, defaults, performPreferCheck, performRequirementCheck,
                    performValidateDefaults, overrides, taps, log, force_rebuild=(),
-                   provider_dirs=None, defaults_meta=None):
+                   provider_dirs=None, defaults_meta=None, satisfied_requirements=None):
   """Resolve the full set of packages required by *packages*.
+
+  *satisfied_requirements*, when a set, collects the ``system_requirement``
+  packages whose check passed (taken from the system, like the prefer_system
+  ones in the returned ``systemPackages``, but not reported as such).
 
   *provider_dirs* is an optional ``dict`` returned by
   ``repo_provider.fetch_repo_providers_iteratively``, mapping each provider
@@ -329,6 +333,8 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
         if spec["package"] not in _disable_set:
           disable.append(spec["package"])
           _disable_set.add(spec["package"])
+        if satisfied_requirements is not None:
+          satisfied_requirements.add(spec["package"])
 
     spec["disabled"] = list(disable)
     if spec["package"] in disable:
@@ -367,6 +373,10 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     spec["disabled"] += [x for x in fn("build_requires")]
     spec["disabled"] += [x for x in fn("untracked_requires")]
     fn = lambda what: filterByArchitectureDefaults(architecture, defaults, spec.get(what, []), _default_vars, _own_version)
+    # Before disabled (e.g. system-provided) packages are dropped: the build
+    # manifest keeps the edges to system packages for the SBOM. Not hashed.
+    spec["unfiltered_requires"] = {"runtime": list(fn("requires")) + list(fn("untracked_requires")),
+                                   "build": list(fn("build_requires"))}
     spec["requires"] = [x for x in fn("requires") if x not in disable]
     spec["build_requires"] = [x for x in fn("build_requires") if x not in disable]
     # untracked_requires: real, runtime-linked dependencies that are deliberately
