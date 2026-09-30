@@ -987,20 +987,29 @@ class TestPackagesAndReleaseView(unittest.TestCase):
             self.assertEqual(out, "/cvmfs/r/g/views/X/a")
 
     def test_merged_view_published_once(self):
+        import tarfile
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")   # {release} baked by the build
         ctx = self._ctx(templates=tm)
         self._tarball(ctx, self.SPEC, ["bin/root"])
         lines, sent = [], []
+
+        def names(t):
+            with tarfile.open(t) as tf:
+                return tf.getnames()
         with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True}):
             self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
         self.assertEqual(lines, ["SKIPPED merged view: already published at g/views/LCG_110/el9-gcc15-opt"])
         lines.clear()
         with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
-             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, fp=None: sent.append(p) or "JM"):
+             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, fp=None:
+                               sent.append((p, names(t))) or "JM"):
             self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
-        self.assertEqual(sent, ["g/views/LCG_110/el9-gcc15-opt"])
+        self.assertEqual([p for p, _ in sent], ["g/views/LCG_110/el9-gcc15-opt"])
+        # -c / -C true adds the root marker itself; a second one fails the ingest.
+        self.assertNotIn("./.cvmfscatalog", sent[0][1])
+        self.assertIn("./bin/root", sent[0][1])
         self.assertEqual(lines, ["PUBLISHED JM merged-view@g/views/LCG_110/el9-gcc15-opt"])
 
     def test_base_module_published_when_missing(self):

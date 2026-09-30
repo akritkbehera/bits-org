@@ -1302,7 +1302,8 @@ def _publish_merged_view(ctx, specs, emit):
             sys.stderr.write("[publish] merged view: %s from %s, not %s\n"
                              % (path, winner, loser))
         write_view_setup(staging, "/cvmfs/%s/%s" % (ctx["repo"], view_path))
-        open(os.path.join(staging, ".cvmfscatalog"), "w").close()  # one catalog per view
+        # No .cvmfscatalog here: both publish paths ingest with create-catalog-on-
+        # root (-c / -C true), which adds the marker itself; a second one fails.
         fd, tar = tempfile.mkstemp(suffix=".tar", dir=ctx["tmp_dir"])
         os.close(fd)
         subprocess.run(["tar", "-cf", tar, "-C", staging, "."], check=True)
