@@ -915,6 +915,64 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         res = cp.merged_view(ctx, [dep, top], os.path.join(ctx["tmp_dir"], "s2"), vp)
         self.assertEqual(sorted(res["linked"]), ["include/zlib.h", "lib/libz.so", "lib64/libz.so"])
 
+    def test_merged_view_folds_directories_one_package_fills(self):
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        dep = dict(self.SPEC, package="boost", hash="b")
+        top = dict(self.SPEC, package="ROOT", view={"exclude": ["share/root/icons"]})
+        self._tarball(ctx, dep, ["include/boost/a/x.hpp", "include/boost/y.hpp",
+                                 "share/doc/boost/README", "lib/pkgconfig/boost.pc",
+                                 "lib/python3.12/site-packages/boost/__init__.py"])
+        self._tarball(ctx, top, ["include/TH1.h", "share/doc/root/README",
+                                 "share/root/macros/m.C", "share/root/icons/i.png",
+                                 "lib/python3.12/site-packages/ROOT/__init__.py"])
+        staging = os.path.join(ctx["tmp_dir"], "stage")
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        res = cp.merged_view(ctx, [dep, top], staging, vp)
+        self.assertEqual(sorted(res["linked"]), [
+            "include/TH1.h", "include/boost",               # one package: whole
+            "lib/pkgconfig/boost.pc",                       # setup.sh looks there
+            "lib/python3.12/site-packages/ROOT",            # below site-packages folds
+            "lib/python3.12/site-packages/boost",
+            "share/doc/boost", "share/doc/root",            # share/doc is shared
+            "share/root/macros"])                           # an exclude inside share/root
+        self.assertEqual(res["conflicts"], [])
+        link = os.readlink(os.path.join(staging, "include", "boost"))
+        self.assertEqual(os.path.normpath(os.path.join(vp, "include", link)),
+                         "g/el9-gcc15-opt/boost/6.36-2/include/boost")
+        for d in ("include", "lib/pkgconfig", "lib/python3.12", "lib/python3.12/site-packages",
+                  "share/root"):
+            self.assertFalse(os.path.islink(os.path.join(staging, d)), d)
+        cp.write_view_setup(staging, "/cvmfs/r/" + vp)   # still finds what it looks for
+        setup = open(os.path.join(staging, "setup.sh")).read()
+        self.assertIn("lib/python3.12/site-packages", setup)
+        self.assertIn("lib/pkgconfig", setup)
+
+    def test_merged_view_folding_respects_roots_and_leaves(self):
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        # A deep include root: only below it folds, nothing beside it shows.
+        deep = dict(self.SPEC, package="P", view={"include": ["etc/p/conf"]})
+        self._tarball(ctx, deep, ["etc/p/conf/sub/a", "etc/p/secret"])
+        res = cp.merged_view(ctx, [deep], os.path.join(ctx["tmp_dir"], "a"), vp)
+        self.assertEqual(res["linked"], ["etc/p/conf/sub"])
+        # A dependent's leaf above the dependency's directory: one conflict, not one per file.
+        dep = dict(self.SPEC, package="Dep", hash="d")
+        top = dict(self.SPEC, package="Top")
+        self._tarball(ctx, dep, ["share/x/y/a", "share/x/y/b", "share/x/y/c"])
+        self._tarball(ctx, top, [], links=[("share/x", "elsewhere")])
+        res = cp.merged_view(ctx, [dep, top], os.path.join(ctx["tmp_dir"], "b"), vp)
+        self.assertEqual(res["linked"], ["share/x"])
+        self.assertEqual(res["conflicts"], [("share/x/y", "Top", "Dep")])
+        # Three packages with one file: each loser is reported.
+        mid = dict(self.SPEC, package="Mid", hash="m")
+        for sp in (dep, mid, top):
+            self._tarball(ctx, sp, ["lib/libz.so"])
+        res = cp.merged_view(ctx, [dep, mid, top], os.path.join(ctx["tmp_dir"], "c"), vp)
+        self.assertEqual(res["conflicts"], [("lib/libz.so", "Top", "Mid"),
+                                            ("lib/libz.so", "Top", "Dep")])
+
     def test_view_list_from_the_build_is_used_and_rules_apply(self):
         import subprocess
         import bits_helpers.cvmfs_publish as cp
@@ -934,7 +992,8 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         open(os.path.join(root, "bin", "added-later"), "w").close()
         vp = "g/views/LCG_110/el9-gcc15-opt"
         res = cp.merged_view(ctx, [spec], os.path.join(ctx["tmp_dir"], "a"), vp)
-        self.assertEqual(sorted(res["linked"]), ["bin/root", "lib/libCore.so", "share/doc/README"])
+        # share/doc is ROOT's alone: linked whole.
+        self.assertEqual(sorted(res["linked"]), ["bin/root", "lib/libCore.so", "share/doc"])
         # The recipe's view rules (from the manifest): drop share/doc, add etc/root.
         rules = dict(spec, view={"exclude": ["share/doc"], "include": ["etc/root"]})
         res = cp.merged_view(ctx, [rules], os.path.join(ctx["tmp_dir"], "b"), vp)

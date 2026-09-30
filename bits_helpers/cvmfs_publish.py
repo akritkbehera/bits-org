@@ -688,14 +688,22 @@ def _excluded(path, patterns):
                for pat in patterns for i in range(1, len(parts) + 1))
 
 
+# Directories setup.sh looks for in the view (see view.view_env): never folded,
+# so they stay real directories it can find.
+_VIEW_KEEP = ("lib*/pkgconfig", "lib*/python*", "lib*/python*/site-packages")
+
+
 def merged_view(ctx, specs, staging, view_path):
-    """Build the release's merged view in *staging*: file-level relative symlinks
-    from *view_path* (repo-relative) into each package's published path, listed
-    from the package tarballs (what was published). *specs* are in dependency
+    """Build the release's merged view in *staging*: relative symlinks from
+    *view_path* (repo-relative) into each package's published path, listed from
+    the package tarballs (what was published). A subdirectory only one package
+    fills, with nothing of it excluded, is linked whole (folded, as GNU stow
+    does); elsewhere files are linked one by one. *specs* are in dependency
     order; the dependent (later) package wins a collision.
     Returns {"linked": [...], "conflicts": [(path, winner, loser)]}."""
+    import fnmatch
     exclude = set(ctx["templates"].get("view_exclude") or [])
-    owner, dirs, res = {}, set(), {"linked": [], "conflicts": []}
+    plans, users = [], {}   # users: view path -> packages with an entry at/below it
     for spec in reversed(specs):
         rules = spec.get("view", True)
         if spec["package"] in exclude or rules is False:
@@ -703,21 +711,56 @@ def merged_view(ctx, specs, staging, view_path):
         rules = rules if isinstance(rules, dict) else {}
         drop = [str(p).strip("/") for p in (rules.get("exclude") or [])]
         subdirs = list(VIEW_SUBDIRS) + [str(p).strip("/") for p in (rules.get("include") or [])]
-        pkg_path = package_path(spec, ctx)
+        entries = []
         for vrel, prel in _view_entries(_package_tree(spec, ctx), subdirs):
-            if _excluded(prel, drop):
-                continue
+            dropped = _excluded(prel, drop)
+            if not dropped:
+                entries.append(vrel)
+            p = vrel
+            while p:   # a dropped entry keeps its directories from folding
+                users.setdefault(p, set()).add(None if dropped else spec["package"])
+                p = os.path.dirname(p)
+        plans.append((spec, entries, set(subdirs)))
+
+    def kept(d):   # segment-wise: fnmatch's "*" would also match "/"
+        segs = d.split("/")
+        return any(len(k.split("/")) == len(segs) and
+                   all(fnmatch.fnmatchcase(a, b) for a, b in zip(segs, k.split("/")))
+                   for k in _VIEW_KEEP)
+
+    def fold(vrel, pkg, roots):
+        """The shallowest directory above *vrel*, strictly below one of the
+        package's walked roots, that *pkg* alone fills."""
+        parts = vrel.split("/")
+        for i in range(2, len(parts)):
+            d = "/".join(parts[:i])
+            if (users.get(d) == {pkg} and not kept(d)
+                    and any(d.startswith(r + "/") for r in roots)):
+                return d
+        return vrel
+
+    owner, dirs, refused = {}, set(), set()
+    res = {"linked": [], "conflicts": []}
+    for spec, entries, roots in plans:
+        pkg_path = package_path(spec, ctx)
+        for vrel in entries:
+            vrel = fold(vrel, spec["package"], roots)
+            if owner.get(vrel) == spec["package"] or (vrel, spec["package"]) in refused:
+                continue   # a folded directory, already linked or refused
             parents = [os.path.dirname(vrel)]
             while parents[-1]:
                 parents.append(os.path.dirname(parents[-1]))
             clash = vrel in owner or vrel in dirs or any(p in owner for p in parents)
             if clash:
-                res["conflicts"].append((vrel, owner.get(vrel, "(a directory)"), spec["package"]))
+                winner = owner.get(vrel) or next(
+                    (owner[p] for p in parents if p in owner), "(a directory)")
+                res["conflicts"].append((vrel, winner, spec["package"]))
+                refused.add((vrel, spec["package"]))
                 continue
             dest = os.path.join(staging, vrel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             dirs.update(p for p in parents if p)
-            target = os.path.join(pkg_path, prel)
+            target = os.path.join(pkg_path, vrel)   # view paths mirror package paths
             os.symlink(os.path.relpath(target, os.path.join(view_path, os.path.dirname(vrel))), dest)
             owner[vrel] = spec["package"]
             res["linked"].append(vrel)
