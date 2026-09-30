@@ -381,9 +381,10 @@ build script writes a per-package `NOTICE` into each `$INSTALLROOT` (from
 generates the per-release aggregation — `NOTICE` (required attributions,
 every distributed package with its SPDX id, and the licence-excluded list)
 plus `LICENSE-SOURCE-OFFER.txt` (where the corresponding sources of every
-copyleft component are archived, and for how long) — uploaded next to the
-release's BOMs under `MANIFESTS/<build_id>/` and placed at the root of a
-published release view.
+copyleft component are archived, and for how long) and the release's SBOMs
+(`sbom.cdx.json`, CycloneDX 1.6; `sbom.spdx.json`, SPDX 2.3; see `bits sbom`) —
+uploaded next to the release's BOMs under `MANIFESTS/<build_id>/` and placed at
+the root of a published release view.
 
 `bits compliance` audits it all (see the command reference), and
 `bits compliance --enforce` is the admin tool to purge non-compliant packages
@@ -1229,6 +1230,42 @@ bits verify --from-manifest FILE [options]
 | `--json` | off | Emit a machine-readable JSON report. |
 
 **Exit codes:** 0 = consistent; 1 = FAIL (hash/commit mismatch); 2 = MISS (tarball not found); 3 = manifest unreadable.
+
+---
+
+### bits sbom
+
+Export a build manifest as a Software Bill of Materials: CycloneDX 1.6 JSON
+(`sbom.cdx.json`) and/or SPDX 2.3 JSON (`sbom.spdx.json`). `bits publish`
+writes both automatically next to the release NOTICE; this command produces
+them on demand from any manifest.
+
+```bash
+bits sbom MANIFEST [--format cyclonedx|spdx|both] [-o DIR|-] [--build-id ID]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `MANIFEST` | _(required)_ | A bits build manifest (`MANIFESTS/bits-manifest-*.json`). |
+| `--format` | `both` | `cyclonedx`, `spdx` or `both`. |
+| `-o DIR`, `--output-dir DIR` | `.` | Where to write the files; `-` prints one format to stdout. |
+| `--build-id ID` | the manifest's build id | Release name in the SBOM. |
+
+Each built package is a component: version `<version>-<revision>`, the tarball
+SHA-256, the SPDX licence, a purl (`pkg:github/…@<commit>` for GitHub code,
+else `pkg:generic/…`), source archives with their checksums, the git origin,
+and bits properties (build hash, architecture, patches, redistributable).
+Dependencies come from the manifest (schema v4: `requires` = runtime and
+untracked, as the dependency graph / `DEPENDS_ON`; `build_requires` as a
+`bits:build_requires` property / `BUILD_DEPENDENCY_OF`). Packages taken from
+the system (`system_packages`) appear as components marked
+`bits:provided_by = system`. Older (v3) manifests have no dependency edges:
+their SBOM lists components only. A recipe `license:` that is not a valid SPDX
+expression is kept verbatim (a licence name in CycloneDX, a declared
+`LicenseRef-bits-…` in SPDX), so both files stay valid. URLs lose any credentials, and a local (non-URL) source
+is not exported. The output is deterministic: the same manifest and bits
+version give byte-identical files. The SBOMs `bits publish` uploads carry the
+stored tarballs' sha256, as the BOM does.
 
 ---
 

@@ -160,36 +160,49 @@ def generate_source_offer(entries, store_url=None, build_id="unknown") -> str:
     return "\n".join(lines) + "\n"
 
 
-def upload_release_compliance(s3, bucket, build_id, entries, store_url=None):
-    """Upload NOTICE + LICENSE-SOURCE-OFFER.txt next to the release's BOMs.
+def _release_files(entries, build_id, store_url=None, manifest=None):
+    """[(name, text)] of the release's compliance files: NOTICE, the source
+    offer and, given the full *manifest*, its SBOMs (CycloneDX and SPDX). An
+    SBOM that cannot be generated is left out with a warning."""
+    files = [("NOTICE", generate_notice(entries, build_id)),
+             ("LICENSE-SOURCE-OFFER.txt", generate_source_offer(entries, store_url, build_id))]
+    if manifest:
+        try:
+            from bits_helpers import sbom
+            files += [(sbom.FILES[f], sbom.render(manifest, f, build_id)) for f in sbom.FILES]
+        except Exception as exc:          # pylint: disable=broad-except
+            warning("could not generate the SBOMs: %s", exc)
+    return files
+
+
+def upload_release_compliance(s3, bucket, build_id, entries, store_url=None, manifest=None):
+    """Upload NOTICE + LICENSE-SOURCE-OFFER.txt (+ the SBOMs, given the full
+    *manifest*) next to the release's BOMs.
 
     Best-effort: never raises, never fails the publish.
     """
     try:
-        for name, body in (("NOTICE", generate_notice(entries, build_id)),
-                           ("LICENSE-SOURCE-OFFER.txt",
-                            generate_source_offer(entries, store_url, build_id))):
+        for name, body in _release_files(entries, build_id, store_url, manifest):
             key = "MANIFESTS/%s/%s" % (build_id, name)
             s3.put_object(Bucket=bucket, Key=key, Body=body.encode("utf-8"))
             info("compliance file -> %s/%s", bucket, key)
         return True
     except Exception as exc:              # pylint: disable=broad-except
-        warning("could not upload the NOTICE/source-offer files: %s", exc)
+        warning("could not upload the NOTICE/source-offer/SBOM files: %s", exc)
         return False
 
 
-def write_release_compliance(dirpath, entries, build_id, store_url=None):
-    """Write NOTICE + LICENSE-SOURCE-OFFER.txt into *dirpath* (a release/view
-    root). Best-effort: returns True when both files were written."""
+def write_release_compliance(dirpath, entries, build_id, store_url=None, manifest=None):
+    """Write NOTICE + LICENSE-SOURCE-OFFER.txt (+ the SBOMs, given the full
+    *manifest*) into *dirpath* (a release/view root). Best-effort: returns
+    True when all files were written."""
     try:
-        for name, body in (("NOTICE", generate_notice(entries, build_id)),
-                           ("LICENSE-SOURCE-OFFER.txt",
-                            generate_source_offer(entries, store_url, build_id))):
+        for name, body in _release_files(entries, build_id, store_url, manifest):
             with open(os.path.join(dirpath, name), "w", encoding="utf-8") as fh:
                 fh.write(body)
         debug("compliance files written to %s", dirpath)
         return True
     except Exception as exc:              # pylint: disable=broad-except
-        warning("could not write the NOTICE/source-offer files to %s: %s",
+        warning("could not write the NOTICE/source-offer/SBOM files to %s: %s",
                 dirpath, exc)
         return False

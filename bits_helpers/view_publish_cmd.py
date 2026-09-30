@@ -120,7 +120,8 @@ def doPublishView(args, parser):
         for man in load_build_manifests(os.path.join(work_dir, "MANIFESTS")):
             if build_id_from_manifest(man) == build_id:
                 write_release_compliance(result["view_dir"],
-                                         man.get("packages") or [], build_id)
+                                         man.get("packages") or [], build_id,
+                                         manifest=man)
                 break
         else:
             debug("publish --release-view: no local manifest for %s — NOTICE skipped",
