@@ -129,6 +129,10 @@ def doMain(args, parser):
     # doVerify calls sys.exit() internally, but be explicit
     sys.exit(0)
 
+  if args.action == "sbom":
+    from bits_helpers.sbom import doSbom
+    sys.exit(doSbom(args, parser))
+
   if args.action == "status":
     doStatus(args, parser)
     sys.exit(0)

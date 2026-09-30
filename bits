@@ -122,6 +122,7 @@ Usage: $0 \\
     ${EM}deps${EZ}    Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
     ${EM}doctor${EZ}  Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
     ${EM}init${EZ}    Initialise a local package. Use ${ET}bits init --help${EZ} for details.
+    ${EM}sbom${EZ}    Export a build manifest as a CycloneDX/SPDX SBOM. Use ${ET}bits sbom --help${EZ} for details.
     ${EM}store${EZ}   Inspect/verify/clean the S3 content store. Use ${ET}bits store --help${EZ} for details.
     ${EM}version${EZ} Display bits version.
 
@@ -367,7 +368,7 @@ fi
 for arg in "$@"
 do
   case $arg in
-    architecture|brew|build|certify|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sign|stats|status|verify|version|-debug|-d)
+    architecture|brew|build|certify|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?

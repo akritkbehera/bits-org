@@ -1266,6 +1266,31 @@ def add_compliance_arguments(subparsers, ctx):
   return compliance_parser
 
 
+def add_sbom_arguments(subparsers, ctx):
+  """`bits sbom` — export a build manifest as a CycloneDX / SPDX SBOM."""
+  sbom_parser = subparsers.add_parser(
+      "sbom",
+      help="export a build manifest as an SBOM (CycloneDX 1.6 / SPDX 2.3 JSON)",
+      description=(
+          "Write the Software Bill of Materials of a build, from its bits build "
+          "manifest (MANIFESTS/bits-manifest-*.json): CycloneDX 1.6 JSON "
+          "(sbom.cdx.json) and/or SPDX 2.3 JSON (sbom.spdx.json). Deterministic: "
+          "the same manifest gives identical files. Manifests before schema v4 "
+          "have no dependency edges; their SBOM lists components only."
+      ),
+  )
+  sbom_parser.add_argument("manifest", metavar="MANIFEST",
+                           help="bits build manifest JSON file.")
+  sbom_parser.add_argument("--format", dest="format", choices=["cyclonedx", "spdx", "both"],
+                           default="both", help="SBOM format(s). Default: %(default)s.")
+  sbom_parser.add_argument("-o", "--output-dir", dest="outDir", metavar="DIR", default=".",
+                           help=("Directory to write sbom.cdx.json / sbom.spdx.json into, or '-' "
+                                 "for stdout (single --format). Default: the current directory."))
+  sbom_parser.add_argument("--build-id", dest="buildId", metavar="ID", default=None,
+                           help="Release name in the SBOM. Default: the manifest's build id.")
+  return sbom_parser
+
+
 def add_build_arguments(subparsers, ctx):
   """`bits build` — build a package."""
   build_parser = subparsers.add_parser("build", help="build a package",
@@ -1798,6 +1823,7 @@ def doParseArgs():
   compliance_parser = add_compliance_arguments(subparsers, ctx)
   status_parser = add_status_arguments(subparsers, ctx)
   verify_parser = add_verify_arguments(subparsers, ctx)
+  add_sbom_arguments(subparsers, ctx)
   stats_parser = add_stats_arguments(subparsers, ctx)
 
   import_parser = add_import_arguments(subparsers, ctx)
@@ -2036,7 +2062,7 @@ def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify", "stats"]:
+  if args.action in ["version", "architecture", "verify", "stats", "sbom"]:
     return args
 
   # Minimal finalisation for cvmfs-path: only the defaults profile is loaded
