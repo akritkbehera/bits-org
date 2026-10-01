@@ -100,7 +100,31 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   # on CVMFS. Per-DEPENDENCY, so a legacy-built package can consume a reused dep.
   # Needs /cvmfs mounted in the build container (no modulecmd required).
   _reqs = list(spec.get("requires", ()))
-  _reused_set = {d for d in _reqs
+  _req_set = set(_reqs)
+  _reused_set = {d for d in _req_set
+                 if reuse_cvmfs_base and specs[d].get("reuse_module_id")}
+
+  # A reused package's deployed init.sh can source its own dependencies. Make
+  # those dependencies available first, so its revision guards skip packages
+  # that are only present in the local build tree (for example GCC's
+  # gcc-prerequisites). Stop recursion at a locally-built package because its
+  # own init.sh sets up its dependency closure.
+  _init_deps = set(_req_set)
+  _pending = list(_reused_set)
+  _visited_reused = set()
+  while _pending:
+    _reused = _pending.pop()
+    if _reused in _visited_reused:
+      continue
+    _visited_reused.add(_reused)
+    for _child in specs[_reused].get("requires", ()):
+      if _child not in specs:
+        continue
+      _init_deps.add(_child)
+      if (reuse_cvmfs_base and specs[_child].get("reuse_module_id") and
+              _child not in _visited_reused):
+        _pending.append(_child)
+  _reused_set = {d for d in _init_deps
                  if reuse_cvmfs_base and specs[d].get("reuse_module_id")}
 
   def _reused_dep_lines(d):
@@ -111,11 +135,14 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # locally-built deps keep the local WORK_DIR.
     dep_spec = specs[d]
     verrev = dep_spec["reuse_module_id"].split("/", 1)[1]
+    family = dep_spec.get("reuse_pkg_family", dep_spec.get("pkg_family", ""))
+    family_seg = (quote(family) + "/") if family else ""
     return [
       '_bits_swd="${WORK_DIR:-}"; _bits_sap="${BITS_ARCH_PREFIX:-}"',
       'WORK_DIR="%s"; BITS_ARCH_PREFIX="."' % reuse_cvmfs_base,
-      '[ -n "${%s_REVISION}" ] || . "%s/%s/%s/etc/profile.d/init.sh"'
-      % (pkg_to_shell_id(d), reuse_cvmfs_base, dep_spec["package"], verrev),
+      '[ -n "${%s_REVISION}" ] || . "%s/%s%s/%s/etc/profile.d/init.sh"'
+      % (pkg_to_shell_id(d), reuse_cvmfs_base, family_seg,
+         dep_spec["package"], verrev),
       'WORK_DIR="${_bits_swd}"; BITS_ARCH_PREFIX="${_bits_sap}"; '
       'unset _bits_swd _bits_sap',
     ]
@@ -126,8 +153,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # e.g. a locally-built bits-recipe-tools before a reused CMake — sets its
     # _REVISION first, and the deployed init.sh's guard skips the re-source
     # (which would look on CVMFS where a local-only build does not exist).
-    _req_set = set(_reqs)
-    _order = [d for d in topological_sort(specs) if d in _req_set]
+    _order = [d for d in topological_sort(specs) if d in _init_deps]
     for d in _order:
       if d in _reused_set:
         lines.extend(_reused_dep_lines(d))

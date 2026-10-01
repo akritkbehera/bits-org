@@ -32,6 +32,14 @@ class TarSlipGuardTestCase(unittest.TestCase):
         _make_tar(p, [("pkg/README", b"x"), ("pkg/src/main.c", b"y")])
         self.assertIsNone(_assert_safe_archive_members(p))
 
+    def test_truncated_gzip_is_reported_as_corrupt(self):
+        p = os.path.join(self.d, "truncated.tar.gz")
+        _make_tar(p, [("pkg/README", b"x")])
+        with open(p, "rb+") as fh:
+            fh.truncate(os.path.getsize(p) // 2)
+        with self.assertRaisesRegex(ValueError, "truncated archive"):
+            _assert_safe_archive_members(p)
+
     def test_traversing_member_rejected(self):
         p = os.path.join(self.d, "slip.tar.gz")
         _make_tar(p, [("pkg/ok", b"x"), ("../../evil", b"y")])
