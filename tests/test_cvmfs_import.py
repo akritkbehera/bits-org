@@ -139,6 +139,34 @@ class HarvestTrustedTest(_unittest.TestCase):
             self.assertEqual(corpus["Boost/1.90.0-1"]["deps"],
                              ["CMake/3.30.6-1", "Python/3.13.11-1"])
 
+    def test_metadata_found_under_package_family_directory(self):
+        with _tempfile.TemporaryDirectory() as root:
+            arch = "el9_amd64_gcc14"
+            module_root = _os.path.join(root, "MODULES", arch)
+            install_root = _os.path.join(root, arch)
+            verrev = "3.12.13-abc123"
+            module_dir = _os.path.join(module_root, "Python")
+            package_dir = _os.path.join(install_root, "external", "Python", verrev)
+            _os.makedirs(module_dir)
+            _os.makedirs(package_dir)
+            with open(_os.path.join(module_dir, verrev), "w") as fh:
+                fh.write(_mf("Python", verrev, []))
+            with open(_os.path.join(package_dir, ".meta.json"), "w") as fh:
+                _json.dump({"build_id": "rel-family",
+                            "package": {"hash": "hPython", "pkg_family": "external",
+                                        "version": "3.12.13",
+                                        "revision": "abc123"}}, fh)
+
+            corpus, hashes, build_id = harvest_trusted(module_root, install_root)
+            self.assertEqual(hashes["Python/" + verrev], "hPython")
+            self.assertEqual(build_id, "rel-family")
+            self.assertEqual(corpus["Python/" + verrev]["pkg_family"], "external")
+            out = _os.path.join(root, "overlay")
+            import_trusted_release(module_root, install_root, arch, out)
+            with open(_os.path.join(out, build_id, arch, "Python",
+                                    ".%s.meta.json" % verrev)) as fh:
+                self.assertEqual(_json.load(fh)["pkg_family"], "external")
+
     def test_import_trusted_writes_overlay(self):
         with _tempfile.TemporaryDirectory() as root, \
              _tempfile.TemporaryDirectory() as out:

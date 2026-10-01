@@ -1836,7 +1836,8 @@ def build_one_package(p, ctx):
     _want = None if _relaxed else spec.get("remote_revision_hash")
     # In strict mode a missing hash must NOT fall through to match-any.
     if spec["package"] not in _bl and (_relaxed or _want):
-      from bits_helpers.cvmfs_import import overlay_reuse_module
+      from bits_helpers.cvmfs_import import (overlay_reuse_module,
+                                             overlay_module_metadata)
       # want_version guards against reusing a DIFFERENT version than the recipe
       # asks for (relaxed used to graft any deployed version by name alone).
       _mid = overlay_reuse_module(cfg.reuse_overlay, spec["package"],
@@ -1844,6 +1845,9 @@ def build_one_package(p, ctx):
       if _mid:
         # Adopt a consistent identity for the manifest, then skip the build.
         spec["reuse_module_id"] = _mid
+        _reuse_meta = overlay_module_metadata(cfg.reuse_overlay, _mid)
+        if _reuse_meta.get("pkg_family"):
+          spec["reuse_pkg_family"] = _reuse_meta["pkg_family"]
         _verrev = _mid.split("/", 1)[1]
         spec["revision"] = (_verrev[len(spec["version"]) + 1:]
                             if _verrev.startswith(spec["version"] + "-") else _verrev)
@@ -3009,10 +3013,23 @@ def doBuild(args, parser):
       # deployment convention (the same Modules/modulefiles<->Packages map the
       # BASE module uses).
       _install_base = args.reuseFrom.replace("Modules/modulefiles", "Packages")
+    # Bits deployments made by the local/legacy Makefile use sibling trees:
+    #   <root>/<arch>/external/<pkg>/<version-revision>
+    #   <root>/MODULES/<arch>/<pkg>/<version-revision>
+    # Accept either the package root or its module tree as --reuse-from. This
+    # also lets a deployment be reused without duplicating this layout in the
+    # defaults file.
+    if args.reuseFrom != "cvmfs":
+      _legacy_roots = resolve_legacy_bits_reuse_paths(args.reuseFrom)
+      if _legacy_roots:
+        args.reuseFrom, _legacy_install_base = _legacy_roots
+        if not _install_base:
+          _install_base = _legacy_install_base
     dieOnError(not _install_base,
                "--reuse-from needs the deployment's Packages root; declare "
                "install_dir / cvmfs_dir in the defaults system: layout, or point "
-               "--reuse-from at a .../Modules/modulefiles tree.")
+               "--reuse-from at a .../Modules/modulefiles tree or a Bits "
+               "<root>/<arch> or <root>/MODULES/<arch> deployment tree.")
     from bits_helpers.cvmfs_import import import_trusted_release
     _res = import_trusted_release(args.reuseFrom, _install_base, args.architecture,
                                   os.path.join(workDir, "MODULES"))

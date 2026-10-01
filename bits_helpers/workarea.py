@@ -442,6 +442,11 @@ def _assert_safe_archive_members(filepath):
     # actual extraction with a clean dieOnError there.
     debug("cannot pre-scan %s with tarfile — relying on tar's own traversal "
           "protection", filepath)
+  except EOFError as exc:
+    # gzip raises EOFError for a stream that ends before its trailer. This is
+    # corruption, not an unsupported compression format, so do not pass it on
+    # to system tar as though it were an unscannable archive.
+    raise ValueError("truncated archive: %s" % exc)
 
 
 def _extract_zip_strip(archive_path, dest_dir, strip=1):

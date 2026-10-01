@@ -5,6 +5,7 @@
 
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,6 +15,7 @@ from bits_helpers.cvmfs_layout import resolve_cvmfs_templates as RT
 from bits_helpers.cvmfs_layout import (
     resolve_release, path_release, bake_release, _declared_release,
     resolve_reuse_from, split_reuse_policy, reuse_module_path_from_templates)
+from bits_helpers.cvmfs_layout import resolve_legacy_bits_reuse_paths
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
@@ -320,6 +322,16 @@ class ResolveReuseFromTest(unittest.TestCase):
             resolve_reuse_from("cvmfs", None)
         with self.assertRaises(ValueError):
             resolve_reuse_from("cvmfs", {})  # layout present but no module_path
+
+    def test_legacy_bits_install_root_resolves_sibling_module_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            arch = "el9_amd64_gcc14"
+            install = os.path.join(root, arch)
+            module = os.path.join(root, "MODULES", arch)
+            os.makedirs(os.path.join(install, "external"))
+            os.makedirs(module)
+            self.assertEqual(resolve_legacy_bits_reuse_paths(install), (module, install))
+            self.assertEqual(resolve_legacy_bits_reuse_paths(module), (module, install))
 
 
 class SplitReusePolicyTest(unittest.TestCase):

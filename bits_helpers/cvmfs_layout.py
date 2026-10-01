@@ -85,6 +85,27 @@ def resolve_reuse_from(reuse_from, layout):
     return reuse_from
 
 
+def resolve_legacy_bits_reuse_paths(path):
+    """Resolve the paired roots of a legacy Bits ``sw`` deployment.
+
+    Supports either ``<sw>/<arch>`` (the installed packages) or
+    ``<sw>/MODULES/<arch>`` (the modulefiles). Returns ``(module_root,
+    install_root)`` only when the sibling trees are present, otherwise None.
+    """
+    if not path or path == "cvmfs":
+        return None
+    path = os.path.abspath(path)
+    arch = os.path.basename(path)
+    if (os.path.isdir(os.path.join(path, "external")) and
+            os.path.isdir(os.path.join(os.path.dirname(path), "MODULES", arch))):
+        return os.path.join(os.path.dirname(path), "MODULES", arch), path
+    if (os.path.basename(os.path.dirname(path)) == "MODULES" and
+            os.path.isdir(os.path.join(os.path.dirname(os.path.dirname(path)), arch,
+                                       "external"))):
+        return path, os.path.join(os.path.dirname(os.path.dirname(path)), arch)
+    return None
+
+
 def reuse_module_path_from_templates(defaults_meta, architecture, injected_prefix=None,
                                      release="", arch=None):
     """Derive the modulefiles BASE dir from the group's ``cvmfs_modules_template``.

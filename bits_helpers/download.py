@@ -97,7 +97,8 @@ def _wait_for_sentinel(path, timeout=600.0, poll=0.25):
             break
         if time() >= deadline:
             warning("Timed out after %.0fs waiting for download sentinel %s; "
-                    "proceeding without it.", timeout, sentinel)
+                    "retrying rather than writing concurrently.", timeout,
+                    sentinel)
             break
         sleep(poll)
 
@@ -232,7 +233,21 @@ def downloadGit(source, dest, work_dir):
             "%s\n\n"
             "resulted in:\n%s" % (gitroot, command % args, output))
         return False
-    return packCheckout(args["tempdir"], args["dest"], args["export"])
+    # Build beside the cache destination, then publish only a complete archive.
+    # Multiple processes must never write into the same final tarball: callers
+    # can race after a stale/expired lock or when sharing a cache across jobs.
+    tmp_dest = "{}.{}.{}.tmp".format(args["dest"], os.getpid(), int(time() * 1000000))
+    try:
+        if not packCheckout(args["tempdir"], tmp_dest, args["export"]):
+            return False
+        os.replace(tmp_dest, args["dest"])
+        return True
+    finally:
+        try:
+            if exists(tmp_dest):
+                unlink(tmp_dest)
+        except OSError:
+            pass
 
 
 def parseGitUrl(url):
@@ -489,17 +504,11 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
             break
         _wait_for_sentinel(realFile)
         _sent = _sentinel_path(realFile)
-        if os.path.exists(_sent):
-            if _sentinel_is_stale(_sent):
-                try:
-                    os.unlink(_sent)      # break the dead owner's sentinel
-                except OSError:
-                    pass
-            else:
-                # Wait timed out with a live owner still holding it: proceed
-                # unguarded (pre-existing behaviour) rather than looping
-                # forever — the atomic tmp+rename write keeps this safe.
-                break
+        if os.path.exists(_sent) and _sentinel_is_stale(_sent):
+            try:
+                os.unlink(_sent)      # break the dead owner's sentinel
+            except OSError:
+                pass
     fetched_from_upstream = False
     try:
         if not exists(realFile):
