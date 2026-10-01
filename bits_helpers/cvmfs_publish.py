@@ -258,7 +258,8 @@ def _prepub_max_tar(session, prepub_url):
 
 
 def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
-                  direct_s3=False, bearer_auth=False, no_verify_tls=False):
+                  direct_s3=False, bearer_auth=False, no_verify_tls=False,
+                  identity_path="", identity_hash=""):
     """POST /api/v1/jobs for the INGEST path: the raw tar IS the payload (prepub's
     gateway does the chunk/compress/upload). Mirrors the CI's `_post_tar` ingest
     branch — sends the tar plus its sha256, and SIGNS tar_sha256 so prepub can
@@ -287,6 +288,12 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         signed_fields["build_id"] = build_id
     if direct_s3:
         signed_fields["direct_s3"] = "true"
+    # identity_path: prepub re-checks it just before committing and finishes a
+    # job whose content appeared meanwhile (a rerun queued behind the original).
+    if identity_path:
+        signed_fields["identity_path"] = identity_path
+        if identity_hash:   # the .meta.json hash that makes it this build's
+            signed_fields["identity_hash"] = identity_hash
     # body_hash BINDS the tar to the signature: prepub re-hashes the uploaded
     # tar and the MAC only matches if the same digest was signed. Signing
     # tar_sha256 as a field is NOT enough — the httpsig body-hash component is
@@ -304,6 +311,10 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         fields["build_id"] = (None, build_id)
     if direct_s3:
         fields["direct_s3"] = (None, "true")
+    if identity_path:
+        fields["identity_path"] = (None, identity_path)
+        if identity_hash:
+            fields["identity_hash"] = (None, identity_hash)
     with open(tar_file, "rb") as tfh:
         fields["tar"] = ("pkg.tar", tfh, "application/octet-stream")
         try:
@@ -395,13 +406,17 @@ def _writes_outside_pkgroot(before, after, pkgroot):
                   if p != root and not p.startswith(root + os.sep))
 
 
-def _publish_tar(ctx, path, tar, label, fp=None):
+def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash=""):
     """Publish ONE prepared tar via the configured path; return its job id and
     remove the tar. INGEST (default): POST the tar itself with submit_ingest — the
     gateway chunks it. STAGED: cvmfs-stage the tar to an S3 prefix (always, so
     --dry-run still yields the catalog hash) then submit_staged. --dry-run submits
-    nothing. A non-None fp prints the mtime-independent FINGERPRINT (verify hook)."""
+    nothing. A non-None fp prints the mtime-independent FINGERPRINT (verify hook).
+    identity, on the ingest path, is the path whose presence means this content
+    is published; not sent when replacing, which publishes over it on purpose."""
     ingest = ctx.get("publish_path") == "ingest"
+    if ctx.get("replace_on_conflict"):
+        identity = ""
     submit = ctx.get("submit", True)
     try:
         if ingest:
@@ -409,7 +424,9 @@ def _publish_tar(ctx, path, tar, label, fp=None):
                                  tar, build_id=ctx.get("build_id", ""),
                                  direct_s3=ctx.get("direct_s3", False),
                                  bearer_auth=ctx.get("bearer_auth", False),
-                                 no_verify_tls=ctx.get("no_verify_tls", False))
+                                 no_verify_tls=ctx.get("no_verify_tls", False),
+                                 identity_path=identity,
+                                 identity_hash=identity_hash if identity else "")
                    if submit else (fp or ""))
         else:
             prefix, catalog = stage_tar(
@@ -880,7 +897,8 @@ def publish_one(spec, ctx):
     # Publish once: with a packages template a package's path is its identity,
     # so one that is already there (same build hash) is not sent again.
     skip_pkg = False   # the tree is there: publish only its missing modulefile
-    if (ctx.get("templates") or {}).get("packages") and ctx.get("submit", True):
+    publish_once = bool((ctx.get("templates") or {}).get("packages"))
+    if publish_once and ctx.get("submit", True):
         path = package_path(spec, ctx)
         state = published_state(ctx, path)
         if state and state.get("exists"):
@@ -964,7 +982,9 @@ def publish_one(spec, ctx):
             subprocess.run(["tar", "-cf", pkg_tar, "--hard-dereference",
                             "-C", pkgroot, "."], check=True)
             _lbl = "%s@%s(pkg)" % (pkg, vdir)
-            jid = _publish_tar(ctx, path, pkg_tar, _lbl, fp=_fp)
+            jid = _publish_tar(ctx, path, pkg_tar, _lbl, fp=_fp,
+                               identity=path if publish_once else "",
+                               identity_hash=spec.get("hash", ""))
             jobs.append((jid, _lbl))
 
         # Modulefile: a package that ships etc/modulefiles/<pkg> publishes it as
@@ -997,7 +1017,8 @@ def publish_one(spec, ctx):
                 finally:
                     _safe_rmtree(_mstage)
                 _mlbl = "%s@%s(modules)" % (pkg, vdir)
-                mjid = _publish_tar(ctx, mod_path, mod_tar, _mlbl)
+                mjid = _publish_tar(ctx, mod_path, mod_tar, _mlbl,
+                                    identity="%s/%s" % (mod_path, vdir) if publish_once else "")
                 jobs.append((mjid, _mlbl))
     finally:
         _safe_rmtree(work_dir)

@@ -1196,6 +1196,45 @@ class TestSubmitIngest(unittest.TestCase):
         sess, posted = self._sess(limit=1000)                 # under: uploads
         self.assertEqual(self._submit("http://limit", sess, size=100), "J")
 
+    def test_identity_path_sent_and_signed(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        sess, _ = self._sess()
+        cap = {}
+        orig_post = sess.post
+        def post(url, files=None, headers=None, timeout=None):
+            cap["files"] = files; return orig_post(url, files, headers, timeout)
+        sess.post = post
+        def fake_auth(token, method, uri, fields=None, **kw):
+            cap["signed"] = fields; return {}
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: sess), \
+             mock.patch.object(pp, "_signed_uri", lambda u: u), \
+             mock.patch.object(pp, "_auth_headers", fake_auth):
+            cp.submit_ingest("http://id", "t", "r", "p/ROOT/6-1", tarf,
+                             identity_path="p/ROOT/6-1", identity_hash="H")
+        self.assertEqual(cap["files"]["identity_path"], (None, "p/ROOT/6-1"))
+        self.assertEqual(cap["signed"]["identity_path"], "p/ROOT/6-1")
+        self.assertEqual(cap["files"]["identity_hash"], (None, "H"))
+        self.assertEqual(cap["signed"]["identity_hash"], "H")
+
+    def test_identity_not_sent_when_replacing(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
+        got = []
+        def fake_submit(*a, **k):
+            got.append(k.get("identity_path")); return "J"
+        ctx = {"publish_path": "ingest", "prepub_url": "u", "token": "t", "repo": "r"}
+        with mock.patch.object(cp, "submit_ingest", fake_submit):
+            cp._publish_tar(dict(ctx), "p", tarf, "l", identity="p")
+            open(tarf, "wb").write(b"z")
+            cp._publish_tar(dict(ctx, replace_on_conflict=True), "p", tarf, "l", identity="p")
+        self.assertEqual(got, ["p", ""])
+
     def test_reset_upload_says_why(self):
         import requests
         sess, _ = self._sess(post_exc=requests.ConnectionError("reset by peer"))
