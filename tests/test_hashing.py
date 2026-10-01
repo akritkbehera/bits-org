@@ -373,3 +373,26 @@ class OwnHashTestCase(unittest.TestCase):
             storeHashes("GCC-Toolchain", specs, considerRelocation=False)
             return specs["GCC-Toolchain"]["remote_revision_hash"]
         self.assertEqual(h("fp_a"), h("fp_b"))
+
+
+class DefaultsLocalIdentityTestCase(unittest.TestCase):
+    def test_defaults_has_identical_local_and_remote_hashes(self):
+        def spec(package, requires=()):
+            return {"package": package, "version": "v1", "commit_hash": "0", "tag": "v1",
+                    "scm_refs": {}, "requires": list(requires), "build_requires": [],
+                    "runtime_requires": [], "is_devel_pkg": False, "recipe": "",
+                    "pkg_family": ""}
+
+        consumers = []
+        for local in (False, True):
+            defaults = spec("defaults-release")
+            specs = {"defaults-release": defaults}
+            storeHashes("defaults-release", specs, considerRelocation=False)
+            self.assertEqual(defaults["local_revision_hash"], defaults["remote_revision_hash"])
+            self.assertEqual(defaults["local_hashes"], defaults["remote_hashes"])
+            defaults["hash"] = defaults["local_revision_hash" if local else "remote_revision_hash"]
+            consumer = specs["consumer"] = spec("consumer", ("defaults-release",))
+            storeHashes("consumer", specs, considerRelocation=False)
+            self.assertNotEqual(consumer["local_revision_hash"], consumer["remote_revision_hash"])
+            consumers.append(consumer["remote_revision_hash"])
+        self.assertEqual(consumers[0], consumers[1])

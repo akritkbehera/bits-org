@@ -320,7 +320,10 @@ def storeHashes(package, specs, considerRelocation):
     list({h.hexdigest() for _, _, h in h_alternatives} - {spec["remote_revision_hash"]})
   # The local hash must differ from the remote hash to avoid conflicts where
   # the remote has a package with the same hash as an existing local revision.
-  h_all("local")
+  # defaults-release is never uploaded or recalled. Keep its dependency
+  # identity stable while the revision label can still be localN.
+  if spec["package"] != "defaults-release":
+    h_all("local")
   spec["local_revision_hash"] = h_default.hexdigest()
   spec["local_hashes"] = [spec["local_revision_hash"]] + \
     list({h.hexdigest() for _, _, h, in h_alternatives} - {spec["local_revision_hash"]})
