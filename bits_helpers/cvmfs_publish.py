@@ -240,6 +240,23 @@ def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
     return jid
 
 
+_MAX_TAR = {}   # prepub URL -> its advertised per-tar limit (None: not said)
+
+
+def _prepub_max_tar(session, prepub_url):
+    """prepub's per-package tar limit from /api/v1/health, cached per URL once
+    the node has answered. None when it does not advertise one (older prepub)
+    or cannot be asked right now: the upload then goes ahead and prepub itself
+    decides, and the next package asks again."""
+    if prepub_url not in _MAX_TAR:
+        try:
+            r = session.get("%s/api/v1/health" % prepub_url.rstrip("/"), timeout=30)
+            _MAX_TAR[prepub_url] = int(r.json().get("max_tar_size") or 0) or None
+        except Exception:                   # best-effort: never blocks a publish
+            return None
+    return _MAX_TAR[prepub_url]
+
+
 def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
                   direct_s3=False, bearer_auth=False, no_verify_tls=False):
     """POST /api/v1/jobs for the INGEST path: the raw tar IS the payload (prepub's
@@ -248,8 +265,18 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     reject a corrupted upload. direct_s3=True adds the direct_s3 field so
     cvmfs_server writes objects straight to S3 (bypassing the gateway). Signed by
     default; bearer puts the token on the request instead. Returns the job id."""
+    import requests
     from bits_helpers import prepub as _pp
     url = "%s/api/v1/jobs" % prepub_url.rstrip("/")
+    session = _pp._make_session(no_verify_tls, signed=not bearer_auth)
+    # Refuse here what prepub would refuse: it cuts an oversized upload off
+    # mid-stream, which reaches us only as a bare connection reset.
+    size = os.path.getsize(tar_file)
+    limit = _prepub_max_tar(session, prepub_url)
+    if limit and size > limit:
+        raise SystemExit("tar is %s, over prepub's per-package limit of %s"
+                         " (max_tar_size_gib on the prepub node)"
+                         % (_human(size), _human(limit)))
     tar_sha256 = _pp.sha256_file(tar_file)
     # The signed set MUST equal the fields prepub parses, or the digest differs
     # and the publish 401s (reads as auth failure). tar itself is not signed —
@@ -267,7 +294,6 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     headers = _pp._auth_headers(token, "POST", _pp._signed_uri(url),
                                 fields=signed_fields, body_hash=tar_sha256,
                                 bearer_auth=bearer_auth, no_verify_tls=no_verify_tls)
-    session = _pp._make_session(no_verify_tls, signed=not bearer_auth)
     fields = {
         "repo":         (None, repo),
         "path":         (None, path),
@@ -280,7 +306,12 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         fields["direct_s3"] = (None, "true")
     with open(tar_file, "rb") as tfh:
         fields["tar"] = ("pkg.tar", tfh, "application/octet-stream")
-        resp = session.post(url, files=fields, headers=headers, timeout=1800)
+        try:
+            resp = session.post(url, files=fields, headers=headers, timeout=1800)
+        except requests.ConnectionError as exc:
+            raise SystemExit("upload of %s cut off by prepub (%s); prepub refuses"
+                             " an upload that is too large or would fill its"
+                             " spool, see its log" % (_human(size), exc))
     if resp.status_code not in (200, 201, 202):
         raise SystemExit("prepub ingest submit failed: HTTP %s: %s"
                          % (resp.status_code, resp.text[:400]))

@@ -1155,6 +1155,54 @@ class TestSubmitIngest(unittest.TestCase):
         self.assertEqual(cap["files"]["direct_s3"], (None, "true"))   # form field
         self.assertEqual(cap["signed"]["direct_s3"], "true")          # and signed
 
+    def _sess(self, limit=None, post_exc=None):
+        posted = []
+
+        class Health:
+            def json(self): return {"max_tar_size": limit} if limit else {}
+
+        class Resp:
+            status_code = 200; text = ""
+            def json(self): return {"job_id": "J"}
+
+        class Sess:
+            def get(self, url, timeout=None): return Health()
+            def post(self, url, files=None, headers=None, timeout=None):
+                posted.append(url)
+                if post_exc:
+                    raise post_exc
+                return Resp()
+        return Sess(), posted
+
+    def _submit(self, url, sess, size=100):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z" * size)
+        cp._MAX_TAR.pop(url, None)
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: sess), \
+             mock.patch.object(pp, "_signed_uri", lambda u: u), \
+             mock.patch.object(pp, "_auth_headers", lambda *a, **k: {}):
+            return cp.submit_ingest(url, "t", "r", "el9/x", tarf)
+
+    def test_oversized_tar_refused_before_upload(self):
+        # prepub cuts an oversized upload off as a bare reset; refuse it first.
+        sess, posted = self._sess(limit=10)
+        with self.assertRaises(SystemExit) as cm:
+            self._submit("http://limit", sess, size=100)
+        self.assertIn("max_tar_size_gib", str(cm.exception))
+        self.assertEqual(posted, [])
+        sess, posted = self._sess(limit=1000)                 # under: uploads
+        self.assertEqual(self._submit("http://limit", sess, size=100), "J")
+
+    def test_reset_upload_says_why(self):
+        import requests
+        sess, _ = self._sess(post_exc=requests.ConnectionError("reset by peer"))
+        with self.assertRaises(SystemExit) as cm:
+            self._submit("http://reset", sess)
+        self.assertIn("cut off by prepub", str(cm.exception))
+
 
 class TestPublishTar(unittest.TestCase):
     def _tar(self):
