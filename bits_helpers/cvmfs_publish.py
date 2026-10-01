@@ -1340,6 +1340,9 @@ def _publish_merged_view(ctx, specs, emit):
         return 0
     staging = tempfile.mkdtemp(prefix="mview-", dir=ctx["tmp_dir"])
     try:
+        # mkdtemp makes it 0700, and the tar's "." entry gives the published
+        # view root that mode: nobody but the owner could enter it.
+        os.chmod(staging, 0o755)
         res = merged_view(ctx, specs, staging, view_path)
         for path, winner, loser in res["conflicts"]:
             sys.stderr.write("[publish] merged view: %s from %s, not %s\n"

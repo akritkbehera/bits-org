@@ -1056,7 +1056,9 @@ class TestPackagesAndReleaseView(unittest.TestCase):
 
         def names(t):
             with tarfile.open(t) as tf:
+                modes.update((m.name, m.mode) for m in tf.getmembers())
                 return tf.getnames()
+        modes = {}
         with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True}):
             self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
         self.assertEqual(lines, ["SKIPPED merged view: already published at g/views/LCG_110/el9-gcc15-opt"])
@@ -1069,6 +1071,8 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         # -c / -C true adds the root marker itself; a second one fails the ingest.
         self.assertNotIn("./.cvmfscatalog", sent[0][1])
         self.assertIn("./bin/root", sent[0][1])
+        # The view root must be enterable by everyone, not mkdtemp's 0700.
+        self.assertEqual(modes["."] & 0o777, 0o755)
         self.assertEqual(lines, ["PUBLISHED JM merged-view@g/views/LCG_110/el9-gcc15-opt"])
 
     def test_base_module_published_when_missing(self):
