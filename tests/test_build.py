@@ -678,13 +678,14 @@ class BuildTestCase(unittest.TestCase):
 
         # Mark CMake reused-from-CVMFS; Boost stays locally built.
         specs["CMake"]["reuse_module_id"] = "CMake/3.30.6-1"
+        specs["CMake"]["reuse_pkg_family"] = "external"
         out = generate_initdotsh("App", specs, "slc7_x86-64", post_build=False,
                                  reuse_cvmfs_base="/cvmfs/x/Packages")
         # CMake sourced from its DEPLOYED init.sh on CVMFS, under a WORK_DIR
         # override. BITS_ARCH_PREFIX="." (non-null) survives the deployed init.sh's
         # `:=` default, which "" would not.
         self.assertIn('WORK_DIR="/cvmfs/x/Packages"; BITS_ARCH_PREFIX="."', out)
-        self.assertIn('. "/cvmfs/x/Packages/CMake/3.30.6-1/etc/profile.d/init.sh"', out)
+        self.assertIn('. "/cvmfs/x/Packages/external/CMake/3.30.6-1/etc/profile.d/init.sh"', out)
         # ...and NOT from the local tree; Boost (built) still is.
         self.assertNotIn('"$WORK_DIR/$BITS_ARCH_PREFIX"/CMake/3.30.6-1/etc/profile.d/init.sh',
                          out)
@@ -729,6 +730,31 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn(cmake_line, out)
         self.assertLess(out.index(tools_line), out.index(cmake_line),
                         "local prerequisite Tools must be sourced before reused CMake")
+
+    def test_initdotsh_reuse_prepares_transitive_local_prerequisite(self) -> None:
+        """A deployed reused package's init may source dependencies absent from
+        CVMFS. Prepare the local prerequisite first so its revision guard skips
+        the missing CVMFS copy."""
+        base = {"revision": "1", "hash": "h", "commit_hash": "c"}
+        specs = {
+            "App": dict(base, package="App", version="1.0", requires=["gcc"]),
+            "gcc": dict(base, package="gcc", version="14.3.1",
+                        requires=["gcc-prerequisites"]),
+            "gcc-prerequisites": dict(base, package="gcc-prerequisites",
+                                      version="1.0", requires=[]),
+        }
+        specs["gcc"]["reuse_module_id"] = "gcc/14.3.1-rgcc"
+        specs["gcc"]["reuse_pkg_family"] = "external"
+        out = generate_initdotsh("App", specs, "el9_amd64_gcc14",
+                                 post_build=False,
+                                 reuse_cvmfs_base="/cvmfs/bits/sw/el9_amd64_gcc14")
+        local_prereq = ('"$WORK_DIR/$BITS_ARCH_PREFIX"/gcc-prerequisites/'
+                        '1.0-1/etc/profile.d/init.sh')
+        deployed_gcc = ('/cvmfs/bits/sw/el9_amd64_gcc14/external/gcc/'
+                        '14.3.1-rgcc/etc/profile.d/init.sh')
+        self.assertIn(local_prereq, out)
+        self.assertIn(deployed_gcc, out)
+        self.assertLess(out.index(local_prereq), out.index(deployed_gcc))
 
 
 if __name__ == '__main__':

@@ -329,6 +329,16 @@ def harvest_trusted(module_root, install_base):
     corpus, hashes, build_id = {}, {}, ""
     if not (module_root and os.path.isdir(module_root)):
         return corpus, hashes, build_id
+    # A deployment can keep package trees directly under the install root
+    # (Packages/<pkg>/<verrev>) or under a family category (e.g.
+    # <arch>/external/<pkg>/<verrev>). Cache the available roots once so the
+    # metadata lookup remains cheap for large module trees.
+    package_roots = [install_base]
+    if install_base and os.path.isdir(install_base):
+        package_roots.extend(
+            os.path.join(install_base, entry)
+            for entry in sorted(os.listdir(install_base))
+            if os.path.isdir(os.path.join(install_base, entry)))
     for pkg in sorted(os.listdir(module_root)):
         pkg_dir = os.path.join(module_root, pkg)
         if not os.path.isdir(pkg_dir):
@@ -340,13 +350,19 @@ def harvest_trusted(module_root, install_base):
             with open(mfile) as fh:
                 rendered = strip_base_dep(rewrite_module_anchor(fh.read(), install_base))
             module_id = "%s/%s" % (pkg, verrev)
-            meta = _read_meta(os.path.join(install_base, pkg, verrev, ".meta.json")) or {}
+            meta = None
+            for package_root in package_roots:
+                meta = _read_meta(os.path.join(package_root, pkg, verrev, ".meta.json"))
+                if meta:
+                    break
+            meta = meta or {}
             pkg_info = meta.get("package") if isinstance(meta.get("package"), dict) else {}
             hashes[module_id] = pkg_info.get("hash", "")
             build_id = build_id or meta.get("build_id", "")
             corpus[module_id] = {
                 "version": pkg_info.get("version"),
                 "revision": pkg_info.get("revision"),
+                "pkg_family": pkg_info.get("pkg_family", ""),
                 "deps": _module_load_deps(rendered),
                 "rendered": rendered,
                 "base_prefix": install_base,
@@ -407,6 +423,16 @@ def overlay_reuse_module(overlay_path, package, want_hash=None, want_version=Non
     return None
 
 
+def overlay_module_metadata(overlay_path, module_id):
+    """Return the metadata stored beside a reusable overlay modulefile."""
+    import os
+    package, sep, verrev = (module_id or "").partition("/")
+    if not sep:
+        return {}
+    return (_read_meta(os.path.join(overlay_path or "", package,
+                                    ".%s.meta.json" % verrev)) or {})
+
+
 def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):
     """Module-side ``.meta.json`` payload for a corpus *entry* (D6 overlay).
 
@@ -424,6 +450,7 @@ def build_module_meta(module_id, entry, build_id, package_hash="", abi_tag=""):
         "hash": package_hash,
         "build_id": build_id,
         "abi_tag": abi_tag,
+        "pkg_family": entry.get("pkg_family", ""),
         "base_prefix": entry.get("base_prefix", ""),
         "deps": list(entry.get("deps", [])),
         "imported": True,
