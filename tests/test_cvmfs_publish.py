@@ -570,6 +570,9 @@ class TestPublishOneLayout(unittest.TestCase):
 
     def test_modules_use_build_arch_and_hook_gets_templates(self):
         import subprocess
+        if "GNU tar" not in subprocess.run(["tar", "--version"], capture_output=True,
+                                           text=True).stdout:
+            self.skipTest("publish packs with GNU tar --hard-dereference (not bsdtar)")
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
@@ -824,7 +827,9 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertIn("[file join [file dirname $ModulesCurrentModulefile] ../../../Packages]", text)
         self.assertIn("setenv BASEDIR $base_path", text)
         # Resolves to the Packages dir (checked with tclsh when available).
-        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        # realpath: tclsh's [file normalize] resolves a symlinked temp dir
+        # (macOS: /var -> /private/var).
+        d = os.path.realpath(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, d, True)
         mf = os.path.join(d, mods, "BASE", "1.0")
         os.makedirs(os.path.dirname(mf))
         want = os.path.normpath(os.path.join(d, "g/el9-gcc15-opt/Packages"))
@@ -1023,7 +1028,9 @@ class TestPackagesAndReleaseView(unittest.TestCase):
     def test_view_setup_locates_itself(self):
         import subprocess
         import bits_helpers.cvmfs_publish as cp
-        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        # realpath: setup.sh reports the logical dir; keep it equal to the real
+        # one on a symlinked temp dir (macOS: /var -> /private/var).
+        d = os.path.realpath(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, d, True)
         for sub in ("bin", "lib", "lib/python3.12/site-packages"):
             os.makedirs(os.path.join(d, sub))
         cp.write_view_setup(d, "/cvmfs/r/g/views/X/a")
