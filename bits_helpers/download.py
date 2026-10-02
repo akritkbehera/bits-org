@@ -374,7 +374,9 @@ def downloadPip(source, dest, work_dir):
 
 def downloadFile(source, dest, work_dir):
     import shutil
-    shutil.copy(source.removeprefix("file:/"), dest)
+    # str.removeprefix is Python >= 3.9; CI still runs 3.8.
+    path = source[len("file:/"):] if source.startswith("file:/") else source
+    shutil.copy(path, dest)
     return
 
 downloadHandlers = {

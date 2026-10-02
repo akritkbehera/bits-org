@@ -120,7 +120,9 @@ class StartSiteTests(unittest.TestCase):
             return any(isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "start_monitor"
                        for n in ast.walk(node))
         gated = [n for n in ast.walk(tree) if isinstance(n, ast.If)
-                 and "builders" in ast.unparse(n.test) and calls_start(n)]
+                 and any("builders" in (getattr(x, "attr", None), getattr(x, "id", None))
+                         for x in ast.walk(n.test))   # no ast.unparse: Python 3.8
+                 and calls_start(n)]
         self.assertTrue(calls_start(tree))
         self.assertEqual(gated, [])
 

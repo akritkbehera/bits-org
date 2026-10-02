@@ -237,7 +237,7 @@ def storeHashes(package, specs, considerRelocation):
   if "sources" in spec:
     for src in spec["sources"]:
       if src.startswith("file://"):
-        with open(src.removeprefix("file:/")) as ref:
+        with open(src[len("file:/"):]) as ref:  # keeps the leading "/"
           file_content = "".join(ref.readlines())
           h_all(file_content)
       else:

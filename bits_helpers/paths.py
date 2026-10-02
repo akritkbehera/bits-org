@@ -31,7 +31,7 @@ def resolveLocalPath(configDir, s):
     The resolved path.
   """
   if s.startswith("file://"):
-    return f"file:/" + os.path.abspath(resolveFilename({}, s.removeprefix("file://"), configDir, {}, ext="")[0])
+    return f"file:/" + os.path.abspath(resolveFilename({}, s[len("file://"):], configDir, {}, ext="")[0])
   else:
     return s
 
