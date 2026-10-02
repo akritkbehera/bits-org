@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
+import json
 import os
 import tempfile
 import unittest
@@ -31,6 +32,31 @@ class TestOverlayDispatch(unittest.TestCase):
             self.assertNotIn("myfmt", overlay._builtin_formats())
             with patch.dict(os.environ, {"BITS_OVERLAY_PLUGINS": d}):
                 self.assertEqual(overlay.main(["myfmt", "a"]), 42)
+
+
+class TestLcgCollect(unittest.TestCase):
+    def _meta(self, d, name, family=""):
+        os.makedirs(d)
+        with open(os.path.join(d, ".meta.json"), "w") as fh:
+            json.dump({"package": {"name": name, "version": "1", "pkg_family": family}}, fh)
+
+    def test_family_packages_are_found(self):
+        from bits_helpers.overlay.lcg import collect
+        with tempfile.TemporaryDirectory() as wd:
+            a = os.path.join(wd, "x86_64-el9-gcc14-opt")
+            self._meta(os.path.join(a, "ROOT", "1-1"), "ROOT")
+            self._meta(os.path.join(a, "MCGenerators", "evtgen", "1-1"), "evtgen", "MCGenerators")
+            # A .meta.json inside a package's own tree is not a package,
+            # even when it is not valid JSON; nor is a <pkg>/latest link.
+            self._meta(os.path.join(a, "ROOT", "1-1", "etc"), "stray")
+            os.makedirs(os.path.join(a, "ROOT", "1-1", "share"))
+            with open(os.path.join(a, "ROOT", "1-1", "share", ".meta.json"), "w") as fh:
+                fh.write("[")
+            os.symlink("1-1", os.path.join(a, "ROOT", "latest"))
+            records, warnings, errors = collect(wd, "x86_64-el9-gcc14-opt")
+        self.assertEqual((errors, warnings), ([], []))
+        self.assertEqual(sorted(records), ["ROOT", "evtgen"])
+        self.assertTrue(records["evtgen"][0].endswith("MCGenerators/evtgen/1-1"))
 
 
 if __name__ == "__main__":

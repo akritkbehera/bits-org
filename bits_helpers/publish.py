@@ -433,14 +433,25 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                       "certification is scoped per architecture and a re-run "
                       "supersedes them)", _bom_failed)
                 sys.exit(1)
-            # NOTICE + LICENSE-SOURCE-OFFER.txt next to the release's BOMs:
+            # NOTICE + LICENSE-SOURCE-OFFER.txt (+ SBOMs) next to the release's BOMs:
             # attribution and the GPL source offer are discharged mechanically
             # from the FULL manifest entries (which carry license,
             # redistributable and the source archives' store paths).
             # Best-effort — a compliance-file failure never fails a publish.
+            # The SBOMs describe the stored objects: their sha256 is the one the
+            # BOM (and so the signed manifest) records, not the local build's.
+            # They list what was published plus, marked, what the licence keeps
+            # out; a package skipped for having no tarball is not in the release.
+            from bits_helpers.sync import redistributable_forms as _forms
+            _stored = {m["hash"]: m.get("tarball_sha256") for m in packages if m.get("hash")}
+            _sbom_manifest = dict(manifest_doc, build_id=build_id, packages=[
+                dict(x, tarball_sha256=_stored[x["hash"]]) if x.get("hash") in _stored else x
+                for x in entries if isinstance(x, dict) and (
+                    x.get("hash") in _stored
+                    or "binaries" not in _forms(x.get("redistributable", "all")))])
             from bits_helpers.notice import upload_release_compliance
             upload_release_compliance(w.s3, w.writeStore, build_id, entries,
-                                      store_url=store_url)
+                                      store_url=store_url, manifest=_sbom_manifest)
 
     banner("%s %d package(s) to %s",
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)

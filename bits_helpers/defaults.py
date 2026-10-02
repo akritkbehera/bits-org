@@ -18,6 +18,10 @@ from bits_helpers.recipe import getRecipeReader, parseRecipe
 from bits_helpers.paths import resolveDefaultsFilename
 from bits_helpers.utilities import asList
 
+# Recipe keys that change what a package fetches (its sources, tag, patches).
+SOURCE_KEYS = frozenset({"version", "tag", "source", "sources", "patches"})
+
+
 def validateDefaults(finalPkgSpec, defaults):
   if "valid_defaults" not in finalPkgSpec:
     return (True, "", [])
@@ -161,6 +165,7 @@ def readDefaults(configDir, defaults, error, architecture):
   valid_defaults_exempt = []   # structural/overlay defaults, in chain order
   missing_defaults = []        # names with no defaults-<name>.sh on the search path
   defaults_dirs = {}           # name -> recipe dir its defaults file came from
+  override_dirs = {}           # override key -> dir of the (last) profile setting it
 
   for xdefaults in defaults:
     xDefaults = resolveDefaultsFilename(xdefaults, configDir, failOnError=False)
@@ -204,6 +209,11 @@ def readDefaults(configDir, defaults, error, architecture):
       # last wins).
       if "overrides" in xMeta:
         xMeta["overrides"] = asDict(xMeta["overrides"])
+        # Keyed as parseDefaults keys the merged overrides; only a profile that
+        # changes what the package fetches claims it (the blocks deep-merge).
+        for key, block in xMeta["overrides"].items():
+          if SOURCE_KEYS & set(block or {}):
+            override_dirs[str(key).split("@", 1)[0].lower()] = defaults_dirs.get(xdefaults)
       defaultsMeta = merge_dicts(defaultsMeta, xMeta)
 
   # Store the collected per-default qualifiers so compute_combined_arch can
@@ -220,6 +230,7 @@ def readDefaults(configDir, defaults, error, architecture):
   defaultsMeta["_valid_defaults_exempt"] = valid_defaults_exempt
   defaultsMeta["_missing_defaults"] = missing_defaults
   defaultsMeta["_defaults_dirs"] = defaults_dirs
+  defaultsMeta["_override_dirs"] = override_dirs
 
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 

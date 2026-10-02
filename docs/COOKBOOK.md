@@ -251,7 +251,7 @@ First, compute and write checksums for all sources:
 bits build --write-checksums MyPackage
 ```
 
-This creates or updates `checksums/MyPackage.checksum` in the recipe directory. Then enforce them on all future builds:
+This creates or updates `checksums/MyPackage.checksum` in the recipe directory. To record a whole recipe repository without building, run `bits checksums -c lcg.bits --write` (and `bits checksums -c stacks.bits --write --defaults all --recipes lcg.bits` for a repository of defaults profiles, for the sources their overrides introduce). Then enforce them on all future builds:
 
 ```bash
 bits build --enforce-checksums MyPackage

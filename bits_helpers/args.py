@@ -308,7 +308,8 @@ def add_architecture_arguments(subparsers, ctx):
 def add_version_arguments(subparsers, ctx):
   """`bits version` — display the version and architecture (no options)."""
   return subparsers.add_parser("version", help="display %(prog)s version",
-                               description="Display %(prog)s and architecture.")
+                               description="Display the %(prog)s version (tag, commit and "
+                                           "date) and the architecture. Same as --version.")
 
 
 def add_clean_arguments(subparsers, ctx):
@@ -930,9 +931,10 @@ def add_cvmfs_path_arguments(subparsers, ctx):
       help="Value for the {day} nightly slot; must match the build (pass the same "
            "--day). Default: auto UTC weekday when the template uses {day}.")
   cvmfs_path_parser.add_argument(
-      "--kind", dest="kind", choices=["releases", "modules", "shared"],
-      default="releases",
-      help="Which template to resolve (default: %(default)s).")
+      "--kind", dest="kind", choices=["releases", "packages", "modules", "shared"],
+      default=None,
+      help="Which template to resolve (default: packages when the group has a "
+           "cvmfs_packages_template, else releases).")
   cvmfs_path_parser.add_argument(
       "--admin", dest="admin", action="store_true", default=False,
       help="Resolve the admin (group-prefix) path. Without it, a user path "
@@ -1263,6 +1265,72 @@ def add_compliance_arguments(subparsers, ctx):
                                        "architectures' common manifests after the purge. Without it the next "
                                        "CI certification heals them (removed objects are dropped as missing)."))
   return compliance_parser
+
+
+def add_sbom_arguments(subparsers, ctx):
+  """`bits sbom` — export a build manifest as a CycloneDX / SPDX SBOM."""
+  sbom_parser = subparsers.add_parser(
+      "sbom",
+      help="export a build manifest as an SBOM (CycloneDX 1.6 / SPDX 2.3 JSON)",
+      description=(
+          "Write the Software Bill of Materials of a build, from its bits build "
+          "manifest (MANIFESTS/bits-manifest-*.json): CycloneDX 1.6 JSON "
+          "(sbom.cdx.json) and/or SPDX 2.3 JSON (sbom.spdx.json). Deterministic: "
+          "the same manifest gives identical files. Manifests before schema v4 "
+          "have no dependency edges; their SBOM lists components only."
+      ),
+  )
+  sbom_parser.add_argument("manifest", metavar="MANIFEST",
+                           help="bits build manifest JSON file.")
+  sbom_parser.add_argument("--format", dest="format", choices=["cyclonedx", "spdx", "both"],
+                           default="both", help="SBOM format(s). Default: %(default)s.")
+  sbom_parser.add_argument("-o", "--output-dir", dest="outDir", metavar="DIR", default=".",
+                           help=("Directory to write sbom.cdx.json / sbom.spdx.json into, or '-' "
+                                 "for stdout (single --format). Default: the current directory."))
+  sbom_parser.add_argument("--build-id", dest="buildId", metavar="ID", default=None,
+                           help="Release name in the SBOM. Default: the manifest's build id.")
+  return sbom_parser
+
+
+def add_checksums_arguments(subparsers, ctx):
+  """`bits checksums` — compute/record the checksums of a whole recipe repository."""
+  cp = subparsers.add_parser(
+      "checksums",
+      help="compute and record source/patch checksums and git commit pins of a recipe repository",
+      description=(
+          "Check every recipe of a recipe repository without building: download each "
+          "tarball source (through the download cache; the remote store first when "
+          "given) and hash it, hash each patch, and resolve each git tag to its commit "
+          "(a branch moves and is never pinned). With --defaults, also the sources the "
+          "repository's defaults-*.sh profiles override recipes to (from --recipes "
+          "repositories), recorded in this repository's checksums/. Results are compared "
+          "with the existing checksums/<pkg>.checksum files and inline url,algo:hex "
+          "suffixes; --write adds the new entries and never overwrites one that "
+          "disagrees. Exit status 1 on a mismatch or a failure."),
+  )
+  cp.add_argument("pkgname", nargs="*", metavar="PACKAGE",
+                  help="Only these packages (default: all).")
+  ctx.config_dir(cp, help="The recipe repository to check and write (default: %(default)s).")
+  cp.add_argument("--recipes", dest="recipeDirs", action="append", default=[], metavar="DIR",
+                  help=("Another recipe repository, searched after CONFIGDIR for the recipes "
+                        "the profiles override (repeatable; e.g. lcg.bits)."))
+  cp.add_argument("--defaults", dest="defaultsProfiles", metavar="PROFILES", default=None,
+                  help=("Also check the overrides of CONFIGDIR's defaults-*.sh profiles: "
+                        "'all' or a comma-separated list (e.g. dev3,dev4)."))
+  cp.add_argument("--write", dest="write", action="store_true", default=False,
+                  help="Record new entries in CONFIGDIR/checksums/. Default: report only.")
+  ctx.work_dir(cp, help="Work directory holding the download cache (SOURCES/cache). Default: %(default)s.")
+  ctx.architecture(cp, help=("Architecture for $(...) source expressions; every (arch)url "
+                             "variant is checked regardless. Default: %(default)s."))
+  cp.add_argument("--remote-store", dest="remoteStore", metavar="URL", default="",
+                  help=("Store whose source mirror is tried before upstream (read only). "
+                        "Default: upstream only."))
+  cp.add_argument("--fresh", dest="fresh", action="store_true", default=False,
+                  help=("Download every source again from upstream into a private cache, "
+                        "ignoring the download cache and the remote store."))
+  cp.add_argument("-j", "--jobs", dest="jobs", type=int, default=8, metavar="N",
+                  help="Parallel downloads / git queries. Default: %(default)s.")
+  return cp
 
 
 def add_build_arguments(subparsers, ctx):
@@ -1775,6 +1843,15 @@ def doParseArgs():
   complete documentation please refer to https://alisw.github.io/alibuild.
   """)
 
+  from bits_helpers import _VERSION_INFO
+  from bits_helpers.version import version_line
+  class _PrintVersion(argparse.Action):   # argparse's "version" re-wraps the line
+    def __call__(self, parser, namespace, values, option_string=None):
+      print(version_line(_VERSION_INFO))
+      parser.exit()
+  parser.add_argument("--version", action=_PrintVersion, nargs=0, dest="show_version",
+                      default=argparse.SUPPRESS,
+                      help="Show the bits version (tag, commit and date) and exit.")
   parser.add_argument("-d", "--debug", dest="debug", action="store_true", help="Enable debug log output")
   parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true",
                       help="Print what would happen, without actually doing it.")
@@ -1797,6 +1874,8 @@ def doParseArgs():
   compliance_parser = add_compliance_arguments(subparsers, ctx)
   status_parser = add_status_arguments(subparsers, ctx)
   verify_parser = add_verify_arguments(subparsers, ctx)
+  add_sbom_arguments(subparsers, ctx)
+  add_checksums_arguments(subparsers, ctx)
   stats_parser = add_stats_arguments(subparsers, ctx)
 
   import_parser = add_import_arguments(subparsers, ctx)
@@ -2035,7 +2114,7 @@ def finaliseArgs(args, parser):
 
   # Nothing to finalise for version, architecture, or verify
   # if args.action in ["version", "analytics", "architecture"]:
-  if args.action in ["version", "architecture", "verify", "stats"]:
+  if args.action in ["version", "architecture", "verify", "stats", "sbom", "checksums"]:
     return args
 
   # Minimal finalisation for cvmfs-path: only the defaults profile is loaded

@@ -53,7 +53,8 @@ def _load_meta(meta_path):
 
 
 def collect(work_dir, arch):
-    """Scan ``<work_dir>/<arch>`` for installed packages.
+    """Scan ``<work_dir>/<arch>`` for installed packages (``<pkg>/<ver>`` or,
+    with a family, ``<family>/<pkg>/<ver>``).
 
     Returns ``(records, warnings, errors)``:
       * records  — dict name -> (install_dir, meta); newest ``.meta.json`` wins
@@ -66,14 +67,25 @@ def collect(work_dir, arch):
     chosen = {}          # name -> (install_dir, meta, mtime)
     warnings = []
     errors = []
-    for meta_path in sorted(glob.glob(os.path.join(root, "*", "*", ".meta.json"))):
+    # <pkg>/<ver>, or <family>/<pkg>/<ver> for a package with a family.
+    flat = glob.glob(os.path.join(root, "*", "*", ".meta.json"))
+    fam = set(glob.glob(os.path.join(root, "*", "*", "*", ".meta.json")))
+    for meta_path in sorted(flat + list(fam)):
+        if os.path.islink(os.path.dirname(meta_path)):
+            continue   # <pkg>/latest* links: the real version dir is scanned too
         try:
             meta = _load_meta(meta_path)
             mtime = os.path.getmtime(meta_path)
         except (OSError, ValueError) as exc:
-            errors.append("%s: %s" % (meta_path, exc))
+            if meta_path not in fam:
+                errors.append("%s: %s" % (meta_path, exc))
             continue
-        pkg = meta.get("package") or {}
+        pkg = (meta.get("package") if isinstance(meta, dict) else None) or {}
+        # Three deep is a package only when its family is that directory;
+        # anything else is a file inside some package's own tree: ignore it.
+        if meta_path in fam and pkg.get("pkg_family") != os.path.basename(
+                os.path.dirname(os.path.dirname(os.path.dirname(meta_path)))):
+            continue
         name, version = pkg.get("name"), pkg.get("version")
         if not name or not version:
             errors.append("%s: .meta.json has no package name/version" % meta_path)

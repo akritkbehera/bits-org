@@ -163,6 +163,19 @@ class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
             "redistributable: false\n")
         self.assertEqual(self._n(base), self._n(extra))
 
+    def test_view_rules_are_hash_invariant(self):
+        # view: only shapes a release's merged view (presentation, applied at
+        # publish time), so it must not change the build hash input.
+        withv = self.HEADER.replace(
+            "requires:\n",
+            "view:\n"
+            "  exclude: [share/doc]\n"
+            "  include: [etc/root]\n"
+            "requires:\n")
+        self.assertEqual(self._n(self.HEADER), self._n(withv))
+        self.assertEqual(self._n(self.HEADER),
+                         self._n(self.HEADER.replace("requires:\n", "view: false\nrequires:\n")))
+
     def test_adding_preload_block_is_hash_invariant(self):
         # The preload: test list (consumed post-publish by `bits preload`) is
         # hash-excluded — its indented block is dropped and editing it must not
@@ -360,3 +373,26 @@ class OwnHashTestCase(unittest.TestCase):
             storeHashes("GCC-Toolchain", specs, considerRelocation=False)
             return specs["GCC-Toolchain"]["remote_revision_hash"]
         self.assertEqual(h("fp_a"), h("fp_b"))
+
+
+class DefaultsLocalIdentityTestCase(unittest.TestCase):
+    def test_defaults_has_identical_local_and_remote_hashes(self):
+        def spec(package, requires=()):
+            return {"package": package, "version": "v1", "commit_hash": "0", "tag": "v1",
+                    "scm_refs": {}, "requires": list(requires), "build_requires": [],
+                    "runtime_requires": [], "is_devel_pkg": False, "recipe": "",
+                    "pkg_family": ""}
+
+        consumers = []
+        for local in (False, True):
+            defaults = spec("defaults-release")
+            specs = {"defaults-release": defaults}
+            storeHashes("defaults-release", specs, considerRelocation=False)
+            self.assertEqual(defaults["local_revision_hash"], defaults["remote_revision_hash"])
+            self.assertEqual(defaults["local_hashes"], defaults["remote_hashes"])
+            defaults["hash"] = defaults["local_revision_hash" if local else "remote_revision_hash"]
+            consumer = specs["consumer"] = spec("consumer", ("defaults-release",))
+            storeHashes("consumer", specs, considerRelocation=False)
+            self.assertNotEqual(consumer["local_revision_hash"], consumer["remote_revision_hash"])
+            consumers.append(consumer["remote_revision_hash"])
+        self.assertEqual(consumers[0], consumers[1])

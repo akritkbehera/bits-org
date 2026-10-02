@@ -307,6 +307,10 @@ class BuildTestCase(unittest.TestCase):
     @patch("bits_helpers.build.open", new=MagicMock(side_effect=dummy_open))
     @patch("codecs.open", new=MagicMock(side_effect=dummy_open))
     @patch("bits_helpers.build.shutil", new=MagicMock())
+    # On macOS doBuild records <workDir>/<arch>/Brewfile (/sw is not writable on
+    # the runner) and stops when Homebrew formulae are not yet installed.
+    @patch("bits_helpers.brew.collect_homebrew", new=MagicMock(return_value=([], [])))
+    @patch("bits_helpers.brew.write_brewfile", new=MagicMock(return_value=""))
     @patch("os.listdir")
     @patch("bits_helpers.build.glob", new=lambda pattern: {
         "*": ["zlib"],

@@ -168,6 +168,32 @@ class TestPublishFromManifest(unittest.TestCase):
         self.assertIn("MANIFESTS/%s/LICENSE-SOURCE-OFFER.txt" % build_id,
                       w.s3.texts)
 
+    def test_sboms_uploaded_with_the_stored_sha(self):
+        # The store kept an object whose sha differs from the local build's:
+        # the SBOM, like the BOM, must describe the stored bytes.
+        self.manifest["packages"][0]["tarball_sha256"] = "sha256:" + "1" * 64
+        with open(self.man_path, "w") as fh:
+            json.dump(self.manifest, fh)
+        stored = "sha256:" + "2" * 64
+
+        class Writer(_FakeWriter):
+            def upload_symlinks_and_tarball(self, spec):
+                super().upload_symlinks_and_tarball(spec)
+                spec["store_tarball_sha256"] = stored
+        self.writer = w = Writer()
+        with patch.object(sync, "remote_from_url", return_value=w):
+            publish._publish_from_manifest(ARCH, self.work, "https://s3.example/mybucket",
+                                           _Parser(), manifest=self.man_path)
+        build_id = build_id_from_manifest(self.manifest)
+        cdx = json.loads(w.s3.texts["MANIFESTS/%s/sbom.cdx.json" % build_id])
+        spdx = json.loads(w.s3.texts["MANIFESTS/%s/sbom.spdx.json" % build_id])
+        top = [c for c in cdx["components"] if c["name"] == "Top"][0]
+        self.assertEqual(top["hashes"], [{"alg": "SHA-256", "content": "2" * 64}])
+        self.assertEqual(cdx["metadata"]["component"]["name"], build_id)
+        self.assertEqual(spdx["name"], build_id)
+        # Published + licence-excluded (marked); NoTar never reached the store.
+        self.assertEqual(sorted(c["name"] for c in cdx["components"]), ["Secret", "Top"])
+
     def test_non_redistributable_never_uploaded_nor_in_bom(self):
         # redistributable: false — the binary must not reach the (possibly
         # world-readable) store, and what is not in the store cannot be in the

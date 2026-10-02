@@ -365,26 +365,42 @@ def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
     # cvmfs_releases_template is the current name; cvmfs_path_template is the
     # legacy alias, still accepted.
     rel = swap(opt("cvmfs_releases_template") or opt("cvmfs_path_template"))
+    # Optional: the packages' own home. With it, the releases template is only
+    # the release view (symlinks), created by `bits cvmfs publish --release-view`.
+    pkgs = swap(opt("cvmfs_packages_template"))
+    # Optional: the release's merged view (one per release and arch, e.g.
+    # {prefix}/views/{release}/{arch}), created together with the release view.
+    views = swap(opt("cvmfs_views_template"))
+    view_exclude = opt("cvmfs_view_exclude") or []
     mod = swap(opt("cvmfs_modules_template"))
     shr = swap(opt("cvmfs_shared_path_template"))
     usr = swap(opt("cvmfs_user_prefix"))
 
-    dieOnError(bool(rel or mod or shr or usr) and not root,
+    dieOnError(bool(rel or pkgs or mod or shr or usr) and not root,
                "a CVMFS prefix is required for publishing (an injected/community "
                "prefix, or a local recipe system.prefix) but none is set")
     if not root:
         return None
 
     # Built-in default layout; a group overrides any of these under system:.
-    rel = rel or "{prefix}/{platform}/Packages/{pkg}/{tag}"
+    # With a packages template and no releases template there is no release
+    # view: the releases path is then the packages path.
+    rel = rel or pkgs or "{prefix}/{platform}/Packages/{pkg}/{tag}"
     mod = mod or "{prefix}/{platform}/Modules/modulefiles/{pkg}"
     shr = shr or "{prefix}/noarch/{pkg}/{tag}"
     usr = usr or "{prefix}/user"
     usr = usr.replace("{prefix}", root)
-    return {
+    out = {
         "prefix":      root,
         "user_prefix": usr,
         "path":        rel,   # the .path key is fed by cvmfs_releases_template
         "modules":     mod,
         "shared":      shr,
     }
+    if pkgs:
+        out["packages"] = pkgs
+    if pkgs and views:
+        out["views"] = views
+        if view_exclude:
+            out["view_exclude"] = sorted(str(p) for p in view_exclude)
+    return out

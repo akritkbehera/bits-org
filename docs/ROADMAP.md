@@ -19,7 +19,7 @@ computing:
 | **Conda / Mamba** | Data science / scientific | Binary-first, env-scoped | SAT solver (libmamba) |
 | **aliBuild** | ALICE / HEP | Recipe files + tarball store | Manual pinning |
 | **lcgcmake** | LCG / CERN | CMake-driven | Manual pinning |
-| **bits** | HEP experiments / CVMFS | Recipe files + tarball store + CVMFS pipeline | Manual pinning (version ranges: roadmap) |
+| **bits** | HEP experiments / CVMFS | Recipe files + signed tarball store + CVMFS pipeline | Manual pinning (version ranges: roadmap) |
 
 ### Strengths and weaknesses
 
@@ -33,6 +33,26 @@ paths already embedded, which are ingested directly by the CVMFS publisher with 
 relocation step. For the O(10⁴) users of CERN experiment software on CVMFS this is
 the central value proposition.
 
+**Packages published once, releases as views.** With `cvmfs_packages_template` each
+package is published to CVMFS once per build architecture and skipped when the same
+build hash is already there. A release is then a view rather than a copy: `bits publish
+--release-view NAME` (`--view` is deprecated) lays it down as relative symlinks, and
+`cvmfs_views_template` adds an LCG-style merged view per release and architecture (`bin/
+lib/ include/ …` plus a self-locating `setup.sh`), shaped per recipe with the `view:`
+key. Path templates accept `{arch}` and `{day}` (nightly) tokens. Ingest publishing
+through prepub sends each package's identity path and hash so queued duplicates are
+skipped, and refuses tarballs larger than prepub's advertised `max_tar_size` up front. `bits overlay
+lcg` (formerly `bits lcg-view`, now deprecated) builds the same kind of LCG release view
+over a locally built closure.
+
+**Relocatable installations and shared toolchains.** pkg-config files, CMake package
+configs and `bin/*-config` scripts are rewritten to locate themselves
+(`${pcfiledir}`, `${CMAKE_CURRENT_LIST_DIR}`) just before packing, after any
+`POST_INSTALL` hooks, so the configs inside a store tarball do not carry the absolute
+prefix it was built under. A recipe marked `own_hash` gets an identity independent of
+the defaults profile and a build-type-neutral store architecture, so a toolchain such
+as GCC is built once and reused across build types.
+
 **Developer workflow: local checkout shadowing.** The ability to have one or more
 locally checked-out packages seamlessly shadow their counterparts in the central
 recipe repository — without configuration files or path surgery — is the single most
@@ -42,7 +62,10 @@ up, with all downstream packages rebuilt consistently. This use case was directl
 evaluated in Spack and found unworkable in our environment: Spack's development-mode
 workflow does not compose naturally with stacks of O(100) interdependent packages, and
 the concretiser's full recomputation on every dev-package change makes interactive
-iteration too slow for practical use.
+iteration too slow for practical use. Options a developer would otherwise repeat on
+every command live in `bits use` profiles (`./.bitsuse` or `~/.bits/use`), which
+replace the retired `bits.rc`, and `bits build --dry-run` prints the per-package reuse
+plan (installed / local / remote / build) before anything is compiled.
 
 **Recipe simplicity.** YAML header + plain bash. A physicist who can write a Makefile
 can write a bits recipe without learning a domain-specific language. Spack's spec
@@ -69,6 +92,36 @@ that mounts the relevant CVMFS repository gets a correctly configured environmen
 built by bits. This is a genuine bridge to the HPC community that is currently
 underappreciated and underdocumented.
 
+**Signed binary reuse and certification.** A remote tarball is reused only when it is
+listed in a verified, signed common manifest: `--require-signed-reuse` is the default,
+`--trust-manifest` names the authority and `--trust-groups` scopes it, on top of the
+always-trusted `common` base layer; an optional `key-policy.json` limits each signing
+key to the groups it may vouch for. `bits certify` uploads whatever a build is still
+missing, asks bits-console for a passkey approval (QR code plus a code to compare,
+approved on the certifier's phone) and opens the certification merge request; the
+manifests-repo CI then runs `bits sign`, which validates every hash against the store
+and signs the merged manifest — optionally through the console-backend signing service,
+authenticated by the CI ID token and gated by the build's human pre-approval. Package
+tarballs are deterministic (sorted members, zeroed owner, fixed mtime, pinned
+compressor), so packing adds no variation of its own. See
+`docs/adr/0003-s3-upload-authz-and-trusted-reuse.md`.
+
+**SBOM and source pinning.** The build manifest (schema v4) records dependency edges,
+including system-provided dependencies, and the source and tag of every package.
+`bits sbom` turns it into deterministic CycloneDX 1.6 and SPDX 2.3 documents, and
+`bits publish` uploads both next to the release NOTICE. `bits checksums` hashes every
+tarball and patch of a recipe repository and pins each git tag to its commit (branches
+are reported as moving), including the sources that defaults profiles override
+(`--defaults`); `--write` records new entries and never overwrites one that disagrees.
+Provider recipes can pin `commit: <sha>`, and a provider whose tag no longer resolves
+to that commit is refused.
+
+**macOS Homebrew system layer.** Recipes can source system libraries from Homebrew
+(`homebrew_formula:`). bits records the formulae a stack expects in
+`sw/<arch>/Brewfile` (also `bits brew`); the first macOS build writes it and stops so the
+layer can be installed with `brew bundle`, unless `--brew` is given to install formulae
+on demand.
+
 **bits-console + GitLab CI pipeline integration.** The browser-based build console
 with role-based access control, community-scoped `ui-config.yaml` configuration, and
 a triggered build → ingest → publish pipeline is unique in this space. Spack and
@@ -85,29 +138,32 @@ limitation. Spack's `clingo`-based concretiser and Conda's SAT solver both handl
 correctly. For large stacks with many independent release lines this is the most
 significant technical gap in bits today.
 
-**Build isolation is opt-in, not the default.** The recipe sandbox (`--sandbox=auto`)
-uses `sandbox-exec` on macOS and nested podman under `--docker`, but on a plain local
-Linux build it resolves to `off` — podman is only engaged with `--docker` or an explicit
-`--sandbox=podman` / `--sandbox-image`. In contrast, Nix achieves true hermetic
-isolation unconditionally — no implicit host-library leakage, no ambient `$PATH`
-contamination. A bits recipe can accidentally depend on a host library not declared in
-its recipe and still build successfully, masking a portability bug. CI pipelines now
-use `--sandbox=podman` by default via bits-console, but local developer builds remain
-unguarded.
+**Build isolation is opt-in, not the default.** The recipe sandbox is `off` by default.
+`--sandbox=auto` uses `sandbox-exec` on macOS and nested podman under `--docker`, but on
+a plain local Linux build it resolves to `off` — podman is only engaged with `--docker`
+or an explicit `--sandbox=podman` / `--sandbox-image`. In contrast, Nix achieves true
+hermetic isolation unconditionally — no implicit host-library leakage, no ambient
+`$PATH` contamination. A bits recipe can accidentally depend on a host library not
+declared in its recipe and still build successfully, masking a portability bug. CI
+pipelines now use `--sandbox=podman` by default via bits-console, but local developer
+builds remain unguarded.
 
 **Reproducibility is strong but not hermetic.** bits achieves reproducibility through
-content-addressed tarballs, checksum enforcement, and build manifests. This is
-practically solid but does not reach Nix/Guix-level isolation, where the build
-environment itself (compiler, libc, every tool in `$PATH`) is hashed and reproducible
-from a single root derivation. For most HEP use cases — reproducible physics analysis
-on a shared CVMFS installation — bits' model is sufficient. For bit-for-bit
-reproducible builds independent of the host OS, Nix/Guix remain stronger.
+content-addressed, deterministically packed tarballs, checksum enforcement with git tags
+pinned to commits (`bits checksums`), build manifests with dependency edges, and SBOM
+export (`bits sbom`). This is practically solid but does not reach Nix/Guix-level
+isolation, where the build environment itself (compiler, libc, every tool in `$PATH`) is
+hashed and reproducible from a single root derivation. For most HEP use cases —
+reproducible physics analysis on a shared CVMFS installation — bits' model is
+sufficient. For bit-for-bit reproducible builds independent of the host OS, Nix/Guix
+remain stronger.
 
 #### Conclusion
 
 bits is the right tool for anyone deploying large C++/Fortran/CUDA scientific software
 stacks to CVMFS via GitLab CI, especially when interactive development with local
-package checkouts is part of the workflow. 
+package checkouts is part of the workflow, and when binary reuse has to be auditable:
+signed, certified with a human approval, and described by an SBOM.
 
 
 ## Roadmap
@@ -115,6 +171,32 @@ package checkouts is part of the workflow.
 The roadmap is organised into three horizons. Items within each horizon are ordered
 by priority (highest first). The primary target audience is CERN experiments and their
 O(10⁴) users, plus any project deploying software via CVMFS.
+
+### Delivered since the 2026-06-10 roadmap
+
+- **Signed reuse and certification** (was M3): signed common manifests with a
+  fail-closed reuse gate (`--require-signed-reuse`, default), `bits certify` with
+  passkey approval via bits-console, `bits sign` (the former certify) in the
+  manifests-repo CI.
+- **CVMFS publish-once and views**: `cvmfs_packages_template`, `--release-view`,
+  `cvmfs_views_template` merged views with `setup.sh`, `{arch}` / `{day}` tokens,
+  duplicate-aware prepub uploads; `bits overlay lcg`.
+- **SBOM**: `bits sbom` (CycloneDX 1.6, SPDX 2.3), uploaded by `bits publish`.
+- **Source pinning**: `bits checksums` (tarballs, patches, git tag → commit, profile
+  overrides); `commit:` pins for provider recipes.
+- **Deterministic package tarballs.**
+- **Shared toolchains**: `own_hash` recipes, built once per build-type-neutral
+  architecture.
+- **Relocation-independent configs**: pkg-config, CMake configs and `bin/*-config`.
+- **`bits use` profiles** (`./.bitsuse`, `~/.bits/use`) replacing `bits.rc`.
+- **macOS Homebrew manifest**: `sw/<arch>/Brewfile`, `bits brew`, `--brew`.
+- **Onboarding checks**: `bits doctor` with no packages checks the machine;
+  `bits build --dry-run` prints the reuse plan.
+- **CLI consolidation**: `bits prune` (`cleanup` deprecated), `bits store gc|stats|upload`,
+  `bits cvmfs …` (replacing `cvmfs-stage` / `cvmfs-publish` / `store-stats`),
+  `--remote-store` (`--store` deprecated), `--parallel` (`--builders` alias);
+  `--makeflow` / `--pipeline` and usage analytics removed.
+
 ---
 
 ### Near term — within 6 months
@@ -127,7 +209,11 @@ effort with no architectural changes.
 The shared binary store is the single highest-leverage item for reducing the barrier
 to entry for new users. `bits doctor --check-store` (implemented) already tells the
 user whether a pre-built tarball is available for their platform before they commit to
-a full compilation. The remaining work is supply-side:
+a full compilation; `bits status --check-store` and `bits build --dry-run` (implemented)
+show the same per-package plan, and `bits doctor` with no packages checks that the
+machine itself is ready (Python modules, git/compiler, docker or rootless podman, disk,
+store access). Because reuse now requires a signed manifest by default, uploaded
+releases also have to be certified (`bits certify`). The remaining work is supply-side:
 
 - Register build runners for each target architecture in the CERN experiment portfolio
   (`slc9_x86-64`, `slc9_aarch64`, `ubuntu2204_x86-64`, `ubuntu2404_x86-64`,
@@ -149,7 +235,9 @@ Remaining work:
   with a local O2 also in flight) that shows `bits status` output at each step.
 - Improve `bits init` to detect common checkout layouts and offer to configure the
   development environment interactively, reducing the setup steps for a new contributor
-  from five commands to one.
+  from five commands to one. (Done so far: `bits init` without a package records the
+  options it is given — architecture, stores, defaults — as a `bits use` profile, so they
+  are not repeated on every build.)
 
 ---
 
@@ -206,14 +294,31 @@ prefer_system_check: !include system-checks/openmpi.sh
 
 rather than writing MPI detection from scratch. This dramatically lowers the quality
 bar for `prefer_system` usage on HPC clusters where vendor-optimised libraries are
-essential for performance.
+essential for performance. On macOS, the Homebrew system layer (`homebrew_formula:`,
+`bits brew`, `--brew`) already gives one platform a shared mechanism.
 
-#### M3. Reproducible build attestation
+#### M3. Reproducible build attestation — delivered
 
-The `--from-manifest` replay and `--store-integrity` features provide good
-*verification* of stored artefacts but do not provide *attestation* — a signed
-statement that a given tarball was produced from a specific recipe at a specific commit
-on a trusted runner. Introduce optional SLSA-level 2 provenance attestation:
+**Status:** delivered as signed reuse and certification (see *Delivered* above).
+How it maps onto the original plan:
+
+- Signing covers the merged common manifest, which carries every tarball's hash, rather
+  than each tarball separately. `bits sign` signs it with the release Ed25519 key, via the
+  security proxy, or via the console-backend signing service (CI ID token plus the
+  build's human pre-approval); `bits certify` obtains that approval with a passkey.
+- The check before using a remote tarball is not a separate `--verify-provenance` flag
+  but the default signed-reuse gate (`--require-signed-reuse`, `--trust-manifest`,
+  `--trust-groups`).
+- The signed manifest records `certified_by` and the certified manifests-repo commit,
+  and can carry an expiry (`bits sign --valid-days`).
+- No SLSA provenance document is produced; `bits sbom` exports the build manifest as
+  CycloneDX / SPDX instead.
+
+The original motivation, for reference: the `--from-manifest` replay and
+`--store-integrity` features provide good *verification* of stored artefacts but not
+*attestation* — a signed statement that a given tarball was produced from a specific
+recipe at a specific commit on a trusted runner. The plan was optional SLSA-level 2
+provenance attestation:
 
 - The bits-console pipeline signs each completed tarball with the runner's identity
   (a short-lived GitLab CI token or a project-specific signing key).
@@ -249,8 +354,10 @@ bits enter MyAnalysis
 `bits push` uploads only packages built locally (`built_from_source` in the manifest),
 skipping anything already on CVMFS. `bits fetch` downloads, verifies SHA-256, and
 unpacks them, then exits with a clear diagnostic if the manifest architecture does not
-match the executing node. The tarball store already uses a content-addressed layout;
-adding an S3 driver is a contained change.
+match the executing node. The tarball store already uses a content-addressed layout
+and already reads and writes S3 (`--remote-store` / `--write-store` accept `https://`,
+`b3://` and `s3://`; `bits store upload` uploads one built package's tarball); what is
+still missing is the manifest-scoped `push` / `fetch` pair.
 
 #### M5. ABI constraint exports (`abi_exports`)
 
@@ -294,7 +401,11 @@ communities on the same instance. A federated model allows:
 This requires a trust model (public key infrastructure for store signing) and a
 canonical resolution order for federated package lookups. The repository provider
 feature is a foundation: a community's `defaults` file can already reference another
-community's recipe repository.
+community's recipe repository. Signed reuse supplies part of the trust model within one
+store: signed manifest entries are tagged by group, consumers choose which groups to
+trust (`--trust-groups`, always including the `common` base layer), `key-policy.json`
+limits each signing key to its groups, and per-group admins approve certifications.
+Cross-store resolution and the federated console view remain open.
 
 #### L2. Web-based recipe editor and validation
 
@@ -309,7 +420,10 @@ integrated into bits-console that:
 
 This brings the recipe authoring experience closer to what Spack's `spack create`
 and Conda-forge's staged-recipes automation provide, without requiring a local bits
-installation.
+installation. Command-line building blocks exist: `bits checksums` downloads and hashes
+every source and patch of a recipe repository, and `bits build --dry-run` prints the
+reuse plan without compiling.
+
 ---
 
 ## What bits is not trying to become
