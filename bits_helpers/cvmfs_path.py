@@ -18,16 +18,18 @@ Authorization (who may publish where) stays in the pipeline: it decides admin
 vs user and passes --admin/--login. This command only resolves paths.
 """
 
-import os
 import sys
-from os.path import exists
 
 import re
 
 from bits_helpers.log import debug, dieOnError
-from bits_helpers.utilities import parseDefaults, readDefaults, git
+from bits_helpers.utilities import git
+from bits_helpers.defaults import parseDefaults, readDefaults
+from bits_helpers.matchers import resolve_variables
+from bits_helpers.arch import compute_combined_arch
 from bits_helpers.cvmfs_layout import (
-    resolve_cvmfs_templates, resolve_release, path_release, bake_release)
+    resolve_cvmfs_templates, resolve_release, path_release, bake_release,
+    resolve_day, bake_day)
 
 
 # The placeholder set the publish pipeline's _expand_tmpl understands. {commit}
@@ -47,16 +49,8 @@ def doCvmfsPath(args, parser):
     the group declares no CVMFS prefix or a non-admin path is requested without
     a login.
     """
-    if not exists(args.configDir):
-        from bits_helpers.repo_provider import cwd_is_recipe_dir
-        _default_config_dir = os.environ.get("BITS_REPO_DIR", "alidist")
-        if args.configDir == _default_config_dir and cwd_is_recipe_dir():
-            debug("Recipe files detected in current directory; using '.' as config dir")
-            args.configDir = "."
-    dieOnError(not exists(args.configDir),
-               'Cannot find recipes under directory "%s".\n'
-               'Maybe you need to "cd" to the right directory or '
-               'you forgot to run "bits init"?' % args.configDir)
+    from bits_helpers.repo_provider import resolve_config_dir
+    resolve_config_dir(args)
 
     # Load the defaults profile exactly like `bits status` — only the group's
     # system: block (templates) is consulted; no recipe/version resolution.
@@ -65,6 +59,12 @@ def doCvmfsPath(args, parser):
     err, _overrides, _taps, defaults_meta = parseDefaults(
         args.disable, defaults_reader, debug, args.architecture, args.configDir)
     dieOnError(err, err)
+    # Fold --set values into the variables exactly as the build does, so an
+    # explicit --set release=LCG_110 reaches the {release} segment.
+    defaults_meta = dict(defaults_meta or {})
+    defaults_meta["variables"] = resolve_variables(
+        defaults_meta.get("variables"), getattr(args, "flavours", None) or {},
+        args.architecture, args.defaults)
 
     tmpls = resolve_cvmfs_templates(
         defaults_meta, getattr(args, "prefix", None) or None)
@@ -81,8 +81,9 @@ def doCvmfsPath(args, parser):
                    "--login is required to resolve a non-admin (user) path")
         root = tmpls["user_prefix"].rstrip("/") + "/" + args.login
 
-    kind = args.kind or "releases"
+    kind = args.kind or ("packages" if tmpls.get("packages") else "releases")
     tmpl = {"releases": tmpls["path"],
+            "packages": tmpls.get("packages") or tmpls["path"],
             "modules":  tmpls["modules"],
             "shared":   tmpls["shared"]}[kind]
 
@@ -92,11 +93,16 @@ def doCvmfsPath(args, parser):
     # main (which collapses out of the path). We read the branch the same way
     # build.py does (empty when detached / no branch, e.g. in CI) and hand the raw
     # basename to resolve_release, which strips -patches and applies the trunk rule.
-    _, _value = git(("symbolic-ref", "-q", "HEAD"),
-                    directory=args.configDir, check=False)
-    _branch_basename = re.sub("refs/heads/", "", _value)
+    # Non-zero exit (detached / not a git checkout) = no branch; git's error text
+    # must never become the {release} segment.
+    _err, _value = git(("symbolic-ref", "-q", "HEAD"),
+                       directory=args.configDir, check=False)
+    _branch_basename = re.sub("refs/heads/", "", _value) if _err == 0 else ""
     tmpl = bake_release(
         tmpl, path_release(resolve_release(defaults_meta, _branch_basename)))
+    # {day} baked identically to the build so the reserved path matches the
+    # published one (see cvmfs_layout.resolve_day for the auto-weekday / --day rule).
+    tmpl = bake_day(tmpl, resolve_day(defaults_meta, getattr(args, "day", None)))
 
     # {family} is per-package and unknown before the build, so it collapses to
     # empty — the templates use the trailing-slash form {family}{pkg}.
@@ -108,6 +114,9 @@ def doCvmfsPath(args, parser):
         "version":     args.version or "",
         "revision":    "",
         "platform":    args.platform or "",
+        # The build-qualified arch the build would use (e.g. x86_64-el9-gcc14-opt).
+        "arch":        compute_combined_arch(defaults_meta, args.defaults,
+                                             args.architecture),
         "install_dir": args.installDir or "",
         "commit":      "",
         "user":        args.login or "",
@@ -118,5 +127,8 @@ def doCvmfsPath(args, parser):
     # reserve path this produces must match it byte-for-byte. ({release} is already
     # baked/collapsed above by the shared bake_release, exactly as the build does.)
     path = _expand(tmpl, subst)
+    left = re.search(r"\{\w+\}", path)
+    dieOnError(bool(left), "unresolved %s in CVMFS path %s"
+               % (left.group(0) if left else "", path))
     print(path)
     return True

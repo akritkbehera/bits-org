@@ -374,7 +374,9 @@ def downloadPip(source, dest, work_dir):
 
 def downloadFile(source, dest, work_dir):
     import shutil
-    shutil.copy(source.removeprefix("file:/"), dest)
+    # str.removeprefix is Python >= 3.9; CI still runs 3.8.
+    path = source[len("file:/"):] if source.startswith("file:/") else source
+    shutil.copy(path, dest)
     return
 
 downloadHandlers = {
@@ -399,7 +401,8 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
         suffix (callers should call ``bits_helpers.checksum.parse_entry``
         before passing the URL here).
     dest:
-        Directory into which the downloaded file is placed.
+        Directory into which the downloaded file is placed, or ``None`` to
+        leave it in the cache only.
     work_dir:
         Top-level work directory (used for the download cache).
     checksum:
@@ -530,7 +533,8 @@ def download(source, dest, work_dir, checksum=None, enforce_mode="off",
         if fetched_from_upstream and sync_helper is not None:
             debug("Archiving source file %s to remote store", filename)
             sync_helper.upload_source(realFile, url_checksum, filename)
-        executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
+        if dest is not None:
+            executeWithErrorCheck("mkdir -p {dest}; cp {src} {dest}/".format(dest=dest, src=realFile), "Failed to move source")
     else:
         raise OSError("Unable to download source {} in to {}".format(source, downloadDir))
-    return
+    return realFile

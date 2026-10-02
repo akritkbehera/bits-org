@@ -9,7 +9,7 @@ from unittest.mock import patch
 import tempfile
 
 from bits_helpers.cmd import getstatusoutput
-from bits_helpers.utilities import getPackageList
+from bits_helpers.packages import getPackageList
 
 
 RECIPES = {
@@ -66,6 +66,50 @@ RECIPES = {
         : magic sentinel command
     ---
     """),
+    "CONFIG_DIR/sbom-top.sh": dedent("""\
+    package: sbom-top
+    version: v1
+    requires:
+      - sbom-a
+      - sbom-b
+    ---
+    """),
+    "CONFIG_DIR/sbom-a.sh": dedent("""\
+    package: sbom-a
+    version: v1
+    requires:
+      - disable
+      - sbom-c
+    ---
+    """),
+    "CONFIG_DIR/sbom-b.sh": dedent("""\
+    package: sbom-b
+    version: v1
+    build_requires:
+      - disable
+    ---
+    """),
+    "CONFIG_DIR/sbom-c.sh": dedent("""\
+    package: sbom-c
+    version: v1
+    requires:
+      - disable
+    ---
+    """),
+    "CONFIG_DIR/sbom-sysreq.sh": dedent("""\
+    package: sbom-sysreq
+    version: v1
+    system_requirement: '.*'
+    system_requirement_check: 'true'
+    ---
+    """),
+    "CONFIG_DIR/sbom-uses-sysreq.sh": dedent("""\
+    package: sbom-uses-sysreq
+    version: v1
+    requires:
+      - sbom-sysreq
+    ---
+    """),
     "CONFIG_DIR/force-rebuild.sh": dedent("""\
     package: force-rebuild
     version: v1
@@ -92,7 +136,7 @@ class MockReader:
         return self._contents
 
 
-def getPackageListWithDefaults(packages, force_rebuild=()):
+def getPackageListWithDefaults(packages, force_rebuild=(), satisfied=None):
     specs = {}   # getPackageList will mutate this
     def performPreferCheckWithTempDir(pkg, cmd):
       with tempfile.TemporaryDirectory(prefix=f"bits_prefer_check_{pkg['package']}_") as temp_dir:
@@ -117,12 +161,13 @@ def getPackageListWithDefaults(packages, force_rebuild=()):
         taps={},
         log=lambda *_: None,
         force_rebuild=force_rebuild,
+        satisfied_requirements=satisfied,
     )
     return (specs, *return_values)
 
 
-@mock.patch("bits_helpers.utilities.getRecipeReader", new=MockReader)
-@mock.patch("bits_helpers.utilities.exists", new=lambda f: f in RECIPES)
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReader)
+@mock.patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
 class ReplacementTestCase(unittest.TestCase):
     """Test that system package replacements are working."""
 
@@ -137,6 +182,26 @@ class ReplacementTestCase(unittest.TestCase):
         self.assertIn("disable", systemPkgs)
         self.assertNotIn("disable", ownPkgs)
         self.assertNotIn("disable", specs)
+
+    def test_unfiltered_requires_keep_system_edges(self):
+        """Every dependant keeps its edge to a system package for the SBOM,
+        however late it is read (the filtered requires lose it)."""
+        specs, systemPkgs, _, _, _ = getPackageListWithDefaults(["sbom-top"])
+        self.assertIn("disable", systemPkgs)
+        # sbom-c is read after "disable" was found on the system: its filtered
+        # requires have already lost it.
+        self.assertNotIn("disable", specs["sbom-c"]["runtime_requires"])
+        for pkg in ("sbom-a", "sbom-c"):
+            self.assertIn("disable", specs[pkg]["unfiltered_requires"]["runtime"], pkg)
+        self.assertIn("disable", specs["sbom-b"]["unfiltered_requires"]["build"])
+
+    def test_satisfied_system_requirements_are_collected(self):
+        satisfied = set()
+        specs, systemPkgs, _, failed, _ = getPackageListWithDefaults(["sbom-uses-sysreq"],
+                                                                     satisfied=satisfied)
+        self.assertEqual(satisfied, {"sbom-sysreq"})
+        self.assertNotIn("sbom-sysreq", systemPkgs)      # not reported as prefer_system
+        self.assertIn("sbom-sysreq", specs["sbom-uses-sysreq"]["unfiltered_requires"]["runtime"])
 
     def test_replacement_given(self):
         """Check that specifying a replacement spec means it is used.
@@ -175,7 +240,7 @@ class ReplacementTestCase(unittest.TestCase):
         self.assertNotIn("with-replacement-recipe", systemPkgs)
         self.assertIn("with-replacement-recipe", ownPkgs)
 
-    @mock.patch("bits_helpers.utilities.warning")
+    @mock.patch("bits_helpers.packages.warning")
     def test_missing_replacement_spec(self, mock_warning) -> None:
         """Check a warning is displayed when the replacement spec is not found."""
         warning_msg = "falling back to building the package ourselves"
@@ -199,8 +264,8 @@ class ReplacementTestCase(unittest.TestCase):
             self.assertFalse("HEREE" in os.listdir())
 
 
-@mock.patch("bits_helpers.utilities.getRecipeReader", new=MockReader)
-@mock.patch("bits_helpers.utilities.exists", new=lambda f: f in RECIPES)
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReader)
+@mock.patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
 class ForceRebuildTestCase(unittest.TestCase):
     """Test that force_rebuild keys are applied properly."""
 
@@ -223,3 +288,76 @@ class ForceRebuildTestCase(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+RECIPES["CONFIG_DIR/pinned.sh"] = dedent("""\
+    package: pinned
+    version: v1
+    tag: v1
+    source: https://example.com/pinned.git
+    ---
+    """)
+
+
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReader)
+@mock.patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
+class ChecksumStoreTestCase(unittest.TestCase):
+    """The checksum files are read after the overrides; a legacy pin needs the
+    recipe's own tag."""
+
+    STORE = {"tag": "a" * 40, "commits": {"v2": "b" * 40}, "sources": {}, "patches": {}}
+
+    def _specs(self, overrides):
+        specs = {}
+        with patch("bits_helpers.packages.load_for_spec", return_value=self.STORE) as load:
+            getPackageList(packages=["pinned"], specs=specs, configDir="CONFIG_DIR",
+                           preferSystem=False, noSystem=None, architecture="ARCH",
+                           disable=[], defaults=["release"],
+                           performPreferCheck=lambda *_: (1, ""),
+                           performRequirementCheck=lambda *_: (1, ""),
+                           performValidateDefaults=lambda spec: (True, "", ["release"]),
+                           overrides=dict({"defaults-release": {}}, **overrides), taps={},
+                           log=lambda *_: None,
+                           defaults_meta={"_defaults_dirs": {"release": "STACK_DIR"}})
+        extra = [c.args[1] for c in load.call_args_list if c.args[0]["package"] == "pinned"]
+        return specs["pinned"], extra
+
+    def test_legacy_pin_kept_for_recipe_tag(self):
+        spec, extra = self._specs({})
+        self.assertEqual(spec["pin_commit"], "a" * 40)
+        self.assertEqual(spec["pin_commits"], {"v2": "b" * 40})
+        self.assertEqual(extra, [["STACK_DIR"]])
+
+    def test_legacy_pin_dropped_when_overridden(self):
+        spec, _ = self._specs({"pinned": {"tag": "v2"}})
+        self.assertEqual(spec["tag"], "v2")
+        self.assertIsNone(spec["pin_commit"])
+        self.assertEqual(spec["pin_commits"], {"v2": "b" * 40})
+
+
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReader)
+@mock.patch("bits_helpers.paths.exists", new=lambda f: f in RECIPES)
+class ChecksumsDirTestCase(ChecksumStoreTestCase):
+    """A package whose sources a profile override changed records new checksums
+    in that profile's repository."""
+
+    def _dir(self, overrides):
+        specs = {}
+        with patch("bits_helpers.packages.load_for_spec", return_value=self.STORE):
+            getPackageList(packages=["pinned"], specs=specs, configDir="CONFIG_DIR",
+                           preferSystem=False, noSystem=None, architecture="ARCH",
+                           disable=[], defaults=["release"],
+                           performPreferCheck=lambda *_: (1, ""),
+                           performRequirementCheck=lambda *_: (1, ""),
+                           performValidateDefaults=lambda spec: (True, "", ["release"]),
+                           overrides=dict({"defaults-release": {}}, **overrides), taps={},
+                           log=lambda *_: None,
+                           defaults_meta={"_override_dirs": {"pinned": "STACK_DIR"}})
+        return specs["pinned"].get("checksums_dir")
+
+    def test_source_override_sets_the_dir(self):
+        self.assertEqual(self._dir({"pinned": {"tag": "v2"}}), "STACK_DIR")
+
+    def test_other_override_does_not(self):
+        self.assertIsNone(self._dir({"pinned": {"env": {"X": "1"}}}))
+        self.assertIsNone(self._dir({}))

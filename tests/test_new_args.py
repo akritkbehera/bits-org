@@ -9,13 +9,14 @@ Covers:
   - bits publish --no-relocate: accepted and stored correctly
   - Backward compatibility: omitting new flags leaves existing defaults unchanged
 """
+import os
 import sys
 import types
 import unittest
 from unittest.mock import patch
 
 from bits_helpers.args import doParseArgs, _parse_flavours
-from bits_helpers.utilities import filterByArchitectureDefaults
+from bits_helpers.matchers import filterByArchitectureDefaults
 
 # Shared architecture that passes validation checks.
 _ARCH = "slc7_x86-64"
@@ -33,20 +34,26 @@ def _parse_with_docker(argv):
     sys.argv = ["bits"] + argv
     # subprocess.getstatusoutput("which docker") returns (0, path) when docker
     # is found.  We mock it so tests pass even on machines without docker.
-    with patch("bits_helpers.args.commands.getstatusoutput", return_value=(0, "/usr/bin/docker")):
+    with patch("bits_helpers.args.commands.getstatusoutput", return_value=(0, "/usr/bin/docker")), \
+         patch("bits_helpers.args._is_rootless_podman", return_value=False):
         args, _ = doParseArgs()
     return args
 
 
 class CleanupSubparserTest(unittest.TestCase):
-    """bits cleanup subparser is registered and has correct defaults."""
+    """bits prune subparser is registered (renamed from cleanup) with correct defaults."""
 
-    def test_action_is_cleanup(self):
+    def test_action_is_prune(self):
+        args = _parse(["prune"])
+        self.assertEqual(args.action, "prune")
+
+    def test_cleanup_alias_forwards_to_prune(self):
+        # 'cleanup' is a deprecated alias that warns and forwards to 'prune'.
         args = _parse(["cleanup"])
-        self.assertEqual(args.action, "cleanup")
+        self.assertEqual(args.action, "prune")
 
     def test_defaults(self):
-        args = _parse(["cleanup"])
+        args = _parse(["prune"])
         self.assertEqual(args.maxAgeDays, 7.0)
         self.assertIsNone(args.minFreeGb)
         self.assertFalse(args.diskPressureOnly)
@@ -136,14 +143,14 @@ class PublishNoRelocateTest(unittest.TestCase):
     def test_default_is_false(self):
         args = _parse(["publish", "ROOT",
                        "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
-                       "--spool", "user@host:/spool",
+                       "--prepub-url", "https://prepub.example.org",
                        "-a", _ARCH])
         self.assertFalse(args.noRelocate)
 
     def test_no_relocate_flag_set(self):
         args = _parse(["publish", "ROOT",
                        "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
-                       "--spool", "user@host:/spool",
+                       "--prepub-url", "https://prepub.example.org",
                        "-a", _ARCH,
                        "--no-relocate"])
         self.assertTrue(args.noRelocate)
@@ -152,9 +159,8 @@ class PublishNoRelocateTest(unittest.TestCase):
         """Existing publish invocations without --no-relocate are unaffected."""
         args = _parse(["publish", "ROOT", "6.32.0-1",
                        "--cvmfs-target", "/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0",
-                       "--spool", "user@host:/spool",
+                       "--prepub-url", "https://prepub.example.org",
                        "-a", _ARCH,
-                       "--rsync-opts", "-e 'ssh -i key'",
                        "--scratch-dir", "/tmp/bits-scratch"])
         self.assertFalse(args.noRelocate)
         self.assertEqual(args.workDir, "sw")
@@ -269,6 +275,183 @@ class BackwardCompatBuildTest(unittest.TestCase):
         self.assertTrue(args.containerUseWorkDir)
         self.assertIsNone(getattr(args, "cvmfsPrefix", None))
 
+
+class RemoteStoreUnificationTest(unittest.TestCase):
+    """--remote-store is the canonical store flag; --store is a deprecated alias."""
+
+    def test_remote_store_sets_dest(self):
+        args = _parse(["publish", "--remote-store", "b3://mybucket"])
+        self.assertEqual(args.publishStore, "b3://mybucket")
+
+    def test_store_alias_sets_dest(self):
+        args = _parse(["publish", "--store", "b3://mybucket"])
+        self.assertEqual(args.publishStore, "b3://mybucket")
+
+    def test_store_alias_warns(self):
+        with patch("bits_helpers.log.warning") as w:
+            _parse(["publish", "--store", "b3://x"])
+        self.assertTrue(w.called)
+
+    def test_cern_s3_path_style_store_normalised(self):
+        args = _parse(["build", "zlib", "-a", _ARCH,
+                       "--remote-store", "https://s3.cern.ch/bkt::rw"])
+        self.assertEqual(args.remoteStore, "https://s3.cern.ch/swift/v1/bkt")
+        self.assertEqual(args.writeStore, "https://s3.cern.ch/swift/v1/bkt")
+        args = _parse(["doctor", "--remote-store", "https://s3.cern.ch/bkt"])
+        self.assertEqual(args.remoteStore, "https://s3.cern.ch/swift/v1/bkt")
+
+    def test_remote_store_does_not_warn(self):
+        with patch("bits_helpers.log.warning") as w:
+            _parse(["publish", "--remote-store", "b3://x"])
+        self.assertFalse(w.called)
+
+    def test_default_is_default_s3_store(self):
+        from bits_helpers.args import DEFAULT_S3_STORE
+        args = _parse(["publish"])
+        self.assertEqual(args.publishStore, DEFAULT_S3_STORE)
+
+    def test_cleanup_store_default_stays_none(self):
+        args = _parse(["cleanup"])
+        self.assertIsNone(args.retainStore)
+
+    def test_cleanup_remote_store_sets_dest(self):
+        args = _parse(["cleanup", "--remote-store", "b3://b"])
+        self.assertEqual(args.retainStore, "b3://b")
+
+
+class PublishToRemovalTest(unittest.TestCase):
+    """Phase 3.4: `bits publish` is CVMFS-only; `--to` and `--write-store` are
+    gone (the S3-store write moved to `bits store upload`)."""
+
+    def test_to_flag_rejected(self):
+        with self.assertRaises(SystemExit):
+            _parse(["publish", "--to", "s3"])
+
+    def test_write_store_flag_rejected(self):
+        with self.assertRaises(SystemExit):
+            _parse(["publish", "--write-store", "b3://x"])
+
+    def test_bare_publish_still_parses(self):
+        # The bulk-manifest community path (`bits publish` / --from-manifest) stays.
+        args = _parse(["publish"])
+        self.assertFalse(hasattr(args, "publishTo"))
+
+
+class BuildersParallelTest(unittest.TestCase):
+    """--parallel/--builders: no flag => serial (1), bare => 4, explicit => N."""
+
+    def test_no_flag_serial(self):
+        args = _parse(["build", "-a", _ARCH, "ROOT"])
+        self.assertEqual(args.builders, 1)
+
+    def test_parallel_bare_before_package(self):
+        args = _parse(["build", "-a", _ARCH, "--parallel", "ROOT"])
+        self.assertEqual(args.builders, 4)
+        self.assertEqual(args.pkgname, ["ROOT"])
+
+    def test_parallel_bare_after_package(self):
+        args = _parse(["build", "-a", _ARCH, "ROOT", "--parallel"])
+        self.assertEqual(args.builders, 4)
+
+    def test_parallel_with_number(self):
+        args = _parse(["build", "-a", _ARCH, "--parallel", "8", "ROOT"])
+        self.assertEqual(args.builders, 8)
+        self.assertEqual(args.pkgname, ["ROOT"])
+
+    def test_builders_alias_with_number(self):
+        args = _parse(["build", "-a", _ARCH, "--builders", "2", "ROOT"])
+        self.assertEqual(args.builders, 2)
+
+    def test_builders_bare(self):
+        args = _parse(["build", "-a", _ARCH, "ROOT", "--builders"])
+        self.assertEqual(args.builders, 4)
+
+    def test_parallel_bare_two_packages(self):
+        args = _parse(["build", "-a", _ARCH, "--parallel", "ROOT", "GEANT4"])
+        self.assertEqual(args.builders, 4)
+        self.assertEqual(args.pkgname, ["ROOT", "GEANT4"])
+
+
+class RenameAliasesTest(unittest.TestCase):
+    """Canonical flag names with deprecated aliases that still work and warn."""
+
+    def test_prefer_system_canonical(self):
+        args = _parse(["build", "-a", _ARCH, "--prefer-system", "ROOT"])
+        self.assertTrue(args.preferSystem)
+
+    def test_prefer_system_canonical_silent(self):
+        with patch("bits_helpers.log.warning") as w:
+            _parse(["build", "-a", _ARCH, "--prefer-system", "ROOT"])
+        self.assertFalse(w.called)
+
+    def test_always_prefer_system_alias_warns(self):
+        with patch("bits_helpers.log.warning") as w:
+            args = _parse(["build", "-a", _ARCH, "--always-prefer-system", "ROOT"])
+        self.assertTrue(args.preferSystem)
+        self.assertTrue(w.called)
+
+    def test_force_overwrite_canonical(self):
+        args = _parse(["import", "--force-overwrite"])
+        self.assertTrue(args.importForce)
+
+    def test_force_alias_warns(self):
+        with patch("bits_helpers.log.warning") as w:
+            args = _parse(["import", "--force"])
+        self.assertTrue(args.importForce)
+        self.assertTrue(w.called)
+
+    def test_release_view_canonical(self):
+        args = _parse(["publish", "--release-view", "lcg",
+                       "--cvmfs-target", "/cvmfs/x", "-a", _ARCH])
+        self.assertEqual(args.publishView, "lcg")
+
+    def test_view_alias_warns(self):
+        with patch("bits_helpers.log.warning") as w:
+            args = _parse(["publish", "--view", "lcg",
+                           "--cvmfs-target", "/cvmfs/x", "-a", _ARCH])
+        self.assertEqual(args.publishView, "lcg")
+        self.assertTrue(w.called)
+
+    def test_version_takes_no_architecture(self):
+        with self.assertRaises(SystemExit):
+            _parse(["version", "-a", _ARCH])
+
+    def test_version_parses_plain(self):
+        args = _parse(["version"])
+        self.assertEqual(args.action, "version")
+
+
+class SearchPathTest(unittest.TestCase):
+    """--search-path seeds BITS_PATH; explicit $BITS_PATH wins."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("BITS_PATH", None)
+
+    def tearDown(self):
+        os.environ.pop("BITS_PATH", None)
+        if self._saved is not None:
+            os.environ["BITS_PATH"] = self._saved
+
+    def test_seeds_bits_path(self):
+        _parse(["build", "-a", _ARCH, "--search-path", "lcg", "ROOT"])
+        self.assertEqual(os.environ.get("BITS_PATH"), "lcg")
+
+    def test_comma_separated(self):
+        _parse(["build", "-a", _ARCH, "--search-path", "lcg,foo", "ROOT"])
+        self.assertEqual(os.environ.get("BITS_PATH"), "lcg,foo")
+
+    def test_no_flag_leaves_unset(self):
+        _parse(["build", "-a", _ARCH, "ROOT"])
+        self.assertIsNone(os.environ.get("BITS_PATH"))
+
+    def test_explicit_env_wins(self):
+        os.environ["BITS_PATH"] = "envwins"
+        _parse(["build", "-a", _ARCH, "--search-path", "lcg", "ROOT"])
+        self.assertEqual(os.environ.get("BITS_PATH"), "envwins")
+
+    def test_dest_recorded_on_deps(self):
+        args = _parse(["deps", "-a", _ARCH, "--search-path", "bar", "ROOT"])
+        self.assertEqual(args.searchPath, "bar")
 
 if __name__ == "__main__":
     unittest.main()

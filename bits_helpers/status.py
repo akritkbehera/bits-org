@@ -30,27 +30,27 @@ import shutil
 import sys
 from collections import OrderedDict
 from glob import glob
-from os.path import abspath, basename, dirname, exists, join
+from os.path import abspath, basename, dirname, join
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from bits_helpers.git import Git
 from bits_helpers.sl import Sapling
 from bits_helpers.log import debug, info, warning, banner
+from bits_helpers.packages import getPackageList
 from bits_helpers.utilities import (
-    SHARED_ARCH,
-    compute_combined_arch,
-    effective_arch,
-    getPackageList,
-    parseDefaults,
     prunePaths,
-    readDefaults,
     resolve_tag,
     topological_sort,
     ver_rev,
-    detectArch,
-    validateDefaults,
 )
+from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
+from bits_helpers.arch import (
+    SHARED_ARCH,
+    compute_combined_arch,
+    effective_arch,
+)
+from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers.workarea import updateReferenceRepoSpec
 
 # NOTE: bits_helpers.build is imported lazily inside doStatus() to avoid pulling
@@ -189,9 +189,10 @@ def _scan_local_tars(spec: dict, work_dir: str, architecture: str) -> bool:
     """Return True if a matching tarball exists in the local TARS symlink tree."""
     spec_arch = effective_arch(spec, architecture)
     links_regex = re.compile(
-        r"{package}-{version}(?:-(?:local)?[0-9]+)?\.{arch}\.tar\.gz".format(
+        r"{package}-{version}(?:-{revision})?\.{arch}\.tar\.gz".format(
             package=re.escape(spec["package"]),
             version=re.escape(spec["version"]),
+            revision=REVISION_TOKEN_PATTERN,
             arch=re.escape(spec_arch),
         )
     )
@@ -257,8 +258,16 @@ def _classify(spec: dict, work_dir: str, architecture: str,
         return ALREADY_INSTALLED
     if _scan_local_tars(spec, work_dir, architecture):
         return FROM_STORE
-    # Remote store probe (opt-in)
+    # Remote store probe (opt-in). List the store where possible (one request per
+    # hash); only stores that cannot list fall back to downloading the tarball.
     if sync_helper is not None:
+        from bits_helpers.plan import pick_revision, store_can_list
+        eff = effective_arch(spec, architecture)
+        if store_can_list(sync_helper):
+            for h in spec.get("remote_hashes", []):
+                if pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff) is not None:
+                    return FROM_REMOTE_STORE
+            return BUILD_FROM_SOURCE
         try:
             sync_helper.fetch_tarball(spec)
             tar_hash_dir = join(
@@ -356,7 +365,8 @@ def _emit_json(rows: List[dict], architecture: str) -> None:
 def doStatus(args, parser) -> None:
     """Resolve the dependency tree and report the build state of each package."""
     # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
-    from bits_helpers.build import storeHashes, storeHook, hash_local_changes
+    from bits_helpers.build import storeHook, hash_local_changes
+    from bits_helpers.hashing import storeHashes
     from bits_helpers.log import dieOnError
     from bits_helpers.git import git
 
@@ -366,16 +376,8 @@ def doStatus(args, parser) -> None:
     work_dir = abspath(args.workDir)
     prunePaths(work_dir)
 
-    if not exists(args.configDir):
-      from bits_helpers.repo_provider import cwd_is_recipe_dir
-      _default_config_dir = os.environ.get("BITS_REPO_DIR", "alidist")
-      if args.configDir == _default_config_dir and cwd_is_recipe_dir():
-        debug("Recipe files detected in current directory; using '.' as config dir")
-        args.configDir = "."
-    dieOnError(not exists(args.configDir),
-               'Cannot find recipes under directory "%s".\n'
-               'Maybe you need to "cd" to the right directory or '
-               'you forgot to run "bits init"?' % args.configDir)
+    from bits_helpers.repo_provider import resolve_config_dir
+    resolve_config_dir(args)
 
     # ── Defaults and overrides ─────────────────────────────────────────────────
     defaults_reader = lambda: readDefaults(

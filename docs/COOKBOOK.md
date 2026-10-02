@@ -72,7 +72,7 @@ bits build MyApp        # rebuilds libfoo only; MyApp is reused and relinks it
 
 Only `libfoo` rebuilds; `MyApp` (and everything above it) keeps its identity hash and is reused, picking up the new `libfoo` through its `…/libfoo/2.3-dev` path.
 
-**Caveats.** The consumer is *relinked, not recompiled*, so this is valid only while your change keeps `libfoo` ABI-compatible (same headers / soname). Any build whose closure includes an untracked dependency is recorded `provenance: loose` in `.meta.json` — still publishable, but you own the ABI decision. Without `force_revision` the dependency's path moves on each edit and reused consumers keep linking the previous build (bits warns). See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
+**Caveats.** The consumer is *relinked, not recompiled*, so this is valid only while your change keeps `libfoo` ABI-compatible (same headers / soname). Any build whose closure includes an untracked dependency is recorded `provenance: loose` in `.meta.json` — still publishable, but you own the ABI decision. Bits requires an explicit `force_revision` on each untracked dependency; `""` or a fixed label keeps the install path stable. The hash revision policy does not override an explicit value. See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
 
 ### Debug a failed build
 
@@ -218,16 +218,15 @@ Useful for building private packages that depend on public recipes, or for maint
 Instead of passing `--remote-store` on every `bits build` invocation, write it once with `bits init`:
 
 ```bash
-# One-time setup — writes bits.rc in the current directory
+# One-time setup, inside your community repository — records a bits use profile
 bits init --remote-store https://store.example.com/store \
-          --write-store  b3://mybucket/store \
-          --organisation MYORG
+          --write-store  b3://mybucket/store
 
 # Every subsequent invocation picks up the settings automatically
 bits build ROOT
 ```
 
-To check what will be written before touching the file system, add `--dry-run`. To update a single key in an existing `bits.rc` without replacing the whole file, add `--append`.
+The store settings are saved to the profile's `[build]` section (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable). To check what would be saved before touching the file system, add `--dry-run`.
 
 ### Share pre-built artifacts over S3
 
@@ -251,7 +250,7 @@ First, compute and write checksums for all sources:
 bits build --write-checksums MyPackage
 ```
 
-This creates or updates `checksums/MyPackage.checksum` in the recipe directory. Then enforce them on all future builds:
+This creates or updates `checksums/MyPackage.checksum` in the recipe directory. To record a whole recipe repository without building, run `bits checksums -c lcg.bits --write` (and `bits checksums -c stacks.bits --write --defaults all --recipes lcg.bits` for a repository of defaults profiles, for the sources their overrides introduce). Then enforce them on all future builds:
 
 ```bash
 bits build --enforce-checksums MyPackage
@@ -268,34 +267,24 @@ Any mismatch or missing checksum aborts the build, catching supply-chain tamperi
 
 ### Speed up large builds
 
-**Built-in Python scheduler** — build up to N packages in parallel, each using M cores:
+**Built-in Python scheduler** — build up to N packages in parallel, each using M cores. `--parallel` on its own uses 4; omit it entirely for a serial build (`--builders` is a kept alias):
 
 ```bash
-bits build --builders 4 --jobs 8 my_large_stack
+bits build --parallel 4 --jobs 8 my_large_stack
 ```
 
 The scheduler dispatches packages as soon as their dependencies are satisfied. Use `--resources` to declare per-package CPU and memory budgets and prevent overcommit (see [§5 Parallel build modes](REFERENCE.md#5-building-packages)).
 
-**Makeflow** — hand the dependency graph to the external [CCTools Makeflow](https://ccl.cse.nd.edu/software/) engine:
+**Prefetch remote tarballs** — with the `--parallel` scheduler, hide network latency by fetching tarballs in the background while packages compile:
 
 ```bash
-bits build --makeflow my_large_stack
-
-# Inspect what Makeflow generated if a build fails
-cat sw/BUILD/*/makeflow/Makeflow
-cat sw/BUILD/*/makeflow/log
-```
-
-**Pipelined upload** — overlap tarball upload with downstream builds and prefetch remote tarballs in the background (Makeflow only):
-
-```bash
-bits build --makeflow --pipeline \
+bits build --parallel 4 \
            --write-store b3://mybucket/store \
            --prefetch-workers 4 \
            my_large_stack
 ```
 
-`--pipeline` splits each rule into `.build` / `.tar` / `.upload` stages; `--prefetch-workers` hides network latency by fetching tarballs before the build loop needs them.
+`--prefetch-workers` fetches tarballs before the build loop needs them; the `--parallel` scheduler already overlaps uploads with downstream builds.
 
 **Parallel source downloads** — fetch multiple source archives concurrently within each package:
 
@@ -310,11 +299,11 @@ Useful when a recipe lists several large `sources:` URLs.
 For packages whose parallel builds risk OOM, limit concurrent builds and/or declare per-package resource budgets:
 
 ```bash
-# Option 1: reduce concurrent package builds
-bits build --builders 1 --jobs 8 my_stack
+# Option 1: reduce concurrent package builds (serial is the default; omit --parallel)
+bits build --jobs 8 my_stack
 
 # Option 2: use a resource file
-bits build --builders 4 --resources my_resources.json my_stack
+bits build --parallel 4 --resources my_resources.json my_stack
 ```
 
 Where `my_resources.json` declares expected CPU and memory per package:
@@ -332,16 +321,16 @@ The Python scheduler will not start a new build unless the declared resources ar
 
 ```bash
 # Evict packages not used in the last 14 days
-bits cleanup --max-age 14
+bits prune --max-age 14
 
 # Free space until at least 50 GiB is available, removing least-recently-used packages first
-bits cleanup --min-free 50
+bits prune --min-free 50
 
 # Dry run: show what would be removed without deleting anything
-bits cleanup --max-age 7 --min-free 100 -n
+bits prune --max-age 7 --min-free 100 -n
 ```
 
-Bits tracks a sentinel file for each installed package; `bits cleanup` sorts by last-touched time and evicts the oldest entries first. Combine both flags to enforce both a time limit and a disk-space floor in a single pass. See [§7 bits cleanup](USERGUIDE.md#7-cleaning-up) for full options.
+Bits tracks a sentinel file for each installed package; `bits prune` (formerly `bits cleanup`) sorts by last-touched time and evicts the oldest entries first. Combine both flags to enforce both a time limit and a disk-space floor in a single pass. See [§7 bits cleanup](USERGUIDE.md#7-cleaning-up) for full options.
 
 ### Verify a live deployment against a build manifest
 

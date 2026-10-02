@@ -4,6 +4,11 @@
 
 """bits doctor — system requirement checks and runner environment validation.
 
+Without packages (and without --runner / --check-store) ``bits doctor`` checks
+that this machine is set up to run bits: Python and its modules, running as
+root, git, compiler, the container engine (incl. rootless podman setup), disk
+space and store access. Exit code 1 if any check FAILs.
+
 In its default (recipe-check) mode ``bits doctor`` examines a package's
 dependency tree and reports which packages can be satisfied by the system and
 which will be built by bits.
@@ -45,10 +50,11 @@ from typing import List, Tuple
 
 from bits_helpers.cmd import DockerRunner, getstatusoutput
 from bits_helpers.log import banner, debug, error, info, logger, success, warning
-from bits_helpers.utilities import (
-    getPackageList, parseDefaults, readDefaults, validateDefaults,
-    incompatibleFlavorDefaults, effective_arch, ver_rev,
-)
+from bits_helpers.utilities import ver_rev
+from bits_helpers.defaults import (parseDefaults, readDefaults, validateDefaults,
+                                   incompatibleFlavorDefaults)
+from bits_helpers.packages import getPackageList
+from bits_helpers.arch import effective_arch
 
 # ── Status constants ───────────────────────────────────────────────────────────
 PASS = "PASS"
@@ -73,17 +79,6 @@ def _colour(status: str, text: str) -> str:
     return _COLOUR.get(status, "") + text + _RESET
 
 
-# ── bits.rc helper ─────────────────────────────────────────────────────────────
-
-def _bits_rc_value(key: str) -> str:
-    """Return *key* from the first bits.rc / .bitsrc / ~/.bitsrc found, or ''."""
-    import configparser
-    cfg = configparser.ConfigParser()
-    for path in ["bits.rc", ".bitsrc", expanduser("~/.bitsrc")]:
-        if exists(path):
-            cfg.read(path)
-            break
-    return cfg.get("bits", key, fallback="").strip()
 
 
 # ── Existing helpers (unchanged) ───────────────────────────────────────────────
@@ -471,7 +466,7 @@ def _run_check_store_checks(args, specs: dict, own: set,
     Returns ``[(name, status, detail), ...]``.
     """
     # Lazy import — bits_helpers.build is heavy (jinja2, analytics, slow init).
-    from bits_helpers.build import storeHashes as _storeHashes
+    from bits_helpers.hashing import storeHashes as _storeHashes
 
     store_url = (getattr(args, "remoteStore", "") or "").rstrip("/")
     arch      = getattr(args, "architecture", "")
@@ -655,8 +650,8 @@ def _run_runner_checks(args) -> List[CheckResult]:
     # ── CVMFS repos ──────────────────────────────────────────────────────────
     cvmfs_repos = list(getattr(args, "cvmfsRepos", None) or [])
     if not cvmfs_repos:
-        # Fall back to bits.rc cvmfs_repos (comma-separated paths)
-        rc_repos = _bits_rc_value("cvmfs_repos")
+        # Fall back to $BITS_CVMFS_REPOS (comma-separated paths).
+        rc_repos = os.environ.get("BITS_CVMFS_REPOS", "")
         if rc_repos:
             cvmfs_repos = [r.strip() for r in rc_repos.split(",") if r.strip()]
     for repo_path in cvmfs_repos:
@@ -686,9 +681,10 @@ def _run_runner_checks(args) -> List[CheckResult]:
 
 # ── Output emitters ────────────────────────────────────────────────────────────
 
-def _emit_runner_text(checks: List[CheckResult], arch: str) -> None:
+def _emit_runner_text(checks: List[CheckResult], arch: str,
+                      title: str = "bits doctor --runner") -> None:
     from bits_helpers.log import banner as _banner
-    _banner("bits doctor --runner  —  architecture: %s", arch)
+    _banner("%s  —  architecture: %s", title, arch)
     print()
     print("  %-32s %-6s  %s" % ("check", "status", "detail"))
     print("  " + "-" * 76)
@@ -713,9 +709,10 @@ def _emit_runner_text(checks: List[CheckResult], arch: str) -> None:
     ))
 
 
-def _emit_runner_json(checks: List[CheckResult], arch: str, exit_code: int) -> None:
+def _emit_runner_json(checks: List[CheckResult], arch: str, exit_code: int,
+                      mode: str = "runner") -> None:
     report = {
-        "mode":         "runner",
+        "mode":         mode,
         "architecture": arch,
         "checks": [
             {"name": name, "status": status, "detail": detail}
@@ -747,6 +744,18 @@ def doDoctor(args, parser):
             _emit_runner_text(checks, arch)
         sys.exit(exit_code)
 
+    # ── No packages: check that this machine is set up to run bits ───────────
+    if not args.packages and not getattr(args, "checkStore", False):
+        from bits_helpers.doctor_setup import run_setup_checks
+        arch = getattr(args, "architecture", "")
+        checks = run_setup_checks(args)
+        exit_code = 1 if any(s == FAIL for _, s, _ in checks) else 0
+        if getattr(args, "json_output", False):
+            _emit_runner_json(checks, arch, exit_code, mode="setup")
+        else:
+            _emit_runner_text(checks, arch, title="bits doctor (setup)")
+        sys.exit(exit_code)
+
     # ── Standard recipe-check mode ───────────────────────────────────────────
     if not exists(args.configDir):
         parser.error("Wrong path to alidist specified: %s" % args.configDir)
@@ -758,8 +767,8 @@ def doDoctor(args, parser):
                 "environment in hidden ways.\nPlease review it and make sure "
                 "you are not force-loading any library.")
 
-    # ── Prerequisite URL: read from bits.rc so each community can customise ──
-    _prereq_url  = _bits_rc_value("prerequisites_url") or \
+    # ── Prerequisite URL: a community can customise it via $BITS_PREREQUISITES_URL.
+    _prereq_url  = os.environ.get("BITS_PREREQUISITES_URL") or \
                    "https://alice-doc.github.io/alice-analysis-tutorial/building/"
     _prereq_hint = "Please consult the prerequisites guide:\n  %s" % _prereq_url
 

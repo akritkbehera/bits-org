@@ -60,7 +60,8 @@ _RESET = "\033[0m"
 
 def _store_rel(pkg_hash: str, tarball: str, arch: str) -> str:
     """Return the store-relative path for a content-addressed tarball."""
-    return os.path.join("TARS", arch, "store", pkg_hash[:2], pkg_hash, tarball)
+    from bits_helpers.utilities import resolve_store_path
+    return os.path.join(resolve_store_path(arch, pkg_hash), tarball)
 
 
 def _find_tarball(tarball: str, pkg_hash: str, arch: str,
@@ -180,7 +181,7 @@ def _print_prov_row(status: str, name: str, detail: str) -> None:
 
 def doVerify(args, parser) -> None:  # noqa: N802
     """Verify a live deployment against a build manifest."""
-    from bits_helpers.utilities import detectArch
+    from bits_helpers.arch import detectArch
 
     manifest_path = args.fromManifest
     if not os.path.isfile(manifest_path):

@@ -6,17 +6,18 @@ import unittest
 # Assuming you are using the mock library to ... mock things
 from unittest.mock import patch
 
-from bits_helpers.utilities import doDetectArch, filterByArchitectureDefaults, disabledByArchitectureDefaults
-from bits_helpers.utilities import resolve_variables, predefined_arch_vars
+from bits_helpers.matchers import filterByArchitectureDefaults, disabledByArchitectureDefaults
+from bits_helpers.matchers import resolve_variables
+from bits_helpers.arch import doDetectArch, predefined_arch_vars
 from bits_helpers.utilities import Hasher
 from bits_helpers.utilities import asList
 from bits_helpers.utilities import prunePaths
 from bits_helpers.utilities import resolve_version, resolve_spec_data, resolve_tag
+from bits_helpers.utilities import apply_version_from
 from bits_helpers.utilities import topological_sort
-from bits_helpers.utilities import resolveFilename, resolveDefaultsFilename
-from bits_helpers.utilities import _parse_req_matcher, _collect_version_pins
-from bits_helpers.utilities import asDict, merge_dicts
-from bits_helpers.utilities import _version_compare, _parse_patch_entry, filterPatches, _matcher_active
+from bits_helpers.matchers import _parse_req_matcher, _collect_version_pins
+from bits_helpers.defaults import asDict, merge_dicts
+from bits_helpers.matchers import _version_compare, _parse_patch_entry, filterPatches, _matcher_active
 from collections import OrderedDict
 import bits_helpers
 import bits_helpers.log
@@ -696,7 +697,7 @@ class ArchTemplateTest(unittest.TestCase):
     UBUNTU = ("ubuntu", "25.10", "")
 
     def _comp(self, processor="x86_64"):
-        from bits_helpers.utilities import arch_components
+        from bits_helpers.arch import arch_components
         return arch_components(True, [], self.UBUNTU, "Linux", processor)
 
     def test_components(self):
@@ -705,35 +706,35 @@ class ArchTemplateTest(unittest.TestCase):
 
     def test_default_layout_unchanged(self):
         # The built-in template must reproduce today's string byte-for-byte.
-        from bits_helpers.utilities import doDetectArch, DEFAULT_ARCH_TEMPLATE, apply_arch_template
+        from bits_helpers.arch import doDetectArch, DEFAULT_ARCH_TEMPLATE, apply_arch_template
         self.assertEqual(DEFAULT_ARCH_TEMPLATE, "%(os)s_%(machine)s")
         self.assertEqual(doDetectArch(True, [], self.UBUNTU, "Linux", "x86_64"), "ubuntu2510_x86-64")
         self.assertEqual(apply_arch_template(DEFAULT_ARCH_TEMPLATE, self._comp()), "ubuntu2510_x86-64")
 
     def test_three_layouts(self):
-        from bits_helpers.utilities import apply_arch_template
+        from bits_helpers.arch import apply_arch_template
         c = self._comp()
         self.assertEqual(apply_arch_template("%(os)s_%(machine)s", c), "ubuntu2510_x86-64")
         self.assertEqual(apply_arch_template("%(os)s_%(_machine)s", c), "ubuntu2510_x86_64")
         self.assertEqual(apply_arch_template("%(_machine)s-%(os)s", c), "x86_64-ubuntu2510")
 
     def test_literal_template_passthrough(self):
-        from bits_helpers.utilities import apply_arch_template
+        from bits_helpers.arch import apply_arch_template
         self.assertEqual(apply_arch_template("ubuntu2510_x86-64", self._comp()), "ubuntu2510_x86-64")
 
     def test_bad_template_raises(self):
-        from bits_helpers.utilities import apply_arch_template
+        from bits_helpers.arch import apply_arch_template
         with self.assertRaises(ValueError):
             apply_arch_template("%(nope)s", self._comp())
 
     def test_osx_components(self):
-        from bits_helpers.utilities import arch_components
+        from bits_helpers.arch import arch_components
         c = arch_components(False, [], ("", "", ""), "Darwin", "arm64")
         self.assertEqual(c["os"], "osx")
         self.assertEqual(c["machine"], "arm64")
 
     def test_tokens(self):
-        from bits_helpers.utilities import arch_distro_token, arch_machine_token
+        from bits_helpers.arch import arch_distro_token, arch_machine_token
         self.assertEqual(arch_distro_token("x86_64-ubuntu2510"), "ubuntu2510")
         self.assertEqual(arch_distro_token("slc9_aarch64"), "slc9")
         self.assertEqual(arch_machine_token("ubuntu2510_x86_64"), "x86_64")
@@ -741,7 +742,7 @@ class ArchTemplateTest(unittest.TestCase):
         self.assertIsNone(arch_distro_token("garbage123"))
 
     def test_normalise_arch_key_equivalence(self):
-        from bits_helpers.utilities import normalise_arch_key
+        from bits_helpers.arch import normalise_arch_key
         # underscore and dash machine forms collapse to the same key
         self.assertEqual(normalise_arch_key("ubuntu2404_x86_64"),
                          normalise_arch_key("ubuntu2404_x86-64"))
@@ -824,20 +825,43 @@ class VersionMatcherTest(unittest.TestCase):
         self.assertFalse(self._m(".*osx.*|.*arm64.*"))
 
     def test_parse_patch_entry(self):
-        self.assertEqual(_parse_patch_entry("p.patch"), ("p.patch", None, ""))
+        self.assertEqual(_parse_patch_entry("p.patch"), ("p.patch", None, "", None))
         self.assertEqual(_parse_patch_entry("p.patch:version=v40r2"),
-                         ("p.patch", "version=v40r2", ""))
+                         ("p.patch", "version=v40r2", "", None))
         self.assertEqual(_parse_patch_entry("p.patch,sha256:abc"),
-                         ("p.patch", None, ",sha256:abc"))
+                         ("p.patch", None, ",sha256:abc", None))
         self.assertEqual(_parse_patch_entry("p.patch:(?cuda),md5:x"),
-                         ("p.patch", "(?cuda)", ",md5:x"))
+                         ("p.patch", "(?cuda)", ",md5:x", None))
+        # strip=N is pulled out as an apply option, standalone or &&-joined
+        self.assertEqual(_parse_patch_entry("p.patch:strip=0"),
+                         ("p.patch", None, "", 0))
+        self.assertEqual(_parse_patch_entry("p.patch:version=v40r2&&strip=0"),
+                         ("p.patch", "version=v40r2", "", 0))
+        self.assertEqual(_parse_patch_entry("p.patch:strip=0,sha256:abc"),
+                         ("p.patch", None, ",sha256:abc", 0))
+        # malformed strip= (|| branch, spaces, negative) must fail loudly, not
+        # leak into the gate.
+        for bad in ("p.patch:a||strip=0", "p.patch:strip=-1", "p.patch:strip = 0"):
+            with self.assertRaises(SystemExit):
+                _parse_patch_entry(bad)
 
     def test_filter_patches_strips_matcher_and_drops_inactive(self):
         pl = ["a.patch:version=v40r2", "b.patch", "c.patch:version>=v40r4,sha256:zz"]
-        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r2"),
+        # filterPatches now returns (patches, strip_map); patches unchanged here.
+        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r2")[0],
                          ["a.patch", "b.patch"])
-        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r4"),
+        self.assertEqual(filterPatches(pl, self.ARCH, ["dev4"], None, "v40r4")[0],
                          ["b.patch", "c.patch,sha256:zz"])
+
+    def test_filter_patches_records_strip(self):
+        pl = ["a.patch:strip=0", "b.patch", "c.patch:version=v40r2&&strip=0"]
+        patches, strips = filterPatches(pl, self.ARCH, ["dev4"], None, "v40r2")
+        self.assertEqual(patches, ["a.patch", "b.patch", "c.patch"])
+        self.assertEqual(strips, {"a.patch": 0, "c.patch": 0})
+        # a strip whose gate is inactive is not recorded (patch itself dropped)
+        _, strips2 = filterPatches(["d.patch:version=v99&&strip=0"],
+                                   self.ARCH, ["dev4"], None, "v40r2")
+        self.assertEqual(strips2, {})
 
 
 class TestResolveTag(unittest.TestCase):
@@ -869,6 +893,67 @@ class TestResolveTag(unittest.TestCase):
         self.assertIn("nope", die.call_args[0][1])
         # the message should help by listing what IS available
         self.assertIn("release", die.call_args[0][1])
+
+
+class YamlCompatReexportTest(unittest.TestCase):
+    """External recipe generators (e.g. cms.bits) import yamlLoad/yamlDump from
+    bits_helpers.utilities. yamlLoad moved to bits_helpers.recipe and yamlDump was
+    restored there; both must stay importable at the OLD utilities location so a
+    future move does not silently break out-of-repo callers."""
+
+    def test_reexported_from_utilities(self):
+        from bits_helpers.utilities import yamlLoad, yamlDump
+        from bits_helpers import recipe
+        self.assertIs(yamlLoad, recipe.yamlLoad)
+        self.assertIs(yamlDump, recipe.yamlDump)
+
+    def test_round_trip_preserves_content(self):
+        from bits_helpers.utilities import yamlLoad, yamlDump
+        d = yamlLoad("package: Foo\nversion: 1.0\ntag: v1\n")
+        out = yamlDump(d)
+        self.assertIn("package: Foo", out)
+        self.assertEqual(dict(yamlLoad(out)), dict(d))
+
+
+
+class TestApplyVersionFrom(unittest.TestCase):
+    """version_from: <var> — take version (and, for source-less, tag+commit_hash)
+    from a named defaults variable. See apply_version_from / build.py."""
+
+    def test_sourceless_sets_version_tag_commit(self):
+        spec = OrderedDict(package="lcg-view", version_from="release")
+        applied = apply_version_from(spec, {"release": "LCG_110"})
+        self.assertTrue(applied)
+        self.assertEqual(spec["version"], "LCG_110")
+        self.assertEqual(spec["tag"], "LCG_110")
+        self.assertEqual(spec["commit_hash"], "LCG_110")
+
+    def test_unknown_variable_is_fatal(self):
+        spec = OrderedDict(package="lcg-view", version_from="bogus")
+        with patch("bits_helpers.utilities.dieOnError") as die:
+            apply_version_from(spec, {"release": "LCG_110"})
+        self.assertTrue(die.called)
+        self.assertIs(die.call_args[0][0], True)  # dieOnError(True, ...)
+
+    def test_no_version_from_is_noop(self):
+        # Regression guard: a recipe WITHOUT version_from is untouched, even with a
+        # templated version present (the 874 source-less recipes must not change).
+        spec = OrderedDict(package="x", version="%(year)s%(month)s%(day)s")
+        applied = apply_version_from(spec, {"release": "LCG_110"})
+        self.assertFalse(applied)
+        self.assertEqual(spec["version"], "%(year)s%(month)s%(day)s")
+        self.assertNotIn("tag", spec)
+        self.assertNotIn("commit_hash", spec)
+
+    def test_with_source_sets_version_only(self):
+        # A package WITH a source keeps its git/tarball tag; version_from sets only
+        # the version, leaving tag/commit_hash to the source handling.
+        spec = OrderedDict(package="y", version_from="release", source="http://x")
+        applied = apply_version_from(spec, {"release": "LCG_110"})
+        self.assertTrue(applied)
+        self.assertEqual(spec["version"], "LCG_110")
+        self.assertNotIn("tag", spec)
+        self.assertNotIn("commit_hash", spec)
 
 
 if __name__ == '__main__':

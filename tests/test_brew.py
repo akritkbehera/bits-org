@@ -7,7 +7,8 @@ import os
 import tempfile
 import unittest
 
-from bits_helpers.brew import collect_homebrew, render_brewfile, _as_list
+from bits_helpers.brew import (collect_homebrew, render_brewfile, _as_list,
+                               default_brewfile_path)
 
 
 RECIPES = {
@@ -67,8 +68,16 @@ class TestBrew(unittest.TestCase):
 
     def test_collect_osx(self):
         formulae, taps = collect_homebrew(self.tmp, "osx_arm64")
-        self.assertEqual(formulae, {"readline", "libpng"})
+        # recipe formulae + the build-system base (gnu-tar).
+        self.assertEqual(formulae, {"readline", "libpng", "gnu-tar"})
         self.assertEqual(taps, {"example/tap"})
+
+    def test_base_formula_gnu_tar_always_on_osx(self):
+        # gnu-tar (gtar) is required by build_template.sh for reproducible
+        # tarballs, so it must be emitted even with no recipes declaring it.
+        empty = tempfile.mkdtemp(prefix="bits_brew_empty_")
+        formulae, _ = collect_homebrew(empty, "osx_arm64")
+        self.assertIn("gnu-tar", formulae)
 
     def test_collect_excludes_linux_only_on_osx(self):
         formulae, _ = collect_homebrew(self.tmp, "osx_arm64")
@@ -88,6 +97,32 @@ class TestBrew(unittest.TestCase):
         self.assertLess(out.index('brew "libpng"'), out.index('brew "readline"'))
         self.assertEqual(out, render_brewfile({"libpng", "readline"}, {"example/tap"}, "osx_arm64"))
         self.assertTrue(out.endswith("\n"))
+
+
+    def test_collect_accepts_list_of_dirs(self):
+        # `bits build` emits from the recipe scan over config dir + provider
+        # repos, so collect_homebrew must accept a list of dirs, not just one.
+        other = tempfile.mkdtemp(prefix="bits_brew_other_")
+        with open(os.path.join(other, "freetype.sh"), "w") as fh:
+            fh.write('package: freetype\nversion: system\n'
+                     'prefer_system: "osx.*"\nhomebrew_formula: freetype\n---\n')
+        formulae, _ = collect_homebrew([self.tmp, other], "osx_arm64")
+        self.assertEqual(formulae, {"readline", "libpng", "freetype", "gnu-tar"})
+
+    def test_prefer_system_osx_formula_is_collected(self):
+        # Invariant the build emit relies on: an osx-gated homebrew_formula (the
+        # kind resolution strips into a replacement spec) is found by the recipe
+        # scan. NB this covers the scanner, not doBuild's source choice; the
+        # latter is guarded only by deleting collect_homebrew_from_specs.
+        formulae, _ = collect_homebrew(self.tmp, "osx_arm64")
+        self.assertIn("libpng", formulae)
+
+    def test_default_brewfile_path(self):
+        # Local per-arch build artifact: <work-dir>/<arch>/Brewfile, absolute.
+        path = default_brewfile_path("sw", "osx_arm64")
+        self.assertTrue(os.path.isabs(path))
+        self.assertEqual(os.path.basename(path), "Brewfile")
+        self.assertEqual(os.path.basename(os.path.dirname(path)), "osx_arm64")
 
 
 if __name__ == "__main__":

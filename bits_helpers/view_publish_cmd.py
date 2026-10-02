@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""`bits publish --view <name>` — publish the merged view for a release.
+"""`bits publish --release-view <name>` — publish the merged view for a release.
 
 Unions every package of one release (one ``build_id``) into
 ``<cvmfs-target>/Views/<name>-<build_id>/<arch>/`` with relative symlinks + a
@@ -18,7 +18,7 @@ import json
 import os
 
 from bits_helpers.log import debug, error, info, warning
-from bits_helpers.view import collect_build_id_roots, build_published_view
+from bits_helpers.view import collect_build_id_roots, build_published_view, layout_views_dir
 
 
 def _build_id_of_package(work_dir, architecture, package):
@@ -46,20 +46,6 @@ def _build_id_of_package(work_dir, architecture, package):
     return None
 
 
-def _layout_views_dir(roots):
-    """The ``views_dir`` recorded in the release's package metadata (default
-    ``Views``), so the published view honours a non-default profile layout."""
-    for root in roots:
-        try:
-            with open(os.path.join(root, ".meta.json")) as fh:
-                layout = json.load(fh).get("cvmfs_layout")
-        except Exception:
-            continue
-        if isinstance(layout, dict) and layout.get("views_dir"):
-            return layout["views_dir"]
-    return "Views"
-
-
 def _build_ids_in_area(work_dir, architecture):
     """Return the set of build_ids present in the work area for this arch."""
     base = os.path.join(work_dir, architecture)
@@ -85,17 +71,17 @@ def _resolve_build_id(args, work_dir, architecture):
     if package:
         bid = _build_id_of_package(work_dir, architecture, package)
         if not bid:
-            error("publish --view: no build_id found for package %s under %s/%s",
+            error("publish --release-view: no build_id found for package %s under %s/%s",
                   package, work_dir, architecture)
         return bid
     ids = _build_ids_in_area(work_dir, architecture)
     if not ids:
-        error("publish --view: no packages with a build_id found under %s/%s",
+        error("publish --release-view: no packages with a build_id found under %s/%s",
               work_dir, architecture)
         return None
     if len(ids) > 1:
-        error("publish --view: %d build_ids in the build area: %s. Name the "
-              "release's top package to pick one (e.g. `bits publish --view %s "
+        error("publish --release-view: %d build_ids in the build area: %s. Name the "
+              "release's top package to pick one (e.g. `bits publish --release-view %s "
               "ROOT/<ver>`).", len(ids), ", ".join(sorted(ids)),
               getattr(args, "publishView", "<name>"))
         return None
@@ -117,11 +103,11 @@ def doPublishView(args, parser):
 
     roots = collect_build_id_roots(store, build_id, architecture=architecture)
     if not roots:
-        error("publish --view: no deployed packages for build_id %s under %s "
+        error("publish --release-view: no deployed packages for build_id %s under %s "
               "(publish the packages first).", build_id, store)
         return False
 
-    views_dir = _layout_views_dir(roots)
+    views_dir = layout_views_dir(roots)
     result = build_published_view(roots, name, build_id, architecture, store,
                                   views_dir=views_dir)
     # Compliance obligations live at the release root: place NOTICE and the
@@ -134,17 +120,18 @@ def doPublishView(args, parser):
         for man in load_build_manifests(os.path.join(work_dir, "MANIFESTS")):
             if build_id_from_manifest(man) == build_id:
                 write_release_compliance(result["view_dir"],
-                                         man.get("packages") or [], build_id)
+                                         man.get("packages") or [], build_id,
+                                         manifest=man)
                 break
         else:
-            debug("publish --view: no local manifest for %s — NOTICE skipped",
+            debug("publish --release-view: no local manifest for %s — NOTICE skipped",
                   build_id)
     except Exception as exc:              # pylint: disable=broad-except
-        warning("publish --view: could not write NOTICE/source-offer: %s", exc)
-    info("publish --view: '%s' (%s) — %d package(s) -> %s (%d link(s))",
+        warning("publish --release-view: could not write NOTICE/source-offer: %s", exc)
+    info("publish --release-view: '%s' (%s) — %d package(s) -> %s (%d link(s))",
          name, build_id, len(roots), result["view_dir"], len(result["linked"]))
     if result["conflicts"]:
-        warning("publish --view: %d file conflict(s), first writer kept; e.g. %s",
+        warning("publish --release-view: %d file conflict(s), first writer kept; e.g. %s",
                 len(result["conflicts"]),
                 ", ".join(c[0] for c in result["conflicts"][:5]))
     return True

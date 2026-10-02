@@ -7,8 +7,8 @@ import tempfile
 import unittest
 import yaml
 import bits_helpers.utilities
-from bits_helpers.utilities import merge_dicts
-from bits_helpers.utilities import yamlLoad
+from bits_helpers.defaults import merge_dicts
+from bits_helpers.recipe import yamlLoad
 
 class TestYamlLoadIncludes(unittest.TestCase):
 

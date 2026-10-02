@@ -8,7 +8,7 @@ import unittest
 
 from collections import OrderedDict
 
-from bits_helpers.build import storeHashes
+from bits_helpers.hashing import storeHashes
 
 LOGFILE = "build.log"
 SPEC_RE = re.compile(r"spec = (OrderedDict\(\[\('package', '([^']+)'.*\)\]\))")
@@ -74,7 +74,7 @@ class NormalizeRecipeForHashTestCase(unittest.TestCase):
     """normalize_recipe_for_hash strips comments/blank lines for hashing only."""
 
     def _n(self, s):
-        from bits_helpers.build import normalize_recipe_for_hash
+        from bits_helpers.hashing import normalize_recipe_for_hash
         return normalize_recipe_for_hash(s)
 
     def test_drops_full_line_comments_and_blanks(self):
@@ -128,7 +128,7 @@ class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
               "make install\n")
 
     def _n(self, s):
-        from bits_helpers.build import normalize_recipe_for_hash
+        from bits_helpers.hashing import normalize_recipe_for_hash
         return normalize_recipe_for_hash(s)
 
     def test_metadata_keys_removed_from_header(self):
@@ -162,6 +162,19 @@ class NormalizeRecipeMetadataExclusionTestCase(unittest.TestCase):
             "source_url: b3://bucket/SOURCES/foo/1.0/foo-1.0.tar.gz\n"
             "redistributable: false\n")
         self.assertEqual(self._n(base), self._n(extra))
+
+    def test_view_rules_are_hash_invariant(self):
+        # view: only shapes a release's merged view (presentation, applied at
+        # publish time), so it must not change the build hash input.
+        withv = self.HEADER.replace(
+            "requires:\n",
+            "view:\n"
+            "  exclude: [share/doc]\n"
+            "  include: [etc/root]\n"
+            "requires:\n")
+        self.assertEqual(self._n(self.HEADER), self._n(withv))
+        self.assertEqual(self._n(self.HEADER),
+                         self._n(self.HEADER.replace("requires:\n", "view: false\nrequires:\n")))
 
     def test_adding_preload_block_is_hash_invariant(self):
         # The preload: test list (consumed post-publish by `bits preload`) is
@@ -222,7 +235,7 @@ class SourceKeysExcludedFromTextHashTestCase(unittest.TestCase):
     git alternative on a tarball recipe is hash-neutral."""
 
     def _n(self, s):
-        from bits_helpers.build import normalize_recipe_for_hash
+        from bits_helpers.hashing import normalize_recipe_for_hash
         return normalize_recipe_for_hash(s)
 
     def test_source_sources_tag_stripped_from_header(self):
@@ -242,7 +255,7 @@ class SourceKeysExcludedFromTextHashTestCase(unittest.TestCase):
         self.assertIn("echo 'source: not a header'", self._n(r))
 
     def _h(self, **over):
-        from bits_helpers.build import storeHashes
+        from bits_helpers.hashing import storeHashes
         s = {"package": "foo", "version": "1.2.3", "commit_hash": "1.2.3", "tag": "1.2.3",
              "scm_refs": {}, "requires": [], "build_requires": [], "runtime_requires": [],
              "is_devel_pkg": False, "pkg_family": "",
@@ -266,3 +279,120 @@ class SourceKeysExcludedFromTextHashTestCase(unittest.TestCase):
         g1 = self._h(source="g", commit_hash="aaa", tag="v1")
         g2 = self._h(source="g", commit_hash="bbb", tag="v1")
         self.assertNotEqual(g1, g2)
+
+
+class OwnHashTestCase(unittest.TestCase):
+    """own_hash excludes the merged defaults-release from a package's IDENTITY
+    hash (ADR-0012): the same recipe/tag hashes identically across communities,
+    while the axis (tag) still differentiates. Without the flag, community
+    defaults change the hash — the negative control."""
+
+    @staticmethod
+    def _mk(tag, own):
+        spec = {
+            "package": "GCC-Toolchain", "recipe": "echo build", "version": tag,
+            "tag": tag, "commit_hash": tag, "scm_refs": {}, "pkg_family": "",
+            "is_devel_pkg": False, "source": "https://example/gcc",
+            "env": OrderedDict(), "requires": ["defaults-release"],
+            "untracked_requires": [],
+        }
+        if own:
+            spec["own_hash"] = True
+        return spec
+
+    def _hash(self, defaults_hash, tag, own):
+        specs = {"defaults-release": {"hash": defaults_hash}}
+        specs["GCC-Toolchain"] = self._mk(tag, own)
+        storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+        return specs["GCC-Toolchain"]["remote_revision_hash"]
+
+    def test_converges_across_communities_with_flag(self):
+        self.assertEqual(self._hash("defaults_A", "v14.2.0", True),
+                         self._hash("defaults_B", "v14.2.0", True))
+
+    def test_diverges_across_communities_without_flag(self):
+        # Negative control: without own_hash the community defaults DO change it.
+        self.assertNotEqual(self._hash("defaults_A", "v14.2.0", False),
+                            self._hash("defaults_B", "v14.2.0", False))
+
+    def test_axis_still_differentiates_with_flag(self):
+        self.assertNotEqual(self._hash("defaults_A", "v14.2.0", True),
+                            self._hash("defaults_A", "v13.2.0", True))
+
+    def _hashes(self, defaults_hash, tag, own):
+        specs = {"defaults-release": {"hash": defaults_hash}}
+        specs["GCC-Toolchain"] = self._mk(tag, own)
+        storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+        sp = specs["GCC-Toolchain"]
+        return sp["remote_revision_hash"], sp["deps_hash"]
+
+    def test_defaults_still_in_deps_hash_with_flag(self):
+        # own_hash keeps defaults-release in deps_hash (dev rebuilds still see it):
+        # identity converges across communities, deps_hash still differs.
+        idA, dA = self._hashes("defaults_A", "v14.2.0", True)
+        idB, dB = self._hashes("defaults_B", "v14.2.0", True)
+        self.assertEqual(idA, idB)
+        self.assertNotEqual(dA, dB)
+
+    def test_other_requires_still_folded_with_flag(self):
+        # own_hash excludes ONLY defaults-release; a real dependency still folds
+        # into the identity (guards against accidental over-exclusion).
+        def h(depx):
+            specs = {"defaults-release": {"hash": "d"}, "X": {"hash": depx}}
+            sp = self._mk("v14.2.0", True); sp["requires"] = ["defaults-release", "X"]
+            specs["GCC-Toolchain"] = sp
+            storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+            return specs["GCC-Toolchain"]["remote_revision_hash"]
+        self.assertNotEqual(h("x1"), h("x2"))
+
+    def test_container_fingerprint_folds_for_own_hash(self):
+        # Same community, different container fingerprint -> different identity
+        # (the build environment is captured); same fingerprint -> identical.
+        def h(fp):
+            sp = self._mk("v14.2.0", True); sp["container_fingerprint"] = fp
+            specs = {"defaults-release": {"hash": "d"}, "GCC-Toolchain": sp}
+            storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+            return specs["GCC-Toolchain"]["remote_revision_hash"]
+        self.assertNotEqual(h("fp_glibc_2.34"), h("fp_glibc_2.39"))
+        self.assertEqual(h("fp_same"), h("fp_same"))
+
+    def test_converges_across_communities_same_fingerprint(self):
+        # Cross-community S3 reuse still holds when the fingerprint matches.
+        def h(defaults_hash):
+            sp = self._mk("v14.2.0", True); sp["container_fingerprint"] = "fp_x"
+            specs = {"defaults-release": {"hash": defaults_hash}, "GCC-Toolchain": sp}
+            storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+            return specs["GCC-Toolchain"]["remote_revision_hash"]
+        self.assertEqual(h("defaults_A"), h("defaults_B"))
+
+    def test_fingerprint_ignored_for_non_own_hash(self):
+        # container_fingerprint must only affect own_hash packages.
+        def h(fp):
+            sp = self._mk("v14.2.0", False); sp["container_fingerprint"] = fp
+            specs = {"defaults-release": {"hash": "d"}, "GCC-Toolchain": sp}
+            storeHashes("GCC-Toolchain", specs, considerRelocation=False)
+            return specs["GCC-Toolchain"]["remote_revision_hash"]
+        self.assertEqual(h("fp_a"), h("fp_b"))
+
+
+class DefaultsLocalIdentityTestCase(unittest.TestCase):
+    def test_defaults_has_identical_local_and_remote_hashes(self):
+        def spec(package, requires=()):
+            return {"package": package, "version": "v1", "commit_hash": "0", "tag": "v1",
+                    "scm_refs": {}, "requires": list(requires), "build_requires": [],
+                    "runtime_requires": [], "is_devel_pkg": False, "recipe": "",
+                    "pkg_family": ""}
+
+        consumers = []
+        for local in (False, True):
+            defaults = spec("defaults-release")
+            specs = {"defaults-release": defaults}
+            storeHashes("defaults-release", specs, considerRelocation=False)
+            self.assertEqual(defaults["local_revision_hash"], defaults["remote_revision_hash"])
+            self.assertEqual(defaults["local_hashes"], defaults["remote_hashes"])
+            defaults["hash"] = defaults["local_revision_hash" if local else "remote_revision_hash"]
+            consumer = specs["consumer"] = spec("consumer", ("defaults-release",))
+            storeHashes("consumer", specs, considerRelocation=False)
+            self.assertNotEqual(consumer["local_revision_hash"], consumer["remote_revision_hash"])
+            consumers.append(consumer["remote_revision_hash"])
+        self.assertEqual(consumers[0], consumers[1])

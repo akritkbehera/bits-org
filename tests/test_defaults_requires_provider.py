@@ -47,7 +47,8 @@ from unittest.mock import MagicMock, patch, call
 
 # ── path setup ────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from bits_helpers.utilities import parseDefaults, parseRecipe, getRecipeReader
+from bits_helpers.defaults import parseDefaults
+from bits_helpers.recipe import parseRecipe, getRecipeReader
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +486,7 @@ class TestDefaultsRequiresNoCycle(unittest.TestCase):
 
     def _call_getPackageList(self, packages, overrides=None, architecture="slc7_x86-64"):
         """Thin wrapper around getPackageList using the test config dir."""
-        from bits_helpers.utilities import getPackageList
+        from bits_helpers.packages import getPackageList
         from bits_helpers.cmd import getstatusoutput
 
         specs = {}

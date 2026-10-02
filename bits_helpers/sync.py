@@ -15,7 +15,9 @@ from urllib.parse import quote
 
 from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, warning, dieOnError, ProgressPrint
-from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, effective_arch, ver_rev
+from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, ver_rev
+from bits_helpers.arch import effective_arch
+from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 
 
 # Default S3 endpoint. Kept for backward compatibility with aliBuild: when no
@@ -133,7 +135,7 @@ def source_sync_for(spec, sync_helper):
 # .tar.gz is not byte-reproducible, so key existence alone cannot tell us whether
 # the store holds the same bytes the build manifest records; this lets the upload
 # path compare cheaply (HEAD) and overwrite when they differ, keeping the store
-# consistent with the manifest that `bits certify` signs.
+# consistent with the manifest that `bits sign` signs.
 _SHA256_META = "sha256"
 
 
@@ -197,7 +199,7 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
     4. the built-in default.
   The resolved values are written back into os.environ under their canonical
   names so that the boto3 client (Boto3RemoteSync) and the
-  `bits_helpers.upload_cmd` subprocess spawned by --pipeline all see the same
+  `bits_helpers.upload_cmd` subprocess all see the same
   connection without threading secrets through the command line.
 
   Backward compatible: with no --s3-* flags and no env vars, the endpoint
@@ -243,12 +245,28 @@ def resolve_and_export_s3_config(endpoint=None, access_key=None, secret_key=None
   return {"endpoint": endpoint, "region": region, "addressing_style": addressing_style}
 
 
+def normalise_store_url(url):
+  """CERN S3 path-style ``https://s3.cern.ch/<bucket>[/path]`` -> the swift form.
+
+  bits lists http(s) stores through the swift API; the S3 path-style address
+  cannot be listed that way, so every package would look absent.
+  """
+  m = re.match(r"^(https?://s3\.cern\.ch)(?::443)?/(?!swift/)([^/?#]+(?:/[^?#]*)?)$",
+               str(url or ""), re.I)
+  return "%s/swift/v1/%s" % m.groups() if m else url
+
+
 def remote_from_url(read_url, write_url, architecture, work_dir, insecure=False,
                     s3_endpoint=None, s3_access_key=None, s3_secret_key=None,
                     s3_region=None, s3_addressing_style=None):
   """Parse remote store URLs and return the correct RemoteSync instance for them."""
+  # A write store alone is also the read store (as with ::rw); otherwise it would
+  # fall through to NoRemoteSync below and nothing would be uploaded.
+  dieOnError((write_url or "").startswith("cvmfs://"),
+             "Cannot use a cvmfs:// store as a --write-store: CVMFS is read-only.")
+  read_url = normalise_store_url(read_url or write_url or "")
   # For S3-backed stores, resolve + export the connection config before any S3
-  # backend is built, so boto3 and the --pipeline subprocess share one
+  # backend is built, so boto3 and the upload subprocess share one
   # endpoint/credentials. No-op for non-S3 stores (rsync/cvmfs/https).
   if (read_url or "").startswith(("s3://", "b3://")) or \
      (write_url or "").startswith(("s3://", "b3://")):
@@ -295,7 +313,33 @@ def _writer_from_url(write_url, architecture, work_dir):
   return RsyncRemoteSync(write_url, write_url, architecture, work_dir)
 
 
-class DualRemoteSync:
+class RemoteSync:
+  """Base for remote-store backends. Supplies documented no-op defaults for the
+  optional STORE-METADATA queries (ADR-0005 rev-index markers and content-object
+  listings), so a caller may invoke them on ANY backend without hasattr/getattr
+  reflection — a backend that records no such metadata simply reports 'nothing'.
+  Concrete fetch/upload behaviour is defined by each subclass (NoRemoteSync
+  implements it as no-ops)."""
+
+  def read_rev_markers(self, *args, **kwargs):
+    """{revision: hash} rev-index markers recorded in the store, or {}."""
+    return {}
+
+  def list_store_tarballs(self, *args, **kwargs):
+    """Store tarball object names for an (architecture, hash), or []."""
+    return []
+
+  def writestore_has_tarball(self, spec, architecture=None):
+    """True iff *spec*'s content tarball already exists in the WRITE store.
+
+    Checked with a HEAD of the write-store object itself — never the manifest or
+    the read store (those can report present when the write store was wiped).
+    Default False (no write store, or not queryable): the caller then attempts
+    the upload, whose own idempotent HEAD-skip is the backstop."""
+    return False
+
+
+class DualRemoteSync(RemoteSync):
   """Read packages from one backend, upload freshly-built ones to another.
 
   Used when packages are recalled from a read-only store (e.g. a CVMFS mount)
@@ -336,36 +380,40 @@ class DualRemoteSync:
   def fetch_symlinks(self, spec):
     return self.reader.fetch_symlinks(spec)
 
-  def _first_supporting(self, method, default, *args, **kwargs):
-    """Call *method* on the first backend that implements it, reader before writer.
-
-    Store metadata (ADR-0005 rev-index markers, content-object listings) lives in
-    the STORE, and a read-only reader (e.g. HttpRemoteSync) may not
-    implement the lookup at all. In the common ``--remote-store https://…::rw``
-    setup both sides are the very same bucket (http read URL + b3 writer); in an
-    http-read/s3-write setup the metadata only ever exists on the writer.
-
-    Delegating to the reader alone silently returned the empty default, so the
-    revision counter never saw the markers: it could not reuse the recorded
-    revision, took a stale (revision, hash) pair from the signed manifest as
-    "revision busy", assigned a fresh revision N+1, and then unpacked revision N's
-    tarball into the N+1 install root — failing every reused package.
-    """
-    for backend in (self.reader, self.writer):
-      fn = getattr(backend, method, None)
-      if fn is None:
-        continue
-      try:
-        return fn(*args, **kwargs)
-      except Exception as exc:   # best-effort supplement; try the other backend
-        debug("%s failed on %s (%s)", method, type(backend).__name__, exc)
-    return default
-
   def read_rev_markers(self, *args, **kwargs):
-    return self._first_supporting("read_rev_markers", {}, *args, **kwargs)
+    return self._first_nonempty(
+        self.reader.read_rev_markers, self.writer.read_rev_markers, {}, *args, **kwargs)
 
   def list_store_tarballs(self, *args, **kwargs):
-    return self._first_supporting("list_store_tarballs", [], *args, **kwargs)
+    return self._first_nonempty(
+        self.reader.list_store_tarballs, self.writer.list_store_tarballs, [], *args, **kwargs)
+
+  def writestore_has_tarball(self, spec, architecture=None):
+    # Existence in the WRITE store only — the reader (e.g. a CVMFS mount) is
+    # irrelevant to whether we must upload.
+    return self.writer.writestore_has_tarball(spec, architecture)
+
+  @staticmethod
+  def _first_nonempty(reader_fn, writer_fn, default, *args, **kwargs):
+    """The reader's answer if it is non-empty, else the writer's. Store metadata
+    (ADR-0005 rev-index markers, content-object listings) lives on whichever
+    backend actually holds it; a read-only reader (an http / CVMFS mount) keeps
+    none and returns the empty default, which must then fall through to the
+    writer. Delegating to the reader alone silently returned empty, so the
+    revision counter never saw the markers: it reused a stale (revision, hash)
+    pair, assigned a fresh revision N+1, then unpacked revision N's tarball into
+    the N+1 install root — failing every reused package. Best-effort: a backend
+    that errors is skipped."""
+    for fn in (reader_fn, writer_fn):
+      try:
+        result = fn(*args, **kwargs)
+      except Exception as exc:   # best-effort supplement; try the other backend
+        debug("rev-metadata query failed on %s (%s)",
+              getattr(fn, "__qualname__", fn), exc)
+        result = None
+      if result:
+        return result
+    return default
 
   def fetch_source(self, *args, **kwargs):
     return self.reader.fetch_source(*args, **kwargs)
@@ -401,7 +449,7 @@ def _source_remote_path(url_checksum, filename):
   return "SOURCES/cache/{}/{}/{}".format(url_checksum[:2], url_checksum, filename)
 
 
-class NoRemoteSync:
+class NoRemoteSync(RemoteSync):
   """Helper class which does not do anything to sync"""
   def fetch_symlinks(self, spec) -> None:
     pass
@@ -425,7 +473,7 @@ class PartialDownloadError(Exception):
     return "only %d out of %d bytes downloaded" % (self.downloaded, self.size)
 
 
-class HttpRemoteSync:
+class HttpRemoteSync(RemoteSync):
   def __init__(self, remoteStore, architecture, workdir, insecure) -> None:
     self.remoteStore = remoteStore
     self.writeStore = ""
@@ -554,12 +602,12 @@ class HttpRemoteSync:
       except OSError:  # store path not readable
         continue
       for tarball in have_tarballs:
-        # The revision group is made optional ((?:-[0-9]+)?) so that tarballs
-        # built with force_revision="" (revision-less name) are also matched
-        # and reused without a redundant re-download.
-        if re.match(r"^{package}-{version}(?:-[0-9]+)?\.{arch}\.tar\.gz$".format(
+        # The revision group is optional for force_revision="" and accepts the
+        # shared numeric, local-numeric, and content-hash token forms.
+        if re.match(r"^{package}-{version}(?:-{revision})?\.{arch}\.tar\.gz$".format(
             package=re.escape(spec["package"]),
             version=re.escape(spec["version"]),
+            revision=REVISION_TOKEN_PATTERN,
             arch=re.escape(arch),
         ), os.path.basename(tarball)):
           tarball_full = os.path.join(self.workdir, resolve_store_path(arch, pkg_hash), tarball)
@@ -697,7 +745,7 @@ class HttpRemoteSync:
     pass  # HTTP backend is read-only; uploads must use rsync/S3/boto3
 
 
-class RsyncRemoteSync:
+class RsyncRemoteSync(RemoteSync):
   """Helper class to sync package build directory using RSync."""
 
   def __init__(self, remoteStore, writeStore, architecture, workdir) -> None:
@@ -783,14 +831,11 @@ rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
   def upload_shell_command(self, spec):
     """Return an inline shell command that uploads *spec*'s tarball and symlinks.
 
-    Used by --pipeline Makeflow .upload rules so that the upload runs as a
-    separate Makeflow target, concurrently with downstream package builds.
     Returns None when no write store is configured.
     """
     if not self.writeStore:
       return None
-    # Emit the script as a single shell -c '...' invocation so Makeflow can
-    # embed it directly in the Makeflow file without a wrapper script.
+    # Emit the script as a single shell -c '...' invocation.
     script = self._upload_script(spec).replace("'", "'\\''")
     return "bash -e -c '{}'".format(script)
 
@@ -821,7 +866,7 @@ rsync -avR --ignore-existing "{store_path}/$tarball" {remote}/
     dieOnError(err, "Unable to upload source archive to store.")
 
 
-class S3RemoteSync:
+class S3RemoteSync(RemoteSync):
   """Sync package build directory from and to S3 using s3cmd.
 
   s3cmd must be installed separately in order for this to work.
@@ -923,7 +968,7 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     # file; overwriting would churn the store and invalidate the checksum every
     # previously-certified manifest recorded for that object. Fresh uploads carry
     # the same "sha256:<hex>" metadata as the boto3 backend, so either backend
-    # (and `bits certify`) can read the stored digest cheaply. NOTE: unlike the
+    # (and `bits sign`) can read the stored digest cheaply. NOTE: unlike the
     # boto3 backend this script cannot feed the stored object's sha256 back into
     # the build manifest; BOM-producing flows (bits publish) use boto3.
     if s3cmd info -s --host s3.cern.ch --host-bucket {bucket}.s3.cern.ch \\
@@ -962,7 +1007,6 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     """Return an inline shell command that uploads this package's artifacts.
 
     Returns None if there is no writable store configured.
-    Used by the Makeflow .upload rule when --pipeline is active.
     """
     if not self.writeStore:
       return None
@@ -996,7 +1040,7 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     dieOnError(err, "Unable to upload source archive to store.")
 
 
-class Boto3RemoteSync:
+class Boto3RemoteSync(RemoteSync):
   """Sync package build directory from and to S3 using boto3.
 
   As boto3 doesn't support Python 2, this class can only be used under Python
@@ -1083,6 +1127,16 @@ class Boto3RemoteSync:
       raise
     return True
 
+  def writestore_has_tarball(self, spec, architecture=None):
+    """HEAD the content object in the WRITE bucket (not the manifest/read store)."""
+    if not self.writeStore:
+      return False
+    arch = effective_arch(spec, architecture or self.architecture)
+    tarball = "{package}-{ver_rev}.{architecture}.tar.gz".format(
+        package=spec["package"], ver_rev=ver_rev(spec), architecture=arch)
+    tar_path = os.path.join(resolve_store_path(arch, spec["hash"]), tarball)
+    return self._s3_key_exists(tar_path)
+
   def _s3_remote_tarball_sha256(self, key):
     """Return ``'sha256:HEX'`` for the store object at *key*, or None if absent.
 
@@ -1091,7 +1145,7 @@ class Boto3RemoteSync:
     build re-packing the same content hash produces different bytes. The stored
     object may therefore legitimately differ from what this build packed, and
     the build manifest must record the STORE's checksum so that every manifest
-    converges on the stable store and `bits certify` can verify it.
+    converges on the stable store and `bits sign` can verify it.
 
     Prefers the checksum recorded in the object's ``x-amz-meta-sha256`` at
     upload time (one HEAD). A legacy object without it is streamed and hashed
@@ -1333,7 +1387,7 @@ class Boto3RemoteSync:
     # previously-certified manifest recorded for that object. Instead the STORE
     # is authoritative: record its actual sha256 on the spec, so the manifest
     # this build writes describes the stored bytes and manifests from different
-    # builds converge on the one stable object `bits certify` verifies.
+    # builds converge on the one stable object `bits sign` verifies.
     local_file = os.path.join(self.workdir, tar_path)
     remote_sha = self._s3_remote_tarball_sha256(tar_path)
     if remote_sha is not None:
@@ -1387,7 +1441,6 @@ class Boto3RemoteSync:
     """Return a shell command that uploads this package's artifacts via upload_cmd.py.
 
     Returns None if there is no writable store configured.
-    Used by the Makeflow .upload rule when --pipeline is active.
     The actual upload logic lives in bits_helpers/upload_cmd.py, which reads
     PKGNAME/PKGVERSION/PKGREVISION/PKGHASH from the environment and accepts
     the store URLs as CLI arguments.

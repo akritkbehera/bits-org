@@ -5,7 +5,7 @@
 """bits build driver.
 
 Entry point for all ``bits`` sub-commands (build, clean, deps, doctor, init,
-architecture, version, analytics).  ``bitsDeps`` and ``bitsDoctor`` are thin
+architecture, version).  ``bitsDeps`` and ``bitsDoctor`` are thin
 wrappers that exec this script with the matching sub-command prepended.
 """
 # Standard library
@@ -17,11 +17,8 @@ import traceback
 from os.path import exists, expanduser
 
 # Internal
-from bits_helpers import __version__
-from bits_helpers.analytics import (askForAnalytics, decideAnalytics,
-                                     disable_analytics, enable_analytics,
-                                     report_event, report_exception,
-                                     report_screenview)
+from bits_helpers import __version__, _VERSION_INFO
+from bits_helpers.version import version_line
 from bits_helpers.args import doParseArgs
 from bits_helpers.build import doBuild
 from bits_helpers.clean import doClean
@@ -36,10 +33,7 @@ from bits_helpers.verify import doVerify
 from bits_helpers.status import doStatus
 from bits_helpers.stats import doStats
 from bits_helpers.log import debug, error, info, logger
-from bits_helpers.utilities import detectArch
-
-# Google Analytics property for bits usage reporting.
-_ANALYTICS_TRACKING_ID = "UA-77346950-1"
+from bits_helpers.arch import detectArch
 
 
 def doMain(args, parser):
@@ -69,7 +63,6 @@ def doMain(args, parser):
     "BASH_ENV":         "",
     "BITS_ARCHITECTURE": args.architecture,
   })
-  report_screenview(args.action)
 
   # Move to the specified working directory before doing anything else.
   if hasattr(args, "chdir"):
@@ -81,8 +74,8 @@ def doMain(args, parser):
       sys.exit(1)
 
   if args.action in ("version", None):
-    print("bits version: {version} ({arch})".format(
-      version=__version__ or "unknown", arch=args.architecture or "unknown"))
+    print("{line} [{arch}]".format(
+      line=version_line(_VERSION_INFO), arch=args.architecture or "unknown"))
     sys.exit(0)
 
   if args.action == "doctor":
@@ -102,7 +95,7 @@ def doMain(args, parser):
             aggressiveCleanup=args.aggressiveCleanup, dryRun=args.dryRun)
     sys.exit(0)
 
-  if args.action == "cleanup":
+  if args.action == "prune":
     doCleanup(args, parser)
     sys.exit(0)
 
@@ -115,22 +108,18 @@ def doMain(args, parser):
     sys.exit(0)
 
   if args.action == "publish":
-    _rc = doPublish(args, parser)        # --view returns a bool; package path returns None
+    _rc = doPublish(args, parser)        # --release-view returns a bool; package path returns None
     sys.exit(0 if _rc is None or _rc else 1)
 
   if args.action == "certify":
-    from bits_helpers.certify import doCertify
+    from bits_helpers.publish import doCertify
     doCertify(args, parser)
     sys.exit(0)
 
-  if args.action == "gc":
-    from bits_helpers.gc import doGc
-    doGc(args, parser)
+  if args.action == "sign":
+    from bits_helpers.certify import doSign
+    doSign(args, parser)
     sys.exit(0)
-
-  if args.action == "store-stats":
-    from bits_helpers.store_stats import doStoreStats
-    sys.exit(doStoreStats(args, parser) or 0)
 
   if args.action == "compliance":
     from bits_helpers.compliance import doCompliance
@@ -140,6 +129,14 @@ def doMain(args, parser):
     doVerify(args, parser)
     # doVerify calls sys.exit() internally, but be explicit
     sys.exit(0)
+
+  if args.action == "checksums":
+    from bits_helpers.checksums_cmd import doChecksums
+    sys.exit(doChecksums(args, parser))
+
+  if args.action == "sbom":
+    from bits_helpers.sbom import doSbom
+    sys.exit(doSbom(args, parser))
 
   if args.action == "status":
     doStatus(args, parser)
@@ -159,11 +156,8 @@ if __name__ == "__main__":
 
   logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
-  os.environ["BITS_ANALYTICS_ID"] = _ANALYTICS_TRACKING_ID
   os.environ["BITS_VERSION"] = __version__ or ""
 
-  # NOTE: the "analytics" subcommand is currently disabled in args.py; the
-  # enable/disable helpers stay importable for the opt-out env-var path.
 
   if args.action == "architecture":
     arch = detectArch()
@@ -199,7 +193,6 @@ if __name__ == "__main__":
 
   except KeyboardInterrupt:
     info("Interrupted by user (Ctrl-C)")
-    report_event("user", "ctrlc")
     sys.exit(1)
   except SystemExit as e:
     # SystemExit is NOT an Exception, so a bare sys.exit() deep in the setup path
@@ -215,5 +208,4 @@ if __name__ == "__main__":
     raise
   except Exception as e:
     traceback.print_exc()
-    report_exception(e)
     sys.exit(1)

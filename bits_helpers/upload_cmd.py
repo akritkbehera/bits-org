@@ -5,10 +5,9 @@
 """upload_cmd.py -- upload a built package's tarball and symlinks to S3 (boto3).
 
 This is a thin CLI wrapper around Boto3RemoteSync.upload_symlinks_and_tarball()
-so that the Makeflow .upload rule can invoke it as a subprocess without needing
-an in-process Python call.
+so that it can be invoked as a subprocess without needing an in-process Python call.
 
-Package identity is read from environment variables so that the Makeflow rule
+Package identity is read from environment variables so that a caller
 can pass them naturally via the environment block:
 
   PKGNAME       -- package name
@@ -28,7 +27,7 @@ build driver (not baked into the environment):
 
 Exit code: 0 on success, 1 on failure.
 
-Usage (from a Makeflow rule shell block):
+Usage (from a shell block):
   PKGNAME=foo PKGVERSION=1.0 PKGREVISION=1 PKGHASH=abc123 \\
   EFFECTIVE_ARCHITECTURE=slc7_x86-64 BUILD_ARCH=slc7_x86-64 \\
     python3 -m bits_helpers.upload_cmd \\
@@ -84,7 +83,7 @@ def main():
     # We reconstruct this from EFFECTIVE_ARCHITECTURE: if it equals "shared"
     # (i.e. SHARED_ARCH), mark the spec accordingly so that the upload goes to
     # the correct path.
-    from bits_helpers.utilities import SHARED_ARCH
+    from bits_helpers.arch import SHARED_ARCH
     spec = {
         "package":      pkgname,
         "version":      pkgversion,

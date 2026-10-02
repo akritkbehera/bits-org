@@ -371,10 +371,33 @@ class TestClassify(unittest.TestCase):
             os.makedirs(tar_dir, exist_ok=True)
             with open(os.path.join(tar_dir, "geant4-11.2.0-1.{}.tar.gz".format(self.arch)), "wb") as f:
                 f.write(b"data")
-        sync_mock = MagicMock()
-        sync_mock.fetch_tarball.side_effect = fake_fetch
-        result = _classify(spec, self.tmp, self.arch, sync_helper=sync_mock)
+        from bits_helpers.sync import RemoteSync
+
+        class _NoListing(RemoteSync):   # a store that cannot list: fetch fallback
+            fetch_tarball = staticmethod(fake_fetch)
+        result = _classify(spec, self.tmp, self.arch, sync_helper=_NoListing())
         self.assertEqual(result, FROM_REMOTE_STORE)
+
+    def test_remote_store_listing_no_download(self):
+        """A store that can list is probed by listing; nothing is downloaded."""
+        rh = "9900" + "0" * 36
+        spec = self._spec(pkg="geant4", version="11.2.0",
+                          remote_revision_hash=rh, remote_hashes=[rh])
+        from bits_helpers.sync import RemoteSync
+
+        class _Listing(RemoteSync):
+            names = []
+            def list_store_tarballs(self, arch, pkg_hash):
+                return self.names
+            def fetch_tarball(self, spec):
+                raise AssertionError("must not download")
+        store = _Listing()
+        store.names = ["geant4-11.2.0-3.{}.tar.gz".format(self.arch)]
+        self.assertEqual(_classify(spec, self.tmp, self.arch, sync_helper=store),
+                         FROM_REMOTE_STORE)
+        store.names = []
+        self.assertEqual(_classify(spec, self.tmp, self.arch, sync_helper=store),
+                         BUILD_FROM_SOURCE)
 
 
 # ── Output formatters ──────────────────────────────────────────────────────────
@@ -529,7 +552,7 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")
     @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.build.storeHashes")
+    @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
     def test_build_from_source_reported(self, mock_hook, mock_store_hashes,
                                         mock_read_defaults, mock_parse_defaults,
@@ -574,7 +597,7 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")
     @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.build.storeHashes")
+    @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
     def test_already_installed_reported(self, mock_hook, mock_store_hashes,
                                         mock_read_defaults, mock_parse_defaults,
@@ -621,7 +644,7 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")
     @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.build.storeHashes")
+    @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
     def test_json_output_structure(self, mock_hook, mock_store_hashes,
                                    mock_read_defaults, mock_parse_defaults,
@@ -667,7 +690,7 @@ class TestDoStatus(unittest.TestCase):
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")
     @patch("bits_helpers.status.readDefaults")
-    @patch("bits_helpers.build.storeHashes")
+    @patch("bits_helpers.hashing.storeHashes")
     @patch("bits_helpers.build.storeHook")
     def test_hash_unknown_on_storeHashes_failure(self, mock_hook, mock_store_hashes,
                                                   mock_read_defaults, mock_parse_defaults,

@@ -83,15 +83,14 @@ class TestReconstructLayout(unittest.TestCase):
 
     def test_shared_noarch_uses_shared_arch(self):
         # A package with architecture: share installs under TARS/share/…
-        from bits_helpers.utilities import SHARED_ARCH
+        from bits_helpers.arch import SHARED_ARCH
         specs = _specs()
         specs["fftw"]["architecture"] = SHARED_ARCH
-        tarball = "fftw-3.3.10-2.%s.tar.gz" % SHARED_ARCH
         with tempfile.TemporaryDirectory() as d:
             create_version_link(specs["fftw"], self.ARCH, d)
-            tgt = _readlink(d, "TARS", SHARED_ARCH, "fftw", tarball)
+            tgt = _readlink(d, "TARS", SHARED_ARCH, "fftw", "fftw-3.3.10-2.share.tar.gz")
             self.assertEqual(
-                tgt, "../../%s/store/bb/bb22%s/%s" % (SHARED_ARCH, "0" * 36, tarball))
+                tgt, "../../share/store/bb/bb22" + "0" * 36 + "/fftw-3.3.10-2.share.tar.gz")
 
     def test_dropped_revision_omits_suffix(self):
         # force_revision="" (empty) drops the -rev suffix everywhere (ver_rev).

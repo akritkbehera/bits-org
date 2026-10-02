@@ -27,10 +27,16 @@ Manifests are written to a dedicated subdirectory of the work directory::
 The ``bits-manifest-latest.json`` symlink is updated atomically after each
 incremental write.
 
-Schema (version 3)
+Schema (version 4)
 ------------------
 
-Version 3 adds ``patches`` (recipe patch filenames + their recorded checksums)
+Version 4 adds ``requires`` / ``build_requires`` (the package's direct runtime
+and build-only dependencies, by name) and ``source`` / ``tag`` (git origin) to
+each ``PackageEntry``, so the manifest carries what an SBOM needs: the
+dependency graph and where git-sourced code came from.  The top-level
+``system_packages`` lists the dependencies taken from the system.
+
+Version 3 added ``patches`` (recipe patch filenames + their recorded checksums)
 and ``variables`` (the package's resolved recipe variables) to each
 ``PackageEntry``, so a replay/audit can see every patch and template value that
 shaped a build — not just its source checksums.  Consumers should treat unknown
@@ -39,7 +45,7 @@ fields as additive and key off ``schema_version``.
 ::
 
     {
-      "schema_version":    int,         # this implementation writes 3
+      "schema_version":    int,         # this implementation writes 4
       "bits_version":      str,         # bits package version (or "unknown")
       "bits_dist_hash":    str,         # BITS_DIST_HASH env var
       "created_at":        ISO-8601,
@@ -52,6 +58,9 @@ fields as additive and key off ``schema_version``.
       "defaults":          [str],
       "config_dir":        str,         # absolute path to the .bits checkout
       "config_commit":     str,         # BITS_DIST_HASH of the config repo
+      "system_packages":   [str],       # taken from the system, not built (v4+)
+      "cvmfs_templates":   {str: str},  # this build's CVMFS layout (optional);
+                                        # bits cvmfs publish uses it for all packages
       "providers":         [ProviderEntry],
       "packages":          [PackageEntry]
     }
@@ -79,6 +88,10 @@ fields as additive and key off ``schema_version``.
       "source_checksums":       [SourceEntry],    # per-source archive integrity anchors
       "patches":                [PatchEntry],     # recipe patches + their checksums (v3+)
       "variables":              {str: str},       # resolved recipe variables (v3+)
+      "requires":               [str],            # direct runtime (+ untracked) deps (v4+)
+      "build_requires":         [str],            # direct build-only dependencies (v4+)
+      "source":                 str,              # git repository URL, "" if none (v4+)
+      "tag":                    str,              # git tag/branch built, "" if none (v4+)
       "built_by":               str | None,       # user@host that compiled this hash; null unless built_from_source
       "completed_at":           ISO-8601
     }
@@ -241,6 +254,21 @@ def _source_entries(spec: dict) -> list:
     return result
 
 
+def _no_userinfo(url: str) -> str:
+    """*url* without user:password@ (a token in a clone URL must not be recorded)."""
+    return re.sub(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/?#]*@", r"\1", url)   # up to the last @
+
+
+def _dep_names(names) -> list:
+    """Dependency names in recipe order, once each, without defaults-* pseudo
+    packages (not components of the build)."""
+    out = []
+    for n in names or []:
+        if n and not n.startswith("defaults-") and n not in out:
+            out.append(n)
+    return out
+
+
 def _patch_entries(spec: dict) -> list:
     """Return ``[{name, checksum}]`` for each patch the recipe applied.
 
@@ -277,7 +305,7 @@ class BuildManifest:
         manifest.complete()   # or manifest.fail(package_name, reason)
     """
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
     _LATEST_SYMLINK = "bits-manifest-latest.json"
 
     def __init__(
@@ -289,6 +317,7 @@ class BuildManifest:
         config_dir: str,
         config_commit: str,
         target: str = "",
+        cvmfs_templates: dict = None,
     ):
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self._work_dir = work_dir
@@ -315,6 +344,7 @@ class BuildManifest:
         # Serialises concurrent add_package()/_save() calls from --builders
         # worker threads so they neither corrupt _data nor race os.replace().
         self._lock = threading.Lock()
+        self._sys_edges = {}      # package -> (runtime, build) system deps (v4)
         self._data = {
             "schema_version":     self.SCHEMA_VERSION,
             "bits_version":       __version__ or "unknown",
@@ -330,6 +360,8 @@ class BuildManifest:
             "providers":          [],
             "packages":           [],
         }
+        if cvmfs_templates:
+            self._data["cvmfs_templates"] = dict(cvmfs_templates)
         self._save()
         self._write_pending()
         debug("manifest: initialised at %s", self._path)
@@ -371,6 +403,14 @@ class BuildManifest:
         self._write_pending()
 
     # ── Package recording ─────────────────────────────────────────────────────
+
+    def set_system_packages(self, names, edges=None) -> None:
+        """Record the packages taken from the system (not built) and, per built
+        package, its (runtime, build) dependencies among them: the build drops
+        those from the specs' requires, so the SBOM graph needs them here."""
+        with self._lock:
+            self._data["system_packages"] = sorted(names or ())
+            self._sys_edges = dict(edges or {})
 
     def add_package(
         self,
@@ -438,6 +478,9 @@ class BuildManifest:
             # SPDX license id (hash-excluded metadata). Carried so the publish step
             # can aggregate a per-release NOTICE / attribution file.
             "license":                (spec.get("license") or ""),
+            # The recipe's `view:` rules (hash-excluded presentation), applied
+            # when a release's merged view is built. Only recorded when set.
+            **({"view": spec["view"]} if spec.get("view") is not None else {}),
             "hash":                   spec.get("hash", ""),
             "commit_hash":            spec.get("commit_hash", ""),
             "outcome":                outcome,
@@ -448,7 +491,7 @@ class BuildManifest:
             # upload found an object already at the designated path it kept it,
             # and this build's locally-packed bytes may differ. Recording the
             # store's sha256 keeps every manifest consistent with the one stable
-            # object that `bits certify` validates.
+            # object that `bits sign` validates.
             "tarball_sha256":         spec.get("store_tarball_sha256")
                                       or _tarball_sha256(tarball_path),
             "source_checksums":       _source_entries(spec),
@@ -456,6 +499,15 @@ class BuildManifest:
             # recipe variables that shaped this build.
             "patches":                _patch_entries(spec),
             "variables":              dict(spec.get("variables") or {}),
+            # v4: direct dependency edges (names), for the SBOM dependency graph.
+            "requires":               _dep_names(
+                list(spec.get("runtime_requires") or []) + list(spec.get("untracked_requires") or [])
+                + list(self._sys_edges.get(spec.get("package"), ((), ()))[0])),
+            "build_requires":         _dep_names(
+                list(spec.get("build_requires") or [])
+                + list(self._sys_edges.get(spec.get("package"), ((), ()))[1])),
+            "source":                 _no_userinfo(spec.get("source") or ""),
+            "tag":                    str(spec.get("tag") or ""),
             # built_by identifies the host that actually compiled this hash.
             # Only meaningful when the package was built here; for from_store /
             # already_installed outcomes the real builder lives in another

@@ -270,7 +270,7 @@ class TestFormatAndWrite(unittest.TestCase):
 
     def test_format_includes_regen_hint(self):
         text = format_checksum_file("mylib", self._store())
-        self.assertIn("--write-checksums", text)
+        self.assertIn("bits checksums --write mylib", text)
 
     def test_write_creates_file(self):
         pkgdir = os.path.join(self.tmp, "repo.bits")
@@ -434,3 +434,142 @@ class TestExternalOverridesInline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Tag-keyed commit pins, profile repositories, merging writes
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCommitsAndProfileRepos(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.recipes = os.path.join(self.tmp, "lcg.bits")
+        self.stack = os.path.join(self.tmp, "stacks.bits")
+
+    def _file(self, repo, content):
+        _write(os.path.join(repo, "checksums", "root.checksum"), content)
+
+    def test_commits_parse_and_roundtrip(self):
+        store = {"tag": None, "commits": {"v6-40-00": GOOD_SHA1, "1.10": GOOD_SHA256},
+                 "sources": {}, "patches": {}}
+        path = write_checksum_file(self.recipes, "ROOT", store)
+        parsed = parse_checksum_file(path)
+        self.assertEqual(parsed["commits"], {"v6-40-00": GOOD_SHA1, "1.10": GOOD_SHA256})
+        self.assertIn('"1.10"', open(path).read())   # quoted: not the float 1.1
+
+    def test_invalid_commit_rejected(self):
+        self._file(self.recipes, "commits:\n  v1: nothex\n")
+        with self.assertRaises(ValueError):
+            parse_checksum_file(os.path.join(self.recipes, "checksums", "root.checksum"))
+
+    def test_profile_repo_merged_over_recipe_repo(self):
+        self._file(self.recipes, """\
+            tag: %s
+            commits:
+              v6-40-02: %s
+            sources:
+              https://a/x.tar.gz: sha256:%s
+            """ % (GOOD_SHA1, GOOD_SHA1, "1" * 64))
+        self._file(self.stack, """\
+            tag: %s
+            commits:
+              v6-40-00: %s
+            sources:
+              https://a/x.tar.gz: sha256:%s
+            """ % (GOOD_SHA256, GOOD_SHA256, "2" * 64))
+        spec = {"package": "ROOT", "pkgdir": self.recipes}
+        store = load_for_spec(spec, [self.stack, self.recipes])
+        self.assertEqual(store["tag"], GOOD_SHA1)            # the profile repo's legacy tag is ignored
+        self.assertEqual(store["commits"], {"v6-40-02": GOOD_SHA1, "v6-40-00": GOOD_SHA256})
+        self.assertEqual(store["sources"]["https://a/x.tar.gz"], "sha256:" + "2" * 64)
+
+    def test_legacy_pin_dropped_on_request(self):
+        spec = {}
+        merge_into_spec(spec, {"tag": GOOD_SHA1, "commits": {"v1": GOOD_SHA256}}, legacy_pin=False)
+        self.assertIsNone(spec["pin_commit"])
+        self.assertEqual(spec["pin_commits"], {"v1": GOOD_SHA256})
+
+    def test_update_merges_and_never_overwrites(self):
+        from bits_helpers.checksum_store import update_checksum_file
+        self._file(self.stack, "sources:\n  https://a/x.tar.gz: sha256:%s\n" % ("1" * 64))
+        path, conflicts = update_checksum_file(self.stack, "root", {
+            "sources": {"https://a/x.tar.gz": "sha256:" + "2" * 64,
+                        "https://a/y.tar.gz": "sha256:" + "3" * 64},
+            "commits": {"v1": GOOD_SHA1}})
+        parsed = parse_checksum_file(path)
+        self.assertEqual(parsed["sources"]["https://a/x.tar.gz"], "sha256:" + "1" * 64)
+        self.assertEqual(parsed["sources"]["https://a/y.tar.gz"], "sha256:" + "3" * 64)
+        self.assertEqual(parsed["commits"], {"v1": GOOD_SHA1})
+        self.assertEqual(conflicts, [("sources", "https://a/x.tar.gz",
+                                      "sha256:" + "1" * 64, "sha256:" + "2" * 64)])
+
+    def test_update_without_news_writes_nothing(self):
+        from bits_helpers.checksum_store import update_checksum_file
+        self._file(self.stack, "commits:\n  v1: %s\n" % GOOD_SHA1)
+        path, conflicts = update_checksum_file(self.stack, "root", {"commits": {"v1": GOOD_SHA1.upper()}})
+        self.assertIsNone(path)
+        self.assertEqual(conflicts, [])
+
+    def test_other_algorithm_is_not_a_conflict(self):
+        from bits_helpers.checksum_store import _same_checksum
+        self.assertTrue(_same_checksum("sha512:" + "1" * 128, "sha256:" + "2" * 64))
+        self.assertFalse(_same_checksum("sha256:" + "1" * 64, "sha256:" + "2" * 64))
+
+
+class TestVerifyCommitPinByTag(unittest.TestCase):
+
+    def _run(self, spec, head, mode="enforce"):
+        from bits_helpers.workarea import _verify_commit_pin
+        scm = MagicMock()
+        scm.checkedOutCommitName.return_value = head
+        with patch("bits_helpers.workarea.dieOnError") as mock_die:
+            _verify_commit_pin(scm, spec, "/src", mode)
+        return mock_die
+
+    def test_pin_for_checked_out_tag(self):
+        spec = {"package": "p", "tag": "v2", "pin_commits": {"v1": GOOD_SHA1, "v2": GOOD_SHA256},
+                "pin_commit": GOOD_SHA1}
+        self._run(spec, GOOD_SHA256).assert_not_called()
+        self.assertTrue(self._run(spec, GOOD_SHA1).call_args[0][0])
+
+    def test_other_tag_falls_back_to_legacy(self):
+        spec = {"package": "p", "tag": "v3", "pin_commits": {"v1": GOOD_SHA1}, "pin_commit": None}
+        self._run(spec, "0" * 40).assert_not_called()      # unpinned tag
+
+
+class TestUpdateKeepsLayout(unittest.TestCase):
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp()
+
+    def _update(self, text, new):
+        from bits_helpers.checksum_store import update_checksum_file
+        _write(os.path.join(self.repo, "checksums", "p.checksum"), text)
+        path, _ = update_checksum_file(self.repo, "p", new)
+        return open(path).read(), parse_checksum_file(path)
+
+    def test_comments_survive_and_entries_land_in_their_section(self):
+        text, parsed = self._update("""\
+            # notes
+            sources:   # tarballs
+              https://a/x.tgz: sha256:%s   # re-rolled
+
+            # patches below
+            patches:
+              a.patch: sha256:%s
+            """ % ("1" * 64, "2" * 64),
+            {"sources": {"https://a/y.tgz": "sha256:" + "3" * 64},
+             "patches": {"b.patch": "sha256:" + "4" * 64}, "commits": {"v1": GOOD_SHA1.upper()}})
+        for kept in ("# notes", "# tarballs", "# re-rolled", "# patches below"):
+            self.assertIn(kept, text)
+        lines = text.splitlines()
+        self.assertLess(lines.index("  https://a/y.tgz: sha256:" + "3" * 64), lines.index("# patches below"))
+        self.assertEqual(parsed["commits"], {"v1": GOOD_SHA1})
+        self.assertEqual(len(parsed["sources"]), 2)
+        self.assertEqual(len(parsed["patches"]), 2)
+
+    def test_flow_style_section_is_rewritten(self):
+        text, parsed = self._update("sources: {}\n", {"sources": {"https://a/y.tgz": "sha256:" + "3" * 64}})
+        self.assertEqual(text.count("sources:"), 1)
+        self.assertEqual(list(parsed["sources"]), ["https://a/y.tgz"])

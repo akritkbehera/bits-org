@@ -30,7 +30,8 @@ from bits_helpers.repo_provider import (
     cwd_is_recipe_dir,
     fetch_repo_providers_iteratively,
 )
-from bits_helpers.utilities import getConfigPaths, getPackageList
+from bits_helpers.packages import getPackageList
+from bits_helpers.paths import getConfigPaths
 
 
 # ── Recipe text helpers ─────────────────────────────────────────────────────
@@ -94,14 +95,14 @@ class TestGetConfigPaths(unittest.TestCase):
         else:
             os.environ["BITS_PATH"] = self._orig
 
-    @patch("bits_helpers.utilities.exists", return_value=True)
+    @patch("bits_helpers.paths.exists", return_value=True)
     def test_relative_name_gets_bits_suffix(self, _exists):
         os.environ["BITS_PATH"] = "alice,common"
         paths = getConfigPaths("/base")
         self.assertIn("/base/alice.bits", paths)
         self.assertIn("/base/common.bits", paths)
 
-    @patch("bits_helpers.utilities.exists", return_value=True)
+    @patch("bits_helpers.paths.exists", return_value=True)
     def test_absolute_path_used_directly(self, _exists):
         """An absolute entry in BITS_PATH must not get .bits appended."""
         os.environ["BITS_PATH"] = "/abs/path/my-provider"
@@ -109,7 +110,7 @@ class TestGetConfigPaths(unittest.TestCase):
         self.assertIn("/abs/path/my-provider", paths)
         self.assertNotIn("/base//abs/path/my-provider.bits", paths)
 
-    @patch("bits_helpers.utilities.exists", return_value=True)
+    @patch("bits_helpers.paths.exists", return_value=True)
     def test_mixed_relative_and_absolute(self, _exists):
         os.environ["BITS_PATH"] = "alice,/abs/provider,common"
         paths = getConfigPaths("/base")
@@ -228,6 +229,50 @@ class TestCloneOrUpdateProvider(unittest.TestCase):
             scm.cloneSourceCmd.return_value,
             directory=".", check=False,
         )
+
+    # ── M2: optional commit-SHA integrity pin ────────────────────────────────
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_commit_pin_match_proceeds(self, MockGit, mock_logged_scm, mock_update_ref):
+        commit = "abcdef1234567890"
+        scm = self._mock_scm(commit)
+        MockGit.return_value = scm
+        mock_logged_scm.return_value = "abcdef1234567890\trefs/tags/v1"
+        spec = self._spec()
+        spec["commit"] = "abcdef12"          # 8-char prefix of the resolved commit
+        _, got_hash = clone_or_update_provider(
+            spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertEqual(got_hash, commit)
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_commit_pin_mismatch_dies(self, MockGit, mock_logged_scm, mock_update_ref):
+        # A pin that does not match the resolved commit must fail closed.
+        commit = "abcdef1234567890"
+        scm = self._mock_scm(commit)
+        MockGit.return_value = scm
+        mock_logged_scm.return_value = "abcdef1234567890\trefs/tags/v1"
+        spec = self._spec()
+        spec["commit"] = "deadbeefdead"      # branch moved / wrong pin
+        with self.assertRaises(SystemExit):
+            clone_or_update_provider(spec, self.work_dir, self.ref_dir, fetch_repos=False)
+
+    @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
+    @patch("bits_helpers.repo_provider.logged_scm")
+    @patch("bits_helpers.repo_provider.Git")
+    def test_commit_pin_blank_is_no_pin(self, MockGit, mock_logged_scm, mock_update_ref):
+        # A present-but-blank `commit:` (YAML null) means "no pin", not a failure.
+        commit = "abcdef1234567890"
+        scm = self._mock_scm(commit)
+        MockGit.return_value = scm
+        mock_logged_scm.return_value = "abcdef1234567890\trefs/tags/v1"
+        spec = self._spec()
+        spec["commit"] = None
+        _, got_hash = clone_or_update_provider(
+            spec, self.work_dir, self.ref_dir, fetch_repos=False)
+        self.assertEqual(got_hash, commit)
 
     @patch("bits_helpers.repo_provider.updateReferenceRepoSpec")
     @patch("bits_helpers.repo_provider.logged_scm")
@@ -594,8 +639,8 @@ class MockReaderPkgList:
         return self._contents
 
 
-@mock.patch("bits_helpers.utilities.getRecipeReader", new=MockReaderPkgList)
-@mock.patch("bits_helpers.utilities.exists",
+@mock.patch("bits_helpers.packages.getRecipeReader", new=MockReaderPkgList)
+@mock.patch("bits_helpers.paths.exists",
             new=lambda f: f in _PKGLIST_RECIPES)
 class TestGetPackageListProviderDirs(unittest.TestCase):
     """Verify that recipe_provider / recipe_provider_hash are populated."""
@@ -970,7 +1015,7 @@ class TestStoreHashesProviderHash(unittest.TestCase):
         return spec
 
     def _call_store_hashes(self, spec):
-        from bits_helpers.build import storeHashes
+        from bits_helpers.hashing import storeHashes
         specs = {spec["package"]: spec, "defaults-release": self._make_spec(
             package="defaults-release", version="v1", requires=[])}
         storeHashes(spec["package"], specs, considerRelocation=False)
@@ -1065,3 +1110,15 @@ class TestApplyProviderOverride(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoRecipesHintTest(unittest.TestCase):
+  def test_points_at_a_community_repository(self):
+    from unittest import mock
+    from bits_helpers.repo_provider import no_recipes_hint
+    with mock.patch.dict(os.environ, {"BITS_BRANDING": ""}):
+      msg = no_recipes_hint("/tmp/x")
+      self.assertIn("No recipe repository in /tmp/x", msg)
+      self.assertIn("bits init stacks.bits", msg)
+    with mock.patch.dict(os.environ, {"BITS_BRANDING": "aliBuild"}):
+      self.assertIn("aliBuild init", no_recipes_hint("alidist"))

@@ -14,41 +14,8 @@ actually approved before anything is signed.
 """
 
 import os
-import re
 
 from bits_helpers.log import warning
-
-
-def load_admins(source) -> set:
-    """Parse group-admin usernames from a file path or text.
-
-    One username per line; ``#`` comments and blank lines ignored; a leading
-    ``@`` and surrounding whitespace are stripped. Case is normalised to lower.
-    Also tolerates CODEOWNERS-style lines (``/path @a @b``) by taking every
-    ``@handle`` on the line.
-    """
-    if isinstance(source, str) and os.path.isfile(source):
-        with open(source) as fh:
-            text = fh.read()
-    else:
-        text = source or ""
-    admins = set()
-    for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        handles = re.findall(r"@([A-Za-z0-9._-]+)", line)
-        if handles:
-            admins.update(h.lower() for h in handles)
-        else:
-            admins.add(line.lower())
-    return admins
-
-
-def approved_by(approvers, admins) -> bool:
-    """True if at least one approver is a listed group admin (case-insensitive)."""
-    a = {str(x).lower() for x in (approvers or [])}
-    return bool(a & {str(x).lower() for x in (admins or [])})
 
 
 def load_admin_policy(source) -> dict:
@@ -446,17 +413,20 @@ def gitlab_mr_iid_for_commit(api_url, token, project, sha, timeout=15):
     return merged[0].get("iid") if merged else None
 
 
-def gitlab_group_members(api_url, token, group_ref, timeout=15) -> set:
-    """Return the set of usernames in a GitLab group (incl. inherited members).
+def gitlab_group_members(api_url, token, group_ref, timeout=15, inherited=True) -> set:
+    """Return the set of usernames in a GitLab group.
 
     *group_ref* is a group path (``cern/bits-admins``) or numeric id. Paginates
-    ``GET /groups/<ref>/members/all``. Raises on API/auth failure so the caller
-    can decide (resolve_admin_policy downgrades a failure to a warning).
+    ``GET /groups/<ref>/members/all`` (inherited members included) by default, or
+    ``/members`` (DIRECT members only) when ``inherited=False`` — used so a
+    subgroup resolves to only its own members and a root group does not absorb a
+    parent's. Raises on API/auth failure so the caller can decide.
     """
     import requests
     from urllib.parse import quote
-    base = "%s/groups/%s/members/all" % (api_url.rstrip("/"),
-                                         quote(str(group_ref), safe=""))
+    base = "%s/groups/%s/%s" % (api_url.rstrip("/"),
+                                quote(str(group_ref), safe=""),
+                                "members/all" if inherited else "members")
     members, page = set(), 1
     while True:
         resp = requests.get(base, headers={"PRIVATE-TOKEN": token},
@@ -469,6 +439,32 @@ def gitlab_group_members(api_url, token, group_ref, timeout=15) -> set:
                 members.add(u.lower())
         if len(data) < 100:
             return members
+        page += 1
+
+
+def gitlab_subgroups(api_url, token, group_ref, timeout=15) -> list:
+    """Return ``[{"id", "path"}]`` for the DIRECT subgroups of a group. Paginates
+    ``GET /groups/<ref>/subgroups``. Used to derive per-community admin groups by
+    convention: each subgroup's ``path`` is a community name, its members are that
+    community's admins. ``all_available``: without it GitLab lists only subgroups
+    the token itself belongs to, so a token from another group saw none.
+    Raises on API/auth failure (caller decides)."""
+    import requests
+    from urllib.parse import quote
+    base = "%s/groups/%s/subgroups" % (api_url.rstrip("/"),
+                                       quote(str(group_ref), safe=""))
+    out, page = [], 1
+    while True:
+        resp = requests.get(base, headers={"PRIVATE-TOKEN": token},
+                            params={"per_page": 100, "page": page, "all_available": "true"},
+                            timeout=timeout)
+        _gl_ok(resp)
+        data = resp.json() or []
+        for g in data:
+            if isinstance(g, dict) and g.get("id"):
+                out.append({"id": g["id"], "path": g.get("path", "")})
+        if len(data) < 100:
+            return out
         page += 1
 
 
@@ -487,7 +483,3 @@ def forge_from_env(env=None):
     return GitLabForge.from_env(env)
 
 
-def verify_approval(forge, admins):
-    """Return ``(ok, approvers)`` — ok iff a listed admin approved via *forge*."""
-    approvers = forge.list_approvers()
-    return approved_by(approvers, admins), approvers

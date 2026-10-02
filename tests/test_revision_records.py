@@ -53,6 +53,11 @@ class TestTrustedRecords(unittest.TestCase):
             fh.write(priv.public_key().public_bytes(
                 serialization.Encoding.PEM,
                 serialization.PublicFormat.SubjectPublicKeyInfo))
+        # The shipped keys/key-policy.json is strict ("default": []); this harness
+        # trusts its own generated key for every group ("default": ["*"] overrides
+        # the shipped strict default, most-specific-last).
+        with open(os.path.join(trust_dir, "key-policy.json"), "w") as fh:
+            fh.write('{"default": ["*"]}\n')
         self._old = os.environ.get("BITS_TRUST_KEYS")
         os.environ["BITS_TRUST_KEYS"] = trust_dir
 
@@ -257,18 +262,18 @@ class TestStoreRevisionRecords(unittest.TestCase):
         self._seed_local("a888a899", "bzip2-1.0.6-local2.%s.tar.gz" % self.ARCH)
         self.assertEqual(
             build._store_revision_records(self._spec(), self.ARCH, self.tmp,
-                                          types.SimpleNamespace()), [])
+                                          types.SimpleNamespace(list_store_tarballs=lambda a, h: [])), [])
 
     def test_no_lister_and_no_local_yields_nothing(self):
         self.assertEqual(
             build._store_revision_records(self._spec(), self.ARCH, self.tmp,
-                                          types.SimpleNamespace()), [])
+                                          types.SimpleNamespace(list_store_tarballs=lambda a, h: [])), [])
 
     def test_revisionless_object_is_not_a_reuse_record(self):
         self._seed_local("a888a899", "bzip2-1.0.6.%s.tar.gz" % self.ARCH)
         self.assertEqual(
             build._store_revision_records(self._spec(), self.ARCH, self.tmp,
-                                          types.SimpleNamespace()), [])
+                                          types.SimpleNamespace(list_store_tarballs=lambda a, h: [])), [])
 
     def test_store_name_beats_stale_marker_for_same_revision(self):
         # The bzip2 failure, end to end. The store holds bzip2-1.0.6-1.tar.gz under

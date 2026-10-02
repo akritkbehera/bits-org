@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 from argparse import Namespace
-import configparser
 import os
 import os.path as path
 import tempfile
@@ -135,11 +134,11 @@ class InitTestCase(unittest.TestCase):
     @patch("bits_helpers.init.banner")
     @patch("bits_helpers.init.info")
     @patch("bits_helpers.init.path")
-    @patch("bits_helpers.utilities.exists")
+    @patch("bits_helpers.paths.exists")
     @patch("bits_helpers.init.os")
     @patch("bits_helpers.init.git")
     @patch("bits_helpers.init.updateReferenceRepoSpec")
-    @patch("bits_helpers.utilities.open")
+    @patch("bits_helpers.recipe.open")
     @patch("bits_helpers.init.readDefaults")
     def test_doRealInit(self, mock_read_defaults, mock_open, mock_update_reference, mock_git, mock_os, mock_exists, mock_path,  mock_info, mock_banner) -> None:
       fake_dist = {"repo": "alisw/alidist", "ver": "master"}
@@ -187,8 +186,6 @@ def _cfg_args(**kwargs):
     defaults = dict(
         pkgname="",
         dryRun=False,
-        rcFile="bits.rc",
-        appendRc=False,
         providers=None,
         initRemoteStore=None,
         initWriteStore=None,
@@ -267,253 +264,86 @@ class ConfigModeDispatchTest(unittest.TestCase):
 
 
 class ConfigModeWriteTest(unittest.TestCase):
-    """doInitConfig() writes the correct bits.rc content."""
+    """doInitConfig() records a bits use (.bitsuse) profile."""
 
     def setUp(self):
+        from bits_helpers import bits_use
+        self._bu = bits_use
+        self._cwd0 = os.getcwd()
         self._tmpdir = tempfile.mkdtemp()
-        self._rc = os.path.join(self._tmpdir, "bits.rc")
+        self._home = tempfile.mkdtemp()
+        os.chdir(self._tmpdir)
+        self._patch = patch.object(bits_use, "HOME_STORE",
+                                   os.path.join(self._home, "use"))
+        self._patch.start()
 
     def tearDown(self):
         import shutil
+        self._patch.stop()
+        os.chdir(self._cwd0)
         shutil.rmtree(self._tmpdir, ignore_errors=True)
+        shutil.rmtree(self._home, ignore_errors=True)
 
-    def _read_rc(self):
-        cfg = configparser.ConfigParser()
-        cfg.read(self._rc)
-        return dict(cfg["bits"]) if "bits" in cfg else {}
+    def _profile(self):
+        return self._bu.read_all(self._bu._read_path())
 
-    def test_writes_remote_store(self):
-        args = _cfg_args(
-            initRemoteStore="https://store.example.com",
-            rcFile=self._rc,
-            _init_explicit={"remote_store"},
-        )
-        doInitConfig(args)
-        self.assertEqual(self._read_rc().get("remote_store"), "https://store.example.com")
+    def test_remote_store_goes_to_build(self):
+        doInitConfig(_cfg_args(initRemoteStore="https://store.example.com",
+                               _init_explicit={"remote_store"}))
+        self.assertEqual(self._profile().get("build"),
+                         ["--remote-store", "https://store.example.com"])
 
-    def test_writes_write_store(self):
-        args = _cfg_args(
-            initWriteStore="b3://mybucket/store",
-            rcFile=self._rc,
-            _init_explicit={"write_store"},
-        )
-        doInitConfig(args)
-        self.assertEqual(self._read_rc().get("write_store"), "b3://mybucket/store")
+    def test_write_store_goes_to_build(self):
+        doInitConfig(_cfg_args(initWriteStore="b3://mybucket/store",
+                               _init_explicit={"write_store"}))
+        self.assertEqual(self._profile().get("build"),
+                         ["--write-store", "b3://mybucket/store"])
 
-    def test_writes_providers(self):
-        args = _cfg_args(
-            providers="https://github.com/myorg/bits-providers",
-            rcFile=self._rc,
-            _init_explicit={"providers"},
-        )
-        doInitConfig(args)
-        self.assertEqual(self._read_rc().get("providers"),
-                         "https://github.com/myorg/bits-providers")
+    def test_architecture_goes_to_common(self):
+        doInitConfig(_cfg_args(architecture="slc9_x86-64", _init_explicit={"a"}))
+        self.assertEqual(self._profile().get("common"),
+                         ["--architecture", "slc9_x86-64"])
 
-    def test_writes_organisation(self):
-        args = _cfg_args(
-            organisation="MYORG",
-            rcFile=self._rc,
-            _init_explicit={"organisation"},
-        )
-        doInitConfig(args)
-        self.assertEqual(self._read_rc().get("organisation"), "MYORG")
+    def test_work_dir_goes_to_build(self):
+        doInitConfig(_cfg_args(workDir="/opt/sw", _init_explicit={"w"}))
+        self.assertEqual(self._profile().get("build"), ["--work-dir", "/opt/sw"])
 
-    def test_writes_work_dir_via_short_flag(self):
-        args = _cfg_args(
-            workDir="/opt/sw",
-            rcFile=self._rc,
-            _init_explicit={"w"},           # user passed -w
-        )
-        doInitConfig(args)
-        self.assertEqual(self._read_rc().get("work_dir"), "/opt/sw")
+    def test_defaults_list_joined_with_double_colon(self):
+        doInitConfig(_cfg_args(defaults=["release", "myproject"],
+                               _init_explicit={"defaults"}))
+        self.assertEqual(self._profile().get("build"),
+                         ["--defaults", "release::myproject"])
 
-    def test_writes_architecture_via_short_flag(self):
-        args = _cfg_args(
-            architecture="ubuntu2204_x86-64",
-            rcFile=self._rc,
-            _init_explicit={"a"},
-        )
-        doInitConfig(args)
-        self.assertEqual(self._read_rc().get("architecture"), "ubuntu2204_x86-64")
+    def test_only_explicit_keys_saved(self):
+        doInitConfig(_cfg_args(initRemoteStore="https://store.example.com",
+                               workDir="/opt/sw",
+                               _init_explicit={"remote_store"}))
+        build = self._profile().get("build", [])
+        self.assertIn("--remote-store", build)
+        self.assertNotIn("--work-dir", build)
 
-    def test_writes_defaults_list_as_double_colon(self):
-        args = _cfg_args(
-            defaults=["release", "myproject"],
-            rcFile=self._rc,
-            _init_explicit={"defaults"},
-        )
-        doInitConfig(args)
-        self.assertEqual(self._read_rc().get("defaults"), "release::myproject")
+    def test_common_and_build_together(self):
+        doInitConfig(_cfg_args(architecture="slc9_x86-64",
+                               initRemoteStore="https://store.example.com",
+                               _init_explicit={"a", "remote_store"}))
+        prof = self._profile()
+        self.assertEqual(prof.get("common"), ["--architecture", "slc9_x86-64"])
+        self.assertEqual(prof.get("build"),
+                         ["--remote-store", "https://store.example.com"])
 
-    def test_does_not_write_unspecified_keys(self):
-        """Only explicitly requested keys must appear in bits.rc."""
-        args = _cfg_args(
-            initRemoteStore="https://store.example.com",
-            workDir="/opt/sw",              # NOT in explicit flags
-            rcFile=self._rc,
-            _init_explicit={"remote_store"},
-        )
-        doInitConfig(args)
-        rc = self._read_rc()
-        self.assertIn("remote_store", rc)
-        self.assertNotIn("work_dir", rc)
+    def test_organisation_is_env_only_not_saved(self):
+        doInitConfig(_cfg_args(organisation="MYORG", _init_explicit={"organisation"}))
+        self.assertEqual(self._profile(), {})
 
-    def test_multiple_keys_in_one_pass(self):
-        args = _cfg_args(
-            initRemoteStore="https://store.example.com",
-            initWriteStore="b3://mybucket",
-            organisation="MYORG",
-            rcFile=self._rc,
-            _init_explicit={"remote_store", "write_store", "organisation"},
-        )
-        doInitConfig(args)
-        rc = self._read_rc()
-        self.assertEqual(rc["remote_store"], "https://store.example.com")
-        self.assertEqual(rc["write_store"], "b3://mybucket")
-        self.assertEqual(rc["organisation"], "MYORG")
+    def test_providers_is_env_only_not_saved(self):
+        doInitConfig(_cfg_args(providers="https://x/bits-providers",
+                               _init_explicit={"providers"}))
+        self.assertEqual(self._profile(), {})
 
-    def test_append_preserves_existing_keys(self):
-        """--append must keep existing bits.rc entries that are not overridden."""
-        # Write initial file with providers key
-        initial = configparser.ConfigParser()
-        initial.add_section("bits")
-        initial.set("bits", "providers", "https://github.com/org/providers")
-        with open(self._rc, "w") as fh:
-            initial.write(fh)
-
-        args = _cfg_args(
-            initRemoteStore="https://store.example.com",
-            rcFile=self._rc,
-            appendRc=True,
-            _init_explicit={"remote_store"},
-        )
-        doInitConfig(args)
-        rc = self._read_rc()
-        # New key written
-        self.assertEqual(rc["remote_store"], "https://store.example.com")
-        # Existing key preserved
-        self.assertEqual(rc["providers"], "https://github.com/org/providers")
-
-    def test_append_overwrites_changed_key(self):
-        """--append must update an existing key when the user re-specifies it."""
-        initial = configparser.ConfigParser()
-        initial.add_section("bits")
-        initial.set("bits", "remote_store", "https://old-store.example.com")
-        with open(self._rc, "w") as fh:
-            initial.write(fh)
-
-        args = _cfg_args(
-            initRemoteStore="https://new-store.example.com",
-            rcFile=self._rc,
-            appendRc=True,
-            _init_explicit={"remote_store"},
-        )
-        doInitConfig(args)
-        rc = self._read_rc()
-        self.assertEqual(rc["remote_store"], "https://new-store.example.com")
-
-    def test_no_flags_does_not_write_file(self):
-        """With no explicit flags doInitConfig must not create bits.rc."""
-        args = _cfg_args(rcFile=self._rc, _init_explicit=set())
-        doInitConfig(args)
-        self.assertFalse(os.path.exists(self._rc))
-
-    def test_dry_run_does_not_write_file(self):
-        """--dry-run must print the config without touching the file system."""
-        args = _cfg_args(
-            initRemoteStore="https://store.example.com",
-            rcFile=self._rc,
-            dryRun=True,
-            _init_explicit={"remote_store"},
-        )
-        with patch("bits_helpers.init.info") as mock_info:
-            doInitConfig(args)
-        self.assertFalse(os.path.exists(self._rc))
-        # info() should have been called with the INI text
-        self.assertTrue(mock_info.called)
-        printed = " ".join(str(a) for call in mock_info.call_args_list for a in call[0])
-        self.assertIn("remote_store", printed)
-
-    def test_fresh_write_overwrites_existing(self):
-        """Without --append, an existing bits.rc is replaced entirely."""
-        initial = configparser.ConfigParser()
-        initial.add_section("bits")
-        initial.set("bits", "providers", "https://old-providers")
-        with open(self._rc, "w") as fh:
-            initial.write(fh)
-
-        args = _cfg_args(
-            initWriteStore="b3://mybucket",
-            rcFile=self._rc,
-            appendRc=False,
-            _init_explicit={"write_store"},
-        )
-        doInitConfig(args)
-        rc = self._read_rc()
-        self.assertIn("write_store", rc)
-        self.assertNotIn("providers", rc)   # old key gone
-
-
-class BitsRcDefaultsAppliedTest(unittest.TestCase):
-    """Verify that bits.rc values become argparse defaults via set_defaults()."""
-
-    def _parse(self, argv, rc_content=""):
-        """Parse argv with a bits.rc in a temp dir."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            rc_path = os.path.join(tmpdir, "bits.rc")
-            if rc_content:
-                with open(rc_path, "w") as fh:
-                    fh.write(rc_content)
-            old_cwd = os.getcwd()
-            try:
-                os.chdir(tmpdir)
-                import sys
-                old_argv = sys.argv[:]
-                sys.argv = ["bits"] + argv
-                try:
-                    from bits_helpers.args import doParseArgs
-                    args, _ = doParseArgs()
-                    return args
-                finally:
-                    sys.argv = old_argv
-            finally:
-                os.chdir(old_cwd)
-
-    def test_remote_store_from_rc(self):
-        """bits.rc remote_store must set the default for 'bits build'."""
-        rc = "[bits]\nremote_store = https://rc-store.example.com\n"
-        with patch("bits_helpers.args.cleanup_git_log"):
-            args = self._parse(["build", "zlib", "--force-unknown-architecture"], rc)
-        self.assertEqual(args.remoteStore, "https://rc-store.example.com")
-
-    def test_cli_overrides_rc(self):
-        """An explicit CLI --remote-store must win over the bits.rc value."""
-        rc = "[bits]\nremote_store = https://rc-store.example.com\n"
-        with patch("bits_helpers.args.cleanup_git_log"):
-            args = self._parse(
-                ["build", "zlib",
-                 "--remote-store", "https://cli-store.example.com",
-                 "--force-unknown-architecture"],
-                rc,
-            )
-        self.assertEqual(args.remoteStore, "https://cli-store.example.com")
-
-    def test_no_rc_uses_hardcoded_default(self):
-        """Without bits.rc the original hardcoded default must be used.
-
-        Use an explicit architecture that is not in S3_SUPPORTED_ARCHS so that
-        finaliseArgs does not silently inject the CERN S3 URL, which would mask
-        a missing rc default and make the assertion architecture-dependent.
-        """
-        with patch("bits_helpers.args.cleanup_git_log"):
-            args = self._parse([
-                "build", "zlib",
-                "--architecture", "test_x86-64",
-                "--force-unknown-architecture",
-            ])
-        # The argparse hardcoded default for --remote-store is "".
-        self.assertEqual(args.remoteStore, "")
+    def test_dry_run_writes_nothing(self):
+        doInitConfig(_cfg_args(initRemoteStore="https://x", dryRun=True,
+                               _init_explicit={"remote_store"}))
+        self.assertIsNone(self._bu._read_path())
 
 
 if __name__ == '__main__':

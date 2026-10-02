@@ -13,8 +13,11 @@ from unittest.mock import call, patch, MagicMock, DEFAULT
 from io import StringIO
 from collections import OrderedDict
 
-from bits_helpers.utilities import parseRecipe, resolve_tag
-from bits_helpers.build import doBuild, storeHashes, generate_initdotsh
+from bits_helpers.utilities import resolve_tag
+from bits_helpers.recipe import parseRecipe
+from bits_helpers.build import doBuild
+from bits_helpers.hashing import storeHashes
+from bits_helpers.initdotsh import generate_initdotsh
 
 # Determine architecture based on platform
 def get_test_architecture():
@@ -277,17 +280,17 @@ def dummy_exists(x):
        new=MagicMock(return_value=["--filter=blob:none"]))
 @patch("bits_helpers.build.BASH", new="/bin/bash")
 class BuildTestCase(unittest.TestCase):
-    @patch("bits_helpers.analytics", new=MagicMock())
     @patch("requests.Session.get", new=MagicMock())
     @patch("bits_helpers.sync.execute", new=dummy_execute)
     @patch("bits_helpers.git.git")
     @patch("bits_helpers.build.exists", new=MagicMock(side_effect=dummy_exists))
-    @patch("bits_helpers.utilities.exists", new=MagicMock(side_effect=dummy_exists))
+    @patch("bits_helpers.paths.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("os.path.exists", new=MagicMock(side_effect=dummy_exists))
     @patch("os.path.isfile", new=MagicMock(side_effect=dummy_isfile))
     @patch("bits_helpers.build.dieOnError", new=MagicMock())
-    @patch("bits_helpers.utilities.dieOnError", new=MagicMock())
-    @patch("bits_helpers.utilities.warning")
+    @patch("bits_helpers.packages.dieOnError", new=MagicMock())
+    @patch("bits_helpers.defaults.dieOnError", new=MagicMock())
+    @patch("bits_helpers.packages.warning")
     @patch("bits_helpers.build.readDefaults",
            new=MagicMock(return_value=(OrderedDict({"package": "defaults-release", "disable": []}), "")))
     @patch("shutil.rmtree", new=MagicMock(return_value=None))
@@ -295,7 +298,7 @@ class BuildTestCase(unittest.TestCase):
     @patch("bits_helpers.build.makedirs", new=MagicMock(return_value=None))
     @patch("bits_helpers.build.symlink", new=MagicMock(return_value=None))
     @patch("bits_helpers.workarea.symlink", new=MagicMock(return_value=None))
-    @patch("bits_helpers.utilities.open", new=lambda x: {
+    @patch("bits_helpers.recipe.open", new=lambda x: {
         "/alidist/root.sh": StringIO(TEST_ROOT_RECIPE),
         "/alidist/zlib.sh": StringIO(TEST_ZLIB_RECIPE),
         "/alidist/defaults-release.sh": StringIO(TEST_DEFAULT_RELEASE)
@@ -304,6 +307,10 @@ class BuildTestCase(unittest.TestCase):
     @patch("bits_helpers.build.open", new=MagicMock(side_effect=dummy_open))
     @patch("codecs.open", new=MagicMock(side_effect=dummy_open))
     @patch("bits_helpers.build.shutil", new=MagicMock())
+    # On macOS doBuild records <workDir>/<arch>/Brewfile (/sw is not writable on
+    # the runner) and stops when Homebrew formulae are not yet installed.
+    @patch("bits_helpers.brew.collect_homebrew", new=MagicMock(return_value=([], [])))
+    @patch("bits_helpers.brew.write_brewfile", new=MagicMock(return_value=""))
     @patch("os.listdir")
     @patch("bits_helpers.build.glob", new=lambda pattern: {
         "*": ["zlib"],
@@ -379,7 +386,6 @@ class BuildTestCase(unittest.TestCase):
             builders=1,
             resources=None,
             resourceMonitoring=False,
-            makeflow=False,
             # Explicitly disable features whose mocking would require additional
             # filesystem or network setup.
             storeIntegrity=False,   # no ledger reads/writes

@@ -168,6 +168,32 @@ class TestPublishFromManifest(unittest.TestCase):
         self.assertIn("MANIFESTS/%s/LICENSE-SOURCE-OFFER.txt" % build_id,
                       w.s3.texts)
 
+    def test_sboms_uploaded_with_the_stored_sha(self):
+        # The store kept an object whose sha differs from the local build's:
+        # the SBOM, like the BOM, must describe the stored bytes.
+        self.manifest["packages"][0]["tarball_sha256"] = "sha256:" + "1" * 64
+        with open(self.man_path, "w") as fh:
+            json.dump(self.manifest, fh)
+        stored = "sha256:" + "2" * 64
+
+        class Writer(_FakeWriter):
+            def upload_symlinks_and_tarball(self, spec):
+                super().upload_symlinks_and_tarball(spec)
+                spec["store_tarball_sha256"] = stored
+        self.writer = w = Writer()
+        with patch.object(sync, "remote_from_url", return_value=w):
+            publish._publish_from_manifest(ARCH, self.work, "https://s3.example/mybucket",
+                                           _Parser(), manifest=self.man_path)
+        build_id = build_id_from_manifest(self.manifest)
+        cdx = json.loads(w.s3.texts["MANIFESTS/%s/sbom.cdx.json" % build_id])
+        spdx = json.loads(w.s3.texts["MANIFESTS/%s/sbom.spdx.json" % build_id])
+        top = [c for c in cdx["components"] if c["name"] == "Top"][0]
+        self.assertEqual(top["hashes"], [{"alg": "SHA-256", "content": "2" * 64}])
+        self.assertEqual(cdx["metadata"]["component"]["name"], build_id)
+        self.assertEqual(spdx["name"], build_id)
+        # Published + licence-excluded (marked); NoTar never reached the store.
+        self.assertEqual(sorted(c["name"] for c in cdx["components"]), ["Secret", "Top"])
+
     def test_non_redistributable_never_uploaded_nor_in_bom(self):
         # redistributable: false — the binary must not reach the (possibly
         # world-readable) store, and what is not in the store cannot be in the
@@ -186,10 +212,10 @@ class TestPublishFromManifest(unittest.TestCase):
         args = SimpleNamespace(
             publishView=None, fromManifest=None, package="Secret", version=None,
             workDir=self.work, architecture=ARCH, cvmfsTarget="/cvmfs/x",
-            spool="/tmp/spool", scratchDir=None, rsyncOpts=None,
-            prepubUrl=None, prepubToken=None, prepubRepo=None, prepubPath=None,
+            scratchDir=None,
+            prepubUrl="https://prepub.example.org", prepubToken=None, prepubRepo=None, prepubPath=None,
             prepubWebhook=None, prepubPollInterval=10, prepubTimeout=1800,
-            prepubNoVerifyTls=False, publishTo=None, dryRun=False,
+            prepubNoVerifyTls=False, dryRun=False,
         )
         with patch.object(publish, "_find_installroot",
                           side_effect=AssertionError("must gate BEFORE locating "
@@ -280,46 +306,141 @@ class TestPublishFromManifest(unittest.TestCase):
         from types import SimpleNamespace
         base = dict(publishView=None, fromManifest="latest", package=None,
                     dryRun=False, workDir=self.work, architecture=ARCH,
-                    publishStore="https://s3.example/mybucket", certify=False,
-                    certifyGroup=None, manifestsRemote=None, certifyRef=None,
-                    noCertify=False)
+                    publishStore="https://s3.example/mybucket")
         base.update(over)
         return SimpleNamespace(**base)
 
-    def test_system_defaults_imply_certify(self):
-        system = {"certify_group": "ship",
-                  "manifests_remote": "ssh://git@gitlab.cern.ch:7999/buncic/bits-manifests.git"}
-        with patch.object(publish, "_publish_from_manifest",
-                          return_value=("bid", {"packages": []}, system)), \
-             patch.object(publish, "_submit_certification_mr") as sub:
-            args = self._dopublish_args()          # bare publish, nothing on CLI
-            publish.doPublish(args, _Parser())
-        sub.assert_called_once()
-        self.assertEqual(args.certifyGroup, "ship")            # from system:
-        self.assertEqual(args.manifestsRemote, system["manifests_remote"])
+    def _certify_args(self, **over):
+        from types import SimpleNamespace
+        base = dict(fromManifest="latest", dryRun=False, workDir=self.work, architecture=ARCH,
+                    publishStore="https://s3.example/mybucket", certifyGroup=None,
+                    manifestsRemote=None, certifyRef=None, gitlabToken=None,
+                    approval="passkey", console=None, consoleCafile=None,
+                    consoleInsecure=False, certifier=None)
+        base.update(over)
+        return SimpleNamespace(**base)
 
-    def test_no_certify_opts_out_of_configured_certify(self):
+    def test_publish_only_uploads_even_with_certify_defaults(self):
+        # `bits publish` never opens an MR, whatever the defaults configure.
         system = {"certify_group": "ship", "manifests_remote": "ssh://h/g/p.git"}
         with patch.object(publish, "_publish_from_manifest",
-                          return_value=("bid", {"packages": []}, system)), \
+                          return_value=("bid", [], system)) as up, \
              patch.object(publish, "_submit_certification_mr") as sub:
-            publish.doPublish(self._dopublish_args(noCertify=True), _Parser())
+            publish.doPublish(self._dopublish_args(), _Parser())
+        up.assert_called_once()
         sub.assert_not_called()
 
-    def test_cli_group_implies_certify_without_flag(self):
-        with patch.object(publish, "_publish_from_manifest",
-                          return_value=("bid", {"packages": []}, {})), \
-             patch.object(publish, "_submit_certification_mr") as sub:
-            publish.doPublish(self._dopublish_args(certifyGroup="lcg",
-                                                   manifestsRemote="ssh://h/g/p.git"),
-                              _Parser())
+    def test_certify_uses_system_defaults_and_approves_before_mr(self):
+        calls = []
+        bom = [("x86_64-el9", {"build_id": "bid", "packages": []})]
+        system = {"certify_group": "ship", "manifests_remote": "ssh://h/g/p.git",
+                  "console_url": "https://c"}
+        with patch.object(publish, "_publish_from_manifest", return_value=("bid", bom, system)), \
+             patch.object(publish, "_submit_certification_mr",
+                          side_effect=lambda *a: calls.append("mr")), \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
+             patch("bits_helpers.sign_console.preapprove_via_console",
+                   side_effect=lambda *a, **k: calls.append(("pre", a))):
+            args = self._certify_args()               # bare `bits certify`
+            publish.doCertify(args, _Parser())
+        self.assertEqual([c if c == "mr" else c[0] for c in calls], ["pre", "mr"])
+        self.assertEqual(calls[0][1][:4], ("https://c", "bid", ["ship"], [bom[0][1]]))
+        self.assertEqual((args.certifyGroup, args.manifestsRemote), ("ship", "ssh://h/g/p.git"))
+
+    def test_certify_cli_overrides_defaults(self):
+        system = {"certify_group": "ship", "manifests_remote": "ssh://h/g/p.git"}
+        with patch.object(publish, "_publish_from_manifest", return_value=("bid", [], system)), \
+             patch.object(publish, "_submit_certification_mr") as sub, \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"):
+            args = self._certify_args(certifyGroup="lcg", approval="none", certifier="alice")
+            publish.doCertify(args, _Parser())
         sub.assert_called_once()
+        self.assertEqual(args.certifyGroup, "lcg")
+
+    def test_certify_approval_none_skips_the_console(self):
+        with patch.object(publish, "_publish_from_manifest",
+                          return_value=("bid", [], {"certify_group": "g", "manifests_remote": "r"})), \
+             patch.object(publish, "_submit_certification_mr") as sub, \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
+             patch("bits_helpers.sign_console.preapprove_via_console") as pre:
+            publish.doCertify(self._certify_args(approval="none", certifier="alice"), _Parser())
+        pre.assert_not_called()
+        sub.assert_called_once()
+
+    def test_certify_approval_none_needs_certifier(self):
+        with patch.object(publish, "_publish_from_manifest") as up:
+            with self.assertRaises(_Parser._Err):
+                publish.doCertify(self._certify_args(approval="none"), _Parser())
+        up.assert_not_called()
+
+    def test_certify_nothing_published_is_an_error(self):
+        with patch.object(publish, "_publish_from_manifest", return_value=None), \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"):
+            with self.assertRaises(_Parser._Err):
+                publish.doCertify(self._certify_args(), _Parser())
+
+    def test_certify_needs_token_before_upload(self):
+        with patch.object(publish, "_publish_from_manifest") as up, \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value=None):
+            with self.assertRaises(_Parser._Err):
+                publish.doCertify(self._certify_args(), _Parser())
+        up.assert_not_called()
+
+    def test_certify_passkey_needs_console_and_target(self):
+        with patch.object(publish, "_publish_from_manifest", return_value=("bid", [], {})), \
+             patch.object(publish, "_submit_certification_mr") as sub, \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value="tok"), \
+             patch("bits_helpers.sign_console.preapprove_via_console") as pre, \
+             patch.dict("os.environ", {"BITS_CONSOLE_URL": ""}):
+            with self.assertRaises(_Parser._Err):          # no group / manifests repo
+                publish.doCertify(self._certify_args(console="https://c"), _Parser())
+            with self.assertRaises(_Parser._Err):          # target set, no console URL
+                publish.doCertify(self._certify_args(certifyGroup="lcg",
+                                                     manifestsRemote="ssh://h/g/p.git"), _Parser())
+        pre.assert_not_called()
+        sub.assert_not_called()
+
+    def test_certify_dry_run_touches_nothing(self):
+        with patch.object(publish, "_publish_from_manifest", return_value=None), \
+             patch.object(publish, "_submit_certification_mr") as sub, \
+             patch("bits_helpers.forge.resolve_gitlab_token", return_value=None):
+            publish.doCertify(self._certify_args(dryRun=True), _Parser())
+        sub.assert_not_called()
 
     def test_run_leaf_is_unique_per_call(self):
         # Distinct hosts/runs must not collide: the leaf carries host + UTC stamp.
         leaves = {publish._run_leaf() for _ in range(3)}
         for leaf in leaves:
             self.assertRegex(leaf, r"^[A-Za-z0-9._-]+-\d{8}T\d{6}Z-[0-9a-f]+\.json$")
+
+
+class TestStoreUploadRedistributable(unittest.TestCase):
+    """H1 mitigation: `bits store upload` (_publish_s3) must refuse a package whose
+    recipe forbids binary redistribution — mirroring the build-time and bulk gates
+    so no upload path leaks a restricted binary into a world-readable store."""
+
+    def _run(self, entry):
+        writer = _FakeWriter()
+        with patch.object(publish, "_load_manifest_spec", return_value=entry), \
+             patch.object(sync, "remote_from_url", return_value=writer):
+            publish._publish_s3(entry["package"], entry.get("version"), ARCH,
+                                "/wd", "b3://bucket", _Parser())
+        return writer
+
+    def test_refuses_non_redistributable(self):
+        w = self._run({"package": "QGRAF", "version": "3.6", "revision": "1",
+                       "hash": "h1", "redistributable": "none"})
+        self.assertEqual(w.tarballs, [])
+
+    def test_refuses_unrecognised_fail_closed(self):
+        w = self._run({"package": "X", "version": "1", "revision": "1",
+                       "hash": "h9", "redistributable": "weird-typo"})
+        self.assertEqual(w.tarballs, [])
+
+    def test_uploads_shareable_default(self):
+        # No redistributable key -> default 'all' -> uploaded.
+        w = self._run({"package": "ROOT", "version": "6.30", "revision": "1", "hash": "h2"})
+        self.assertEqual(w.tarballs, ["h2"])
 
 
 if __name__ == "__main__":

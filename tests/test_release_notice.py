@@ -81,6 +81,24 @@ class ReleaseNoticeTestCase(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(d, "NOTICE")))
         self.assertTrue(os.path.isfile(os.path.join(d, "LICENSE-SOURCE-OFFER.txt")))
 
+    def test_sboms_ride_along_with_the_manifest(self):
+        man = {"schema_version": 4, "packages": ENTRIES}
+        s3 = MagicMock()
+        self.assertTrue(notice.upload_release_compliance(s3, "bkt", "b1", ENTRIES, manifest=man))
+        keys = [c.kwargs["Key"] for c in s3.put_object.call_args_list]
+        self.assertEqual(keys, ["MANIFESTS/b1/NOTICE", "MANIFESTS/b1/LICENSE-SOURCE-OFFER.txt",
+                                "MANIFESTS/b1/sbom.cdx.json", "MANIFESTS/b1/sbom.spdx.json"])
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.assertTrue(notice.write_release_compliance(d, ENTRIES, "b1", manifest=man))
+        self.assertEqual(sorted(os.listdir(d)), ["LICENSE-SOURCE-OFFER.txt", "NOTICE",
+                                                 "sbom.cdx.json", "sbom.spdx.json"])
+        # An SBOM failure never costs the NOTICE.
+        from unittest import mock
+        with mock.patch("bits_helpers.sbom.render", side_effect=RuntimeError("x")):
+            files = [n for n, _ in notice._release_files(ENTRIES, "b1", manifest=man)]
+        self.assertEqual(files, ["NOTICE", "LICENSE-SOURCE-OFFER.txt"])
+
 
 if __name__ == "__main__":
     unittest.main()

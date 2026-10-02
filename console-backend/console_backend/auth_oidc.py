@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: 2026 CERN
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Phase 2: the backend as a GitLab OIDC client. Runs the authorization-code flow on
+/auth/login + /auth/callback, verifies the returned id_token, and yields the user +
+groups so the backend can issue its OWN session — the browser then holds no GitLab
+token. Confidential client (client secret) plus PKCE for defense in depth. The
+id_token is verified against GitLab's JWKS (reused from ci_auth)."""
+
+import base64
+import hashlib
+import secrets
+from urllib.parse import urlencode
+
+import jwt
+import requests
+
+from . import ci_auth   # reuse the cached PyJWKClient
+
+
+def _b64url(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def new_pkce():
+    """(verifier, challenge) for PKCE S256."""
+    verifier = _b64url(secrets.token_bytes(64))
+    challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
+    return verifier, challenge
+
+
+_DISCOVERY = {}   # issuer -> discovery document (cached; endpoints rarely change)
+
+
+def _discover(issuer, timeout=10):
+    d = _DISCOVERY.get(issuer)
+    if d is None:
+        r = requests.get(issuer.rstrip("/") + "/.well-known/openid-configuration", timeout=timeout)
+        r.raise_for_status()
+        d = r.json()
+        _DISCOVERY[issuer] = d
+    return d
+
+
+def endpoints(settings):
+    """(authorize_url, token_url, jwks_url). Explicit config wins (override/test);
+    otherwise they are DISCOVERED from the issuer's well-known document — so a
+    deployment only needs the issuer + client id, not three hand-copied URLs."""
+    a, t, j = settings.oidc_authorize_url, settings.oidc_token_url, settings.jwks_url
+    if not (a and t and j):
+        d = _discover(settings.oidc_issuer)
+        a = a or d.get("authorization_endpoint", "")
+        t = t or d.get("token_endpoint", "")
+        j = j or d.get("jwks_uri", "")
+    return a, t, j
+
+
+def authorize_url(settings, state, challenge, scope="openid read_api", max_age=None):
+    params = {
+        "client_id": settings.oidc_login_client_id,
+        "redirect_uri": settings.oidc_login_redirect,
+        "response_type": "code",
+        "scope": scope,
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    if max_age is not None:
+        params["max_age"] = str(int(max_age))   # timeout-based re-auth (P2.3)
+    return "%s?%s" % (endpoints(settings)[0], urlencode(params))
+
+
+def exchange_code(settings, code, verifier, timeout=15):
+    """Exchange the auth code for tokens. Returns the token response dict (id_token +
+    access_token), or raises ValueError. The client secret never leaves the backend."""
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": settings.oidc_login_redirect,
+        "client_id": settings.oidc_login_client_id,
+        "code_verifier": verifier,       # PKCE protects the exchange for a public client
+    }
+    if settings.oidc_login_client_secret:   # confidential client (optional)
+        data["client_secret"] = settings.oidc_login_client_secret
+    r = requests.post(endpoints(settings)[1], timeout=timeout, data=data)
+    if r.status_code // 100 != 2:
+        raise ValueError("token endpoint returned %s" % r.status_code)
+    body = r.json() or {}
+    if not body.get("id_token"):
+        raise ValueError("no id_token in token response")
+    return body
+
+
+def verify_id_token(settings, id_token):
+    """Verify signature (JWKS), issuer, audience (== our client id) and exp; return
+    the claims, or raise."""
+    key = ci_auth._jwks_client(endpoints(settings)[2]).get_signing_key_from_jwt(id_token).key
+    return jwt.decode(id_token, key, algorithms=["RS256"],
+                      audience=settings.oidc_login_client_id,
+                      issuer=settings.oidc_issuer, leeway=30,   # small clock skew
+                      options={"require": ["exp", "iat", "aud", "iss", "sub"]})
+
+
+def claims_user_groups(claims):
+    """Username + e-groups from GitLab OIDC claims. Username is preferred_username /
+    nickname only — NOT sub (a numeric id that wouldn't match the admin policy); the
+    caller falls back to GET /user via the access token when neither is present."""
+    user = claims.get("preferred_username") or claims.get("nickname") or ""
+    groups = claims.get("groups_direct") or claims.get("groups") or []
+    if isinstance(groups, str):
+        groups = [groups]
+    return user, [g for g in groups if isinstance(g, str)]

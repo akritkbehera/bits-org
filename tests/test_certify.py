@@ -109,6 +109,93 @@ class TestMerge(unittest.TestCase):
         self.assertEqual([p["package"] for p in common["packages"]], ["Good"])
 
 
+class TestMergeStoreResolvesConflicts(unittest.TestCase):
+    """A same-(arch, hash) sha256 conflict is settled by the stored object."""
+
+    A = "slc7_x86-64"
+
+    def _two(self):
+        return [_manifest("old", [_pkg("A", "h1", "sha256:aa")]),
+                _manifest("new", [_pkg("A", "h1", "sha256:bb")])]
+
+    def test_store_matches_second_claim_keeps_it(self):
+        # Store wiped and h1 rebuilt: the older BOM is stale.
+        with self.assertLogs("bits", level="WARNING") as logs:
+            common = certify.merge_common_manifest(
+                self._two(), probe=lambda a, h, t=None: "sha256:bb")
+        self.assertEqual([p["tarball_sha256"] for p in common["packages"]],
+                         ["sha256:bb"])
+        self.assertIn("1 stale BOM entry", "\n".join(logs.output))
+
+    def test_store_matches_first_claim_keeps_it(self):
+        # Upload race: the second node's bytes lost.
+        common = certify.merge_common_manifest(
+            self._two(), probe=lambda a, h, t=None: "aa")
+        self.assertEqual([p["tarball_sha256"] for p in common["packages"]],
+                         ["sha256:aa"])
+
+    def test_store_matches_neither_still_fails_closed(self):
+        with self.assertRaises(certify.CertifyConflict) as cm:
+            certify.merge_common_manifest(
+                self._two(), probe=lambda a, h, t=None: "sha256:cc")
+        self.assertIn("matches none", str(cm.exception))
+
+    def test_object_absent_is_left_to_store_validation(self):
+        # Wiped store, hash not rebuilt: no claim can be confirmed, but none is
+        # signed either — validation drops the absent object.
+        common = certify.merge_common_manifest(
+            self._two(), probe=lambda a, h, t=None: None)
+        self.assertEqual(len(common["packages"]), 1)
+        fatal, missing = certify.validate_against_store(common, lambda a, h, t=None: None)
+        self.assertEqual((fatal, len(missing)), ([], 1))
+
+    def test_probe_asked_with_each_entrys_tarball(self):
+        seen = []
+
+        def probe(a, h, t=None):
+            seen.append((a, h, t))
+            return "sha256:bb"
+        m1 = _manifest("old", [_pkg("A", "h1", "sha256:aa", tarball="A-1-1.tgz")])
+        m2 = _manifest("new", [_pkg("A", "h1", "sha256:bb", tarball="A-1-2.tgz")])
+        common = certify.merge_common_manifest([m1, m2], probe=probe)
+        self.assertEqual(common["packages"][0]["tarball"], "A-1-2.tgz")
+        self.assertEqual(seen, [(self.A, "h1", "A-1-1.tgz"), (self.A, "h1", "A-1-2.tgz")])
+
+    def test_three_boms_converge_on_stored_entry_in_any_order(self):
+        # The matching claim may come last: resolution must not be pairwise.
+        a, b = self._two()
+        c = _manifest("newer", [_pkg("A", "h1", "sha256:cc")])
+        for boms in ([a, b, c], [a, c, b], [c, a, b]):
+            common = certify.merge_common_manifest(
+                boms, probe=lambda a, h, t=None: "sha256:bb")
+            self.assertEqual([p["tarball_sha256"] for p in common["packages"]],
+                             ["sha256:bb"])
+
+    def test_store_confirming_two_claims_is_fatal(self):
+        # Two distinct objects (different tarball names) under one hash: ambiguous.
+        store = {"A-1.tgz": "sha256:aa", "A-2.tgz": "sha256:bb"}
+        m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa", tarball="A-1.tgz")])
+        m2 = _manifest("b2", [_pkg("A", "h1", "sha256:bb", tarball="A-2.tgz")])
+        with self.assertRaises(certify.CertifyConflict) as cm:
+            certify.merge_common_manifest([m1, m2], probe=lambda a, h, t=None: store[t])
+        self.assertIn("more than one", str(cm.exception))
+
+    def test_agreeing_entries_never_probe(self):
+        def probe(a, h, t=None):
+            raise AssertionError("probe must not run without a conflict")
+        m1 = _manifest("b1", [_pkg("A", "h1", "sha256:aa")])
+        m2 = _manifest("b2", [_pkg("A", "h1", "aa")])
+        common = certify.merge_common_manifest([m1, m2], probe=probe)
+        self.assertEqual(len(common["packages"]), 1)
+
+    def test_cached_probe_memoises(self):
+        calls = []
+        probe = certify._cached_probe(lambda a, h, t=None: calls.append(h) or "x")
+        probe("a", "h1", "t"); probe("a", "h1", "t"); probe("a", "h2", "t")
+        self.assertEqual(calls, ["h1", "h2"])
+        self.assertIsNone(certify._cached_probe(None))
+
+
 class TestValidateAgainstStore(unittest.TestCase):
 
     def _common(self):
@@ -177,6 +264,12 @@ class TestCertifyEndToEnd(unittest.TestCase):
             fh.write(priv.public_key().public_bytes(
                 serialization.Encoding.PEM,
                 serialization.PublicFormat.SubjectPublicKeyInfo))
+        # These tests exercise sign/verify, not per-key policy. The shipped
+        # keys/key-policy.json is strict ("default": []), so declare this
+        # harness's own key trusted for every group ("default": ["*"] overrides
+        # the shipped strict default, most-specific-last).
+        with open(os.path.join(self.trust_dir, "key-policy.json"), "w") as fh:
+            fh.write('{"default": ["*"]}\n')
         self._old_env = os.environ.get("BITS_TRUST_KEYS")
         os.environ["BITS_TRUST_KEYS"] = self.trust_dir
 
@@ -210,6 +303,53 @@ class TestCertifyEndToEnd(unittest.TestCase):
         kid, index = trust.trusted_index(out_path)
         self.assertIsNotNone(kid)
         self.assertEqual(index, {"h1": "sha256:aa"})       # B dropped, A signed
+
+    def test_certify_resolves_stale_bom_and_probes_once(self):
+        # A BOM from before a store wipe plus the rebuild's BOM: certify signs
+        # the stored bytes, and the conflict + validation share one probe call.
+        calls = []
+
+        def probe(a, h, t=None):
+            calls.append(h)
+            return "sha256:bb"
+        boms = [_manifest("old", [_pkg("A", "h1", "sha256:aa")]),
+                _manifest("new", [_pkg("A", "h1", "sha256:bb")])]
+        out = os.path.join(self.tmp, "out", "common.json")
+        out_path, _ = certify.certify(boms, self.key_pem, out, probe=probe)
+        _kid, index = trust.trusted_index(out_path)
+        self.assertEqual(index, {"h1": "sha256:bb"})
+        self.assertEqual(calls, ["h1"])
+
+    def test_local_revision_neither_shadows_nor_conflicts(self):
+        # A laptop BOM's localN entry for the same hash must not hide the CI
+        # entry (it used to win the dedup and then be dropped with it), nor be
+        # probed in a conflict.
+        probed = []
+
+        def probe(a, h, t=None):
+            probed.append(t)
+            return "sha256:aa"
+        local = _manifest("laptop", [_pkg("A", "h1", "sha256:zz", revision="local1",
+                                          tarball="A-local1.tgz")])
+        ci = _manifest("ci", [_pkg("A", "h1", "sha256:aa")])
+        out = os.path.join(self.tmp, "out", "common.json")
+        out_path, _ = certify.certify([local, ci], self.key_pem, out, probe=probe)
+        _kid, index = trust.trusted_index(out_path)
+        self.assertEqual(index, {"h1": "sha256:aa"})
+        self.assertNotIn("A-local1.tgz", probed)
+        self.assertEqual(local["packages"][0]["revision"], "local1")  # input untouched
+
+    def test_certify_drops_conflict_whose_objects_are_gone(self):
+        # Two stale BOMs from before a wipe disagree on h1; the store has neither
+        # object any more. certify signs the rest instead of failing.
+        boms = [_manifest("old1", [_pkg("A", "h1", "sha256:aa"), _pkg("B", "h2", "sha256:bb")]),
+                _manifest("old2", [_pkg("A", "h1", "sha256:cc")])]
+        store = {("slc7_x86-64", "h2"): "sha256:bb"}
+        out = os.path.join(self.tmp, "out", "common.json")
+        out_path, _ = certify.certify(boms, self.key_pem, out,
+                                      probe=lambda a, h, t=None: store.get((a, h)))
+        _kid, index = trust.trusted_index(out_path)
+        self.assertEqual(index, {"h2": "sha256:bb"})
 
     def test_certify_skips_local_revisions(self):
         # localN revisions are only assigned when there is no write store, so the
@@ -272,7 +412,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
                 raise RuntimeError(m)
 
         with patch.object(forge, "gitlab_identify", return_value="alice"):
-            certify.doCertify(args, _P())
+            certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
         self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
 
@@ -290,7 +430,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
 
         with patch.object(forge, "gitlab_identify", return_value="alice"):
             with self.assertRaises(_P):
-                certify.doCertify(args, _Parser())
+                certify.doSign(args, _Parser())
         self.assertFalse(os.path.exists(out))
 
     def test_certifier_username_recorded_without_api(self):
@@ -311,7 +451,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
             def error(self, m):
                 raise RuntimeError(m)
 
-        certify.doCertify(args, _P())
+        certify.doSign(args, _P())
         per_arch = certify._arch_stem(out, "slc7_x86-64")
         self.assertEqual(json.load(open(per_arch))["certified_by"], ["alice"])
 
@@ -335,7 +475,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
                 raise _Err(m)
 
         with self.assertRaises(_Err):
-            certify.doCertify(args, _P())
+            certify.doSign(args, _P())
         self.assertFalse(os.path.exists(out))
 
     def test_approval_check_failure_aborts_before_signing(self):
@@ -422,6 +562,42 @@ class TestCertifyEndToEnd(unittest.TestCase):
             trustGroups=None, requireSignedReuse=True)
         idx = build.trusted_reuse_index(args, self.tmp)
         self.assertEqual(idx, {})
+
+    def test_guessed_absent_manifest_is_not_warned(self):
+        # A manifest name guessed by derive_trust_manifest_srcs that does not exist
+        # (e.g. no -shared manifest in the store) is skipped quietly; an absent
+        # manifest the user named still warns.
+        from unittest import mock
+        from bits_helpers import build
+        url = "https://s3.cern.ch/swift/v1/b/MANIFESTS/common-manifest-shared.json"
+        arch_url = url.replace("-shared", "-x86_64-el9")
+        found = lambda src: (("kid", {"h": "sha"}) if src == arch_url else (None, {}))
+        with mock.patch("bits_helpers.build._load_trusted_index",
+                        side_effect=lambda src, *a: found(src)), \
+             mock.patch("bits_helpers.build._url_not_found", return_value=True), \
+             mock.patch("bits_helpers.build.warning") as warn:
+            args = SimpleNamespace(trustManifest=arch_url + "," + url, trustGroups=None,
+                                   _guessedTrustManifests={arch_url, url})
+            self.assertEqual(build.trusted_reuse_index(args, self.tmp), {"h": "sha"})
+            warn.assert_not_called()
+            # All guessed manifests absent: one clear warning.
+            args = SimpleNamespace(trustManifest=url, trustGroups=None,
+                                   _guessedTrustManifests={url})
+            build.trusted_reuse_index(args, self.tmp)
+            self.assertIn("no signed manifest found", warn.call_args[0][0])
+            warn.reset_mock()
+            # Named by the user (not guessed): still warns per manifest.
+            args = SimpleNamespace(trustManifest=url, trustGroups=None)
+            build.trusted_reuse_index(args, self.tmp)
+            self.assertIn("could not verify", warn.call_args[0][0])
+        with mock.patch("bits_helpers.build._load_trusted_index", return_value=(None, {})), \
+             mock.patch("bits_helpers.build._url_not_found", return_value=False), \
+             mock.patch("bits_helpers.build.warning") as warn:
+            # Guessed but not a 404 (timeout, 403, bad signature): still warns.
+            args = SimpleNamespace(trustManifest=url, trustGroups=None,
+                                   _guessedTrustManifests={url})
+            build.trusted_reuse_index(args, self.tmp)
+            self.assertIn("could not verify", warn.call_args[0][0])
 
     def test_build_trusted_reuse_index_missing_local_file_degrades(self):
         from bits_helpers import build
@@ -571,7 +747,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
         _, ship_idx = trust.trusted_index(out, accept_groups=["ship"])
         self.assertEqual(ship_idx, {})
 
-    def test_doCertify_cli_defaults_to_workdir_manifests(self):
+    def test_doSign_cli_defaults_to_workdir_manifests(self):
         # Lay two per-build BOMs under WORKDIR/MANIFESTS/<build_id>/ and certify
         # the whole directory with the CLI entrypoint (offline merge).
         man_root = os.path.join(self.tmp, "sw", "MANIFESTS")
@@ -591,7 +767,7 @@ class TestCertifyEndToEnd(unittest.TestCase):
                                certifyStore="", noStoreCheck=True,
                                workDir=os.path.join(self.tmp, "sw"),
                                architecture="slc7_x86-64")
-        certify.doCertify(args, _Parser())
+        certify.doSign(args, _Parser())
         # Both BOMs are slc7_x86-64, so they land in one per-arch manifest.
         per_arch = certify._arch_stem(out, "slc7_x86-64")
         kid, index = trust.trusted_index(per_arch)
@@ -623,7 +799,7 @@ class TestIsExpired(unittest.TestCase):
 
 
 class TestCertifyApprovalGate(unittest.TestCase):
-    """doCertify --require-approval refuses to sign without group-admin approval."""
+    """doSign --require-approval refuses to sign without group-admin approval."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -654,14 +830,14 @@ class TestCertifyApprovalGate(unittest.TestCase):
         with patch.object(forge, "forge_from_env",
                           return_value=forge.StaticForge(["eve"], "proj MR !1")):
             with self.assertRaises(self._Parser._Err):
-                certify.doCertify(self._args(), self._Parser())
+                certify.doSign(self._args(), self._Parser())
         self.assertFalse(os.path.exists(self.out))   # never signed
 
     def test_refuses_when_no_forge_context(self):
         from bits_helpers import forge
         with patch.object(forge, "forge_from_env", return_value=None):
             with self.assertRaises(self._Parser._Err):
-                certify.doCertify(self._args(), self._Parser())
+                certify.doSign(self._args(), self._Parser())
 
     def test_proceeds_past_gate_when_admin_approved(self):
         # Approval passes; certify then fails on the (bogus) key — proving the
@@ -670,7 +846,7 @@ class TestCertifyApprovalGate(unittest.TestCase):
         with patch.object(forge, "forge_from_env",
                           return_value=forge.StaticForge(["alice"], "proj MR !1")):
             with self.assertRaises(Exception) as ctx:
-                certify.doCertify(self._args(), self._Parser())
+                certify.doSign(self._args(), self._Parser())
         self.assertNotIsInstance(ctx.exception, self._Parser._Err)  # not the gate
 
     def test_negative_valid_days_rejected_before_signing(self):
@@ -680,7 +856,7 @@ class TestCertifyApprovalGate(unittest.TestCase):
             workDir=self.tmp, architecture="slc7_x86-64", group=None,
             requireApproval=False, admins=None, validDays=-1, sourceCommit=None)
         with self.assertRaises(self._Parser._Err):
-            certify.doCertify(args, self._Parser())
+            certify.doSign(args, self._Parser())
         self.assertFalse(os.path.exists(self.out))
 
 

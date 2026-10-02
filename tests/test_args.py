@@ -29,7 +29,7 @@ PARSER_ERRORS = {
   "build --force-unknown-architecture zlib --foo": 'unrecognized arguments: --foo',
   "init --docker-image": 'unrecognized arguments: --docker-image',
   "builda --force-unknown-architecture zlib" : "argument action: invalid choice: 'builda'.*",
-  "build --force-unknown-architecture zlib --no-system --always-prefer-system" : 'argument --always-prefer-system: not allowed with argument --no-system',
+  "build --force-unknown-architecture zlib --no-system --always-prefer-system" : 'argument --prefer-system/--always-prefer-system: not allowed with argument --no-system',
   "build zlib --architecture foo": ARCHITECTURE_ERROR,
   "build --force-unknown-architecture zlib --remote-store rsync://test1.local/::rw --write-store rsync://test2.local/::rw ": 'cannot specify ::rw and --write-store at the same time',
   "build zlib -a osx_x86-64 --docker-image foo": 'cannot use `-a osx_x86-64` and --docker',
@@ -63,9 +63,9 @@ CORRECT_BEHAVIOR = [
   ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "")]),
   ((), "build zlib -a slc7_x86-64"                                                     , [("docker", False), ("dockerImage", None), ("docker_extra_args", ["--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib -a slc7_x86-64 --docker-image registry.cern.ch/alisw/some-builder"  , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/some-builder")]),
-  ((), "build zlib -a slc7_x86-64 --docker"                                            , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder")]),
-  ((), "build zlib -a slc7_x86-64 --docker-extra-args=--foo"                           , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("docker_extra_args", ["--foo", "--network=host", _MOCK_CPUSET_ARG])]),
-  ((), "build zlib --devel-prefix -a slc7_x86-64 --docker"                             , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/slc7-builder"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
+  ((), "build zlib -a slc7_x86-64 --docker"                                            , [("docker", True), ("dockerImage", "gitlab-registry.cern.ch/bits/containers/x86_64-slc7:latest")]),
+  ((), "build zlib -a slc7_x86-64 --docker-extra-args=--foo"                           , [("docker", True), ("dockerImage", "gitlab-registry.cern.ch/bits/containers/x86_64-slc7:latest"), ("docker_extra_args", ["--foo", "--network=host", _MOCK_CPUSET_ARG])]),
+  ((), "build zlib --devel-prefix -a slc7_x86-64 --docker"                             , [("docker", True), ("dockerImage", "gitlab-registry.cern.ch/bits/containers/x86_64-slc7:latest"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
   ((), "build zlib --devel-prefix -a slc7_x86-64 --docker-image someimage"             , [("docker", True), ("dockerImage", "someimage"), ("develPrefix", "%s-slc7_x86-64" % os.path.basename(os.getcwd()))]),
   ((), "--debug build --force-unknown-architecture --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("defaults", ["release", "o2"]), ("pkgname", ["O2"])]),
   ((), "build --force-unknown-architecture --debug --defaults o2 O2"                   , [("debug", True), ("action",  "build"), ("force_rebuild", []), ("defaults", ["release", "o2"]), ("pkgname", ["O2"])]),
@@ -89,14 +89,17 @@ GETSTATUSOUTPUT_MOCKS = {
 }
 
 class ArgsTestCase(unittest.TestCase):
-  @mock.patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")   # for uname -m
+  @mock.patch.dict(os.environ, {"BITS_DOCKER_REGISTRY": "", "BITS_LEGACY_REGISTRY": "", "BITS_DOCKER_TAG": ""})
+  @mock.patch("bits_helpers.args._defaults_docker_registry", return_value=None)
+  @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch("bits_helpers.args._host_online_cpus", return_value=_MOCK_CPUSET)
   # Neutralise the host-dependent --memory/--memory-swap docker injection so
   # the exact docker_extra_args expectations below hold on any test host
   # (the cap depends on host RAM and is skipped on hosts below the reserve).
   @mock.patch("bits_helpers.args._docker_memory_args", return_value=[])
+  @mock.patch("bits_helpers.args._is_rootless_podman", return_value=False)
   @mock.patch('bits_helpers.args.commands')
-  def test_actionParsing(self, mock_commands, _mock_mem, _mock_cpus):
+  def test_actionParsing(self, mock_commands, _mock_podman, _mock_mem, _mock_cpus, _mock_defreg):
     mock_commands.getstatusoutput.side_effect = lambda x : GETSTATUSOUTPUT_MOCKS[x]
     for (env, cmd, effects) in CORRECT_BEHAVIOR:
       (bits_helpers.args.DEFAULT_WORK_DIR,
@@ -107,7 +110,7 @@ class ArgsTestCase(unittest.TestCase):
         for k, v in effects:
           self.assertEqual(args[k], v)
 
-  @mock.patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")   # for uname -m
+  @mock.patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")   # for uname -m
   @mock.patch('bits_helpers.args.argparse.ArgumentParser.error')
   def test_failingParsing(self, mock_print):
     mock_print.side_effect = FakeExit("raised")
@@ -135,9 +138,10 @@ class CpusetInjectionTestCase(unittest.TestCase):
 
   def _parse(self, cmd, cpuset_return="0-7"):
     """Helper: parse a build command with a mocked _host_online_cpus."""
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value=cpuset_return), \
          mock.patch("bits_helpers.args._docker_memory_args", return_value=[]), \
+         mock.patch("bits_helpers.args._is_rootless_podman", return_value=False), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
          patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
       mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
@@ -200,6 +204,84 @@ class CpusetInjectionTestCase(unittest.TestCase):
     self.assertEqual(result, "0-0")
 
 
+class RootlessPodmanLimitsTestCase(unittest.TestCase):
+  """Limits whose cgroup controller rootless podman lacks are not injected."""
+
+  def _parse(self, cmd, ctrls):
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
+         mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
+         mock.patch("bits_helpers.args._docker_memory_args",
+                    return_value=["--memory=1m", "--memory-swap=1m"]), \
+         mock.patch("bits_helpers.args._is_rootless_podman", return_value=ctrls is not None), \
+         mock.patch("bits_helpers.args._rootless_podman_controllers", return_value=ctrls), \
+         mock.patch("bits_helpers.args.commands") as mock_cmd, \
+         mock.patch("bits_helpers.log.warning") as warn, \
+         patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
+      mock_cmd.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
+      args, _ = doParseArgs()
+      self.assertEqual(args.rootless_podman, ctrls is not None)
+      return args.docker_extra_args, warn
+
+  def test_cpuset_not_delegated(self):
+    extra, warn = self._parse("build zlib -a slc7_x86-64 --docker", {"cpu", "memory", "pids"})
+    self.assertFalse(any(a.startswith("--cpuset-cpus") for a in extra))
+    self.assertIn("--memory=1m", extra)
+    self.assertIn("--security-opt=label=disable", extra)
+    warn.assert_called_once()
+    self.assertIn("cpuset", warn.call_args[0][1])
+
+  def test_nothing_delegated(self):
+    extra, warn = self._parse("build zlib -a slc7_x86-64 --docker", {"pids"})
+    self.assertFalse(any(a.startswith(("--cpuset-cpus", "--memory")) for a in extra))
+    self.assertEqual(warn.call_args[0][1], "cpuset, memory")
+
+  def test_not_podman_unchanged(self):
+    extra, warn = self._parse("build zlib -a slc7_x86-64 --docker", None)
+    self.assertIn("--cpuset-cpus=0-7", extra)
+    self.assertIn("--memory=1m", extra)
+    self.assertNotIn("--security-opt=label=disable", extra)
+    warn.assert_not_called()
+
+  def test_user_cpuset_no_warning(self):
+    extra, warn = self._parse(
+      "build zlib -a slc7_x86-64 --docker --docker-extra-args=--cpuset-cpus=0-1", {"memory"})
+    self.assertIn("--cpuset-cpus=0-1", extra)
+    warn.assert_not_called()
+
+  def _probe(self, version_out, uid=1000):
+    from bits_helpers.args import _is_rootless_podman
+    run = mock.Mock(return_value=mock.Mock(stdout=version_out))
+    with mock.patch("bits_helpers.args.platform.system", return_value="Linux"), \
+         mock.patch("bits_helpers.args.os.geteuid", return_value=uid), \
+         mock.patch("bits_helpers.args.commands.run", run):
+      return _is_rootless_podman()
+
+  def test_probe_podman(self):
+    self.assertTrue(self._probe("podman version 5.4.0\n"))
+
+  def test_probe_docker(self):
+    self.assertFalse(self._probe("Docker version 27.1.1, build 6312585\n"))
+
+  def test_probe_root(self):
+    self.assertFalse(self._probe("podman version 5.4.0\n", uid=0))
+
+  def test_controllers(self):
+    from bits_helpers.args import _rootless_podman_controllers
+    with mock.patch("bits_helpers.args.os.getuid", return_value=1000), \
+         mock.patch("builtins.open", mock.mock_open(read_data="cpu memory pids\n")) as op:
+      self.assertEqual(_rootless_podman_controllers(), {"cpu", "memory", "pids"})
+    self.assertIn("user-1000.slice/user@1000.service/cgroup.controllers", op.call_args[0][0])
+
+  def test_controllers_without_user_manager(self):
+    from bits_helpers.args import _rootless_podman_controllers
+    for v2, want in ((True, set()), (False, None)):
+      with self.subTest(cgroup_v2=v2), \
+           mock.patch("bits_helpers.args.os.getuid", return_value=1000), \
+           mock.patch("builtins.open", side_effect=OSError), \
+           mock.patch("bits_helpers.args.os.path.exists", return_value=v2):
+        self.assertEqual(_rootless_podman_controllers(), want)
+
+
 class DockerMemoryCapTestCase(unittest.TestCase):
   """--memory/--memory-swap injection: no single build can OOM the host."""
 
@@ -236,7 +318,7 @@ class DockerMemoryCapTestCase(unittest.TestCase):
 
   def test_user_memory_flag_suppresses_injection(self):
     # Parse-level: a user-supplied --memory* in --docker-extra-args wins.
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args._docker_memory_args",
                     return_value=["--memory=59g", "--memory-swap=59g"]), \
@@ -250,7 +332,7 @@ class DockerMemoryCapTestCase(unittest.TestCase):
 
   def test_injected_when_absent(self):
     # Parse-level: the helper's flags land in docker_extra_args by default.
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args._docker_memory_args",
                     return_value=["--memory=59g", "--memory-swap=59g"]), \
@@ -283,7 +365,7 @@ class ReusePolicyArgsTestCase(unittest.TestCase):
   """ADR-0001 relaxed-reuse CLI flags parse and default safely."""
 
   def _parse(self, cmd):
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
          patch.object(sys, "argv", ["alibuild"] + shlex.split(cmd)):
@@ -323,10 +405,9 @@ class ProviderPathFrontendTestCase(unittest.TestCase):
   native bits defaults to the provider path. Explicit BITS_PROVIDERS wins."""
 
   def _bits_providers(self, set_env):
-    with mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
+    with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \
          mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
          mock.patch("bits_helpers.args.commands") as mock_cmd, \
-         mock.patch("bits_helpers.args._read_bits_rc", return_value={}), \
          mock.patch.dict(os.environ, set_env, clear=False), \
          patch.object(sys, "argv", ["x", "build", "--force-unknown-architecture", "zlib"]):
       for k in ("BITS_BRANDING", "BITS_PROVIDERS"):
@@ -350,58 +431,13 @@ class ProviderPathFrontendTestCase(unittest.TestCase):
       "https://example.com/p")
 
 
-class ReadBitsRcTestCase(unittest.TestCase):
-  """_read_bits_rc accepts the simplified flat layout and the [bits] section."""
-
-  def _read(self, content):
-    import tempfile, os
-    import bits_helpers.args as A
-    p = os.path.join(tempfile.mkdtemp(), "bits.rc")
-    with open(p, "w") as fh:
-      fh.write(content)
-    with mock.patch.object(A, "_BITS_RC_SEARCH_PATHS", [p]):
-      return A._read_bits_rc()
-
-  def test_flat_headerless_file(self):
-    # The simplified format (no [bits] section), incl. a trailing space.
-    rc = self._read("organisation = stacks \nconfig_dir=.\n")
-    self.assertEqual(rc.get("organisation"), "stacks")
-    self.assertEqual(rc.get("config_dir"), ".")
-
-  def test_explicit_bits_section_still_works(self):
-    rc = self._read("[bits]\norganisation = stacks\nconfig_dir = .\n")
-    self.assertEqual(rc.get("organisation"), "stacks")
-    self.assertEqual(rc.get("config_dir"), ".")
-
-  def test_missing_file_returns_empty(self):
-    import bits_helpers.args as A
-    with mock.patch.object(A, "_BITS_RC_SEARCH_PATHS", ["/no/such/bits.rc"]):
-      self.assertEqual(A._read_bits_rc(), {})
-
-  def test_search_path_seeds_bits_path(self):
-    # bits.rc search_path must seed BITS_PATH so a single-package build finds
-    # recipes in a sub-repo (e.g. ./lcg.bits). An explicit env BITS_PATH wins.
-    import os, tempfile
-    import bits_helpers.args as A
-    p = os.path.join(tempfile.mkdtemp(), "bits.rc")
-    with open(p, "w") as fh:
-      fh.write("config_dir=.\nsearch_path=lcg\n")
-    saved = os.environ.pop("BITS_PATH", None)
-    try:
-      with mock.patch.object(A, "_BITS_RC_SEARCH_PATHS", [p]), \
-           mock.patch("bits_helpers.utilities.getoutput", return_value="x86_64"), \
-           mock.patch("bits_helpers.args._host_online_cpus", return_value="0-7"), \
-           mock.patch("bits_helpers.args.commands") as mc, \
-           patch.object(sys, "argv",
-                        ["alibuild", "build", "--force-unknown-architecture", "zlib"]):
-        mc.getstatusoutput.side_effect = lambda x: GETSTATUSOUTPUT_MOCKS[x]
-        doParseArgs()
-      self.assertEqual(os.environ.get("BITS_PATH"), "lcg")
-    finally:
-      os.environ.pop("BITS_PATH", None)
-      if saved is not None:
-        os.environ["BITS_PATH"] = saved
-
+class CvmfsPathSetTest(unittest.TestCase):
+  def test_set_is_parsed_into_flavours(self):
+    # cvmfs-path takes the build's --set values; finalise turns them into a dict.
+    with patch.object(sys, "argv", ["bits"] + shlex.split(
+        "cvmfs-path --package ROOT -a slc7_x86-64 --set release=LCG_110,foo")):
+      args, _ = doParseArgs()
+    self.assertEqual(args.flavours, {"release": "LCG_110", "foo": "true"})
 
 if __name__ == '__main__':
   unittest.main()

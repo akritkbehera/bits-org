@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""bits publish — copy, relocate, and stream a built package to a CVMFS ingestion spool.
+"""bits publish — copy, relocate, and hand a built package to cvmfs-prepub.
 
 Pipeline on the build host
 ---------------------------
@@ -9,22 +9,15 @@ Pipeline on the build host
 2. ``rsync`` it to a temporary CVMFS working copy (scratch directory).
 3. Run ``relocate-me.sh`` inside the copy, rewriting all embedded paths to
    the final CVMFS target path.
-4. Start an ``inotifywait`` watcher on the working copy *before* relocation
-   so that every file written by the relocation script is immediately queued
-   for transfer; relocation and transfer therefore overlap in time.
-5. ``rsync`` each modified file (or the whole tree on systems without
-   inotifywait) to the ingestion spool ``incoming/<pkg-id>/`` directory.
-6. Write a ``<pkg-id>.done`` sentinel to the spool inbox.  The ingestion
-   daemon treats sentinel arrival as the signal that all file content has
-   landed and it can begin finalisation for this package.
-7. Remove the working copy from the scratch directory.
+4. Package the relocated tree as a tar and POST it to the cvmfs-prepub REST
+   API (``--prepub-url``), which ingests it into CVMFS; poll until published.
+5. Remove the working copy from the scratch directory.
 
 The original INSTALLROOT under *workDir* is never modified.
 """
 
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -33,7 +26,7 @@ import tempfile
 from os.path import abspath, basename, exists, join
 
 from bits_helpers.log import debug, error, info, warning, banner
-from bits_helpers.utilities import detectArch
+from bits_helpers.arch import detectArch
 
 
 # ---------------------------------------------------------------------------
@@ -93,11 +86,12 @@ def _pkg_id(package, version_dir, architecture):
     Format: ``<pkg>-<ver_rev>-<arch>`` with slashes replaced by underscores.
 
     All three components have '/' replaced so that the resulting ID is always a
-    single path segment — it can never escape ``spool/incoming/`` via traversal.
+    single path segment — it can never traverse out of a directory when used as
+    a path component (e.g. the prepub tar's per-package subpath).
     """
-    # FIX: replace '/' in package just as we do for architecture and version_dir.
+    # Replace '/' in package just as we do for architecture and version_dir.
     # Without this, a package name like '../../etc' would produce a pkg_id that
-    # traverses out of spool/incoming/ when used as a path component.
+    # traverses out of its directory when used as a path component.
     pkg_tag  = package.replace("/", "_")
     arch_tag = architecture.replace("/", "_").replace("-", "_")
     ver_tag  = version_dir.replace("/", "_")
@@ -129,11 +123,20 @@ def _load_manifest_spec(work_dir, package, version):
 
 def _publish_s3(package, version, architecture, work_dir, write_store, parser, dry_run=False):
     """Upload an already-built package's tarball to the S3 write store for reuse."""
-    from bits_helpers.sync import remote_from_url
+    from bits_helpers.sync import remote_from_url, binary_redistributable
     e = _load_manifest_spec(work_dir, package, version)
     if not e or not e.get("hash"):
         parser.error("no built manifest entry for %s%s in %s — build it first"
                      % (package, (" " + version) if version else "", work_dir))
+    # redistributable: sources|none (QGRAF, CPC, vendor EULAs …): the binary must
+    # not land in a potentially world-readable store — uploading IS redistribution.
+    # Skip it, matching the build-time and bulk-publish upload gates (fail closed).
+    if not binary_redistributable(e):
+        banner("NOT uploading %s to the S3 store: its recipe declares "
+               "redistributable: %s (the licence forbids public binary "
+               "redistribution). Build it locally where it is needed.",
+               package, e.get("redistributable"))
+        return
     spec = {"package": e["package"], "version": e.get("version"),
             "revision": e.get("revision"), "hash": e["hash"]}
     arch = e.get("effective_architecture") or architecture
@@ -233,7 +236,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
         therefore picked an arbitrary one, while sync.py uploads the object named
         from ver_rev(spec) — so the BOM could record the checksum of one file while
         the store received the other. That is a manifest/store sha256 mismatch
-        produced by a single, consistent build, and `bits certify` rejects it
+        produced by a single, consistent build, and `bits sign` rejects it
         (fail-closed: it cannot tell that apart from tampering). Two publishes of
         the same build could even disagree with each other, since glob order is not
         guaranteed.
@@ -317,7 +320,7 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             # the build manifest recorded: the store object is authoritative,
             # and the build's locally-packed bytes may legitimately differ
             # (.tar.gz is not byte-reproducible). The BOM below must describe
-            # the stored bytes or `bits certify` will reject it.
+            # the stored bytes or `bits sign` will reject it.
             if spec.get("store_tarball_sha256"):
                 e = dict(e, tarball_sha256=spec["store_tarball_sha256"])
             ok += 1
@@ -380,6 +383,16 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                                     .strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "architecture": architecture,
             }
+            # The CI pipeline that produced this build — the id the console's passkey
+            # pre-approval is keyed on. The certify job reads it from this BOM to
+            # consume that pre-approval when it signs. Absent for a local publish.
+            # FUTURE(build_id-unification 2026-09-20): source_pipeline_id is CI-only
+            # (empty off-CI), so CLI/external BOMs are not pre-approvable by it. Unify
+            # the pre-approval anchor on the deterministic manifest build_id. KEEP this
+            # until that lands. Doc: signing-authz-unified-model-2026-09-20.
+            _pipeline_id = os.environ.get("CI_PIPELINE_ID", "").strip()
+            if _pipeline_id:
+                _provenance["source_pipeline_id"] = _pipeline_id
             bom = []                    # [(effective_arch, bom_dict), ...]
             _stem = leaf[:-len(".json")]
             # One temp dir for ALL per-arch BOMs, removed when done (the
@@ -420,14 +433,25 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
                       "certification is scoped per architecture and a re-run "
                       "supersedes them)", _bom_failed)
                 sys.exit(1)
-            # NOTICE + LICENSE-SOURCE-OFFER.txt next to the release's BOMs:
+            # NOTICE + LICENSE-SOURCE-OFFER.txt (+ SBOMs) next to the release's BOMs:
             # attribution and the GPL source offer are discharged mechanically
             # from the FULL manifest entries (which carry license,
             # redistributable and the source archives' store paths).
             # Best-effort — a compliance-file failure never fails a publish.
+            # The SBOMs describe the stored objects: their sha256 is the one the
+            # BOM (and so the signed manifest) records, not the local build's.
+            # They list what was published plus, marked, what the licence keeps
+            # out; a package skipped for having no tarball is not in the release.
+            from bits_helpers.sync import redistributable_forms as _forms
+            _stored = {m["hash"]: m.get("tarball_sha256") for m in packages if m.get("hash")}
+            _sbom_manifest = dict(manifest_doc, build_id=build_id, packages=[
+                dict(x, tarball_sha256=_stored[x["hash"]]) if x.get("hash") in _stored else x
+                for x in entries if isinstance(x, dict) and (
+                    x.get("hash") in _stored
+                    or "binaries" not in _forms(x.get("redistributable", "all")))])
             from bits_helpers.notice import upload_release_compliance
             upload_release_compliance(w.s3, w.writeStore, build_id, entries,
-                                      store_url=store_url)
+                                      store_url=store_url, manifest=_sbom_manifest)
 
     banner("%s %d package(s) to %s",
            "[dry-run] would publish" if dry_run else "Published", ok, write_store)
@@ -467,12 +491,34 @@ def _system_from_manifest(manifest_doc):
     if not cfg or not os.path.isdir(cfg):
         return {}
     try:
-        from bits_helpers.utilities import readDefaults
+        from bits_helpers.defaults import readDefaults
         meta, _ = readDefaults(cfg, defs, lambda _m: None, None)
         sysd = meta.get("system")
         return sysd if isinstance(sysd, dict) else {}
     except Exception:
         return {}
+
+
+def _preapprove_build(args, parser, build_id, bom, system):
+    """Passkey pre-approval of this build via bits-console, before the MR.
+    *bom* is the list of (arch, bom_dict) just published; the approval binds their
+    packages. Exits (no MR) if it is refused or times out."""
+    from bits_helpers import forge
+    from bits_helpers.sign_console import preapprove_via_console
+    # Check everything the MR needs first: don't ask a human to approve a build
+    # whose MR then cannot be opened.
+    if not (args.certifyGroup and getattr(args, "manifestsRemote", None)
+            and forge.resolve_gitlab_token(getattr(args, "gitlabToken", None))):
+        parser.error("certify: needs a group (--group), the manifests repo (--manifests-remote) "
+                     "and a GitLab token (~/.bits/gitlab-token) before asking for an approval")
+    console = (getattr(args, "console", None) or os.environ.get("BITS_CONSOLE_URL")
+               or (system or {}).get("console_url"))
+    if not console:
+        parser.error("certify: the passkey approval needs the bits-console URL — --console, "
+                     "$BITS_CONSOLE_URL or `system: console_url:` (or --approval none)")
+    preapprove_via_console(console, build_id, [args.certifyGroup], [d for _a, d in bom],
+                           cafile=getattr(args, "consoleCafile", None),
+                           insecure=getattr(args, "consoleInsecure", False))
 
 
 def _submit_certification_mr(args, parser, build_id, bom):
@@ -491,10 +537,11 @@ def _submit_certification_mr(args, parser, build_id, bom):
     from bits_helpers import forge
     group = getattr(args, "certifyGroup", None)
     if not group:
-        parser.error("--certify needs --certify-group <group> (the manifests/<group>/ to submit to)")
+        parser.error("certify: no group — pass --group <group> or set `system: certify_group:`")
     remote = getattr(args, "manifestsRemote", None)
     if not remote:
-        parser.error("--certify needs --manifests-remote <git URL of the bits-manifests project>")
+        parser.error("certify: no manifests repo — pass --manifests-remote <git URL> or set "
+                     "`system: manifests_remote:`")
     api_url, project = forge.parse_git_remote(remote)
     if not api_url:
         parser.error("could not parse --manifests-remote: %s" % remote)
@@ -532,124 +579,48 @@ def _submit_certification_mr(args, parser, build_id, bom):
            mr.get("web_url") or ("!%s" % mr.get("iid")))
 
 
-def _spool_is_remote(spool):
-    """Return True when *spool* is a remote ``[user@]host:path`` spec."""
-    # A single colon that is not a Windows drive letter indicates remote.
-    return bool(re.match(r'^(?:[^/]+@)?[^/:]+:.+', spool))
 
 
-def _rsync_to_spool(src, spool, pkg_id, extra_opts=None, remove_source=False):
-    """rsync *src* (file or directory) to ``<spool>/incoming/<pkg_id>/``.
-
-    *spool* may be a local path or a remote ``[user@]host:path``.
-    """
-    dest_base = f"{spool}/incoming/{pkg_id}/"
-    cmd = ["rsync", "-a", "--mkpath"]
-    if remove_source:
-        cmd.append("--remove-source-files")
-    if extra_opts:
-        cmd.extend(shlex.split(extra_opts))
-    cmd += [src, dest_base]
-    debug("rsync: %s", " ".join(shlex.quote(c) for c in cmd))
-    result = subprocess.run(cmd, check=False)
-    if result.returncode not in (0, 24):   # 24 = "vanished source files" — benign
-        error("rsync failed with exit code %d", result.returncode)
-        sys.exit(result.returncode)
 
 
-def _write_sentinel(spool, pkg_id, cvmfs_target, rsync_opts=None):
-    """Write and transfer the ``.done`` sentinel for *pkg_id*.
-
-    The sentinel is a small text file that carries the *cvmfs_target* so the
-    ingestion daemon can construct graft paths without additional out-of-band
-    configuration.
-    """
-    # FIX: the sentinel uses a line-oriented key=value format; a newline in
-    # either value would inject a spurious field that the ingestion daemon
-    # might misinterpret.  Reject before writing.
-    for _field, _val in (("pkg_id", pkg_id), ("cvmfs_target", cvmfs_target)):
-        if "\n" in _val or "\r" in _val:
-            raise ValueError(
-                f"Sentinel field '{_field}' contains a newline character which "
-                f"would corrupt the sentinel file: {_val!r}"
-            )
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".done", prefix=pkg_id, delete=False
-    ) as fh:
-        fh.write(f"pkg_id={pkg_id}\ncvmfs_target={cvmfs_target}\n")
-        sentinel_path = fh.name
-
-    dest = f"{spool}/incoming/{pkg_id}.done"
-    if _spool_is_remote(spool):
-        cmd = ["rsync", "-a"]
-        if rsync_opts:
-            cmd.extend(shlex.split(rsync_opts))
-        cmd += [sentinel_path, dest]
-    else:
-        os.makedirs(f"{spool}/incoming", exist_ok=True)
-        cmd = ["cp", sentinel_path, dest]
-
-    debug("sentinel: %s -> %s", sentinel_path, dest)
-    result = subprocess.run(cmd, check=False)
-    os.unlink(sentinel_path)
-    if result.returncode != 0:
-        error("Failed to write sentinel (exit %d)", result.returncode)
-        sys.exit(result.returncode)
 
 
-# ---------------------------------------------------------------------------
-# inotifywait-based streaming transfer
-# ---------------------------------------------------------------------------
-
-def _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts=None):
-    """Watch *copy_dir* with inotifywait and rsync each closed file immediately.
-
-    Returns a watcher ``Popen`` object.  The caller must call
-    ``watcher.terminate()`` after relocation is complete and all queued files
-    have been transferred.
-
-    Falls back to ``None`` (silent no-op) when inotifywait is not available;
-    in that case the caller performs a single bulk rsync after relocation.
-    """
-    if shutil.which("inotifywait") is None:
-        debug("inotifywait not available — will fall back to bulk rsync after relocation")
-        return None
-
-    # inotifywait outputs one line per event: "<dir> <event> <filename>"
-    inotify_cmd = [
-        "inotifywait",
-        "--monitor",
-        "--recursive",
-        "--format", "%w%f",
-        "--event", "close_write",
-        copy_dir,
-    ]
-    debug("starting inotifywait: %s", " ".join(inotify_cmd))
-    watcher = subprocess.Popen(
-        inotify_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
-
-    # Drain the watcher output in a background thread so we don't block.
-    import threading
-
-    def _drain():
-        for line in watcher.stdout:
-            path = line.rstrip("\n")
-            if not path or not os.path.isfile(path):
-                continue
-            rel = os.path.relpath(path, copy_dir)
-            dest_dir = f"{spool}/incoming/{pkg_id}/{os.path.dirname(rel)}"
-            if not _spool_is_remote(spool):
-                os.makedirs(dest_dir, exist_ok=True)
-            _rsync_to_spool(path, spool, join(pkg_id, os.path.dirname(rel)).rstrip("/"),
-                            extra_opts=rsync_opts)
-
-    t = threading.Thread(target=_drain, daemon=True)
-    t.start()
-    return watcher
+def doCertify(args, parser):
+    """`bits certify`: make a build trusted — upload what is missing, get a passkey
+    approval via bits-console (unless --approval none), open the certification MR.
+    The manifests-repo CI then signs it (`bits sign`)."""
+    from bits_helpers import forge
+    from bits_helpers.args import DEFAULT_S3_STORE
+    dry = getattr(args, "dryRun", False)
+    if getattr(args, "approval", "passkey") == "none" and not getattr(args, "certifier", None):
+        # Without an approval the MR merges but can never be signed; that is only
+        # right for a build approved elsewhere, whose MR a bot opens for a human.
+        parser.error("certify: --approval none is for builds already approved elsewhere "
+                     "(bits-console) and needs --certifier <user>")
+    # Fail before uploading when no MR could be opened anyway.
+    if not dry and not forge.resolve_gitlab_token(getattr(args, "gitlabToken", None)):
+        parser.error("certify: no GitLab token for the MR — ~/.bits/gitlab-token, "
+                     "$BITS_CERTIFIER_TOKEN or --gitlab-token")
+    architecture = getattr(args, "architecture", None) or detectArch()
+    res = _publish_from_manifest(architecture, abspath(args.workDir),
+                                 getattr(args, "publishStore", None) or DEFAULT_S3_STORE, parser,
+                                 manifest=getattr(args, "fromManifest", None) or "latest",
+                                 dry_run=dry)
+    if dry:
+        info("[dry-run] would then %sopen the certification MR",
+             "ask bits-console for a passkey approval and " if getattr(args, "approval", "passkey") == "passkey" else "")
+        return
+    if not res:
+        parser.error("certify: no build manifest (BOM) was published, so there is nothing to certify")
+    build_id, bom, system = res
+    system = system or {}
+    # CLI > defaults `system:` for the certification target.
+    args.certifyGroup = getattr(args, "certifyGroup", None) or system.get("certify_group")
+    args.manifestsRemote = getattr(args, "manifestsRemote", None) or system.get("manifests_remote")
+    args.certifyRef = getattr(args, "certifyRef", None) or system.get("certify_ref")
+    if getattr(args, "approval", "passkey") == "passkey":
+        _preapprove_build(args, parser, build_id, bom, system)
+    _submit_certification_mr(args, parser, build_id, bom)
 
 
 # ---------------------------------------------------------------------------
@@ -659,18 +630,11 @@ def _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts=None):
 def doPublish(args, parser):
     """Orchestrate the build-host publishing pipeline.
 
-    Two mutually exclusive delivery paths are supported:
+    cvmfs-prepub path (``--prepub-url``, required for CVMFS publish):
+        Relocate the package, package the tree as a tar, POST it to the
+        cvmfs-prepub REST API, and poll until the job reaches ``published``.
 
-    Legacy spool path (bits-ingest + bits-cvmfs-publisher runners):
-        Requires ``--spool``.  Rsyncs the relocated tree to the spool's
-        ``incoming/<pkg_id>/`` directory and writes a ``.done`` sentinel.
-
-    cvmfs-prepub direct path:
-        Requires ``--prepub-url``.  Packages the relocated tree as a tar,
-        POSTs it to the cvmfs-prepub REST API, and polls until the job
-        reaches ``published``.
-
-    View mode (``--view NAME``):
+    View mode (``--release-view NAME``):
         Publishes the merged release view rather than a package; delegated to
         :func:`bits_helpers.view_publish_cmd.doPublishView`. Returns its bool.
     """
@@ -686,40 +650,21 @@ def doPublish(args, parser):
         _fm = "latest"
     if _fm is not None:
         architecture = getattr(args, "architecture", None) or detectArch()
-        store_url = (getattr(args, "publishStore", None)
-                     or "https://s3.cern.ch/lcgapp-bits-testing")
-        _res = _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
-                                      manifest=_fm, dry_run=getattr(args, "dryRun", False))
-        if _res:
-            _build_id, _bom, _system = _res
-            # Resolve certify knobs: CLI flag > env > defaults `system:`. Giving
-            # --certify-group (or having both group+remote configured in defaults)
-            # implies --certify; --no-certify always opts out.
-            _group = getattr(args, "certifyGroup", None) or _system.get("certify_group")
-            _remote = (getattr(args, "manifestsRemote", None)
-                       or _system.get("manifests_remote"))
-            _ref = getattr(args, "certifyRef", None) or _system.get("certify_ref")
-            _want = (getattr(args, "certify", False)
-                     or bool(getattr(args, "certifyGroup", None))
-                     or bool(_group and _remote))
-            if getattr(args, "noCertify", False):
-                _want = False
-            if _want:
-                args.certifyGroup, args.manifestsRemote, args.certifyRef = _group, _remote, _ref
-                _submit_certification_mr(args, parser, _build_id, _bom)
+        from bits_helpers.args import DEFAULT_S3_STORE
+        store_url = getattr(args, "publishStore", None) or DEFAULT_S3_STORE
+        _publish_from_manifest(architecture, abspath(args.workDir), store_url, parser,
+                               manifest=_fm, dry_run=getattr(args, "dryRun", False))
         return
 
     if not getattr(args, "package", None):
-        parser.error("publish: PACKAGE is required (or use --view NAME to publish a release view).")
+        parser.error("publish: PACKAGE is required (or use --release-view NAME to publish a release view).")
 
     architecture = getattr(args, "architecture", None) or detectArch()
     work_dir     = abspath(args.workDir)
     package      = args.package
     version      = getattr(args, "version", None)
     cvmfs_target = args.cvmfsTarget
-    spool        = getattr(args, "spool", None)
     scratch_dir  = getattr(args, "scratchDir", None)
-    rsync_opts   = getattr(args, "rsyncOpts", None)
 
     prepub_url          = getattr(args, "prepubUrl", None)
     prepub_token        = getattr(args, "prepubToken", None)
@@ -731,37 +676,13 @@ def doPublish(args, parser):
     prepub_no_verify_tls = getattr(args, "prepubNoVerifyTls", False)
     prepub_bearer_auth   = getattr(args, "prepubBearerAuth", False)
 
-    # ------------------------------------------------------------------
-    # Validate: exactly one of --spool / --prepub-url must be provided.
-    # ------------------------------------------------------------------
-    # ── Resolve publish target(s) ─────────────────────────────────────────────
-    # Backward-compatible default: 'cvmfs' when --cvmfs-target is given (the
-    # existing pipeline call), otherwise 's3'. --to overrides.
-    _to = getattr(args, "publishTo", None)
-    if _to == "both":
-        targets = {"s3", "cvmfs"}
-    elif _to:
-        targets = {_to}
-    else:
-        targets = {"cvmfs"} if cvmfs_target else {"s3"}
-
-    if "s3" in targets:
-        write_store = (getattr(args, "writeStore", "") or os.environ.get("BITS_WRITE_STORE")
-                       or os.environ.get("WRITE_STORE") or "")
-        if not write_store:
-            parser.error("--to s3 requires a write store (--write-store, or WRITE_STORE / BITS_WRITE_STORE).")
-        _publish_s3(package, version, architecture, work_dir, write_store, parser,
-                    dry_run=getattr(args, "dryRun", False))
-        if "cvmfs" not in targets:
-            return
-
-    # CVMFS publish needs a target path and exactly one sink (--spool | --prepub-url).
+    # Single-package publish is CVMFS-only via the cvmfs-prepub service. The
+    # S3-store write is a separate command now: `bits store upload PACKAGE`.
     if not cvmfs_target:
-        parser.error("--to cvmfs requires --cvmfs-target.")
-    if prepub_url and spool:
-        parser.error("--prepub-url and --spool are mutually exclusive; use one or the other.")
-    if not prepub_url and not spool:
-        parser.error("one of --spool or --prepub-url is required.")
+        parser.error("publish PACKAGE publishes to CVMFS and requires --cvmfs-target; "
+                     "to upload a package to the S3 store use `bits store upload`.")
+    if not prepub_url:
+        parser.error("publishing to CVMFS requires --prepub-url.")
 
     # ------------------------------------------------------------------
     # 0. Redistribution policy gate
@@ -794,10 +715,7 @@ def doPublish(args, parser):
     info("installroot : %s", installroot)
     info("pkg_id      : %s", pkg_id)
     info("cvmfs target: %s", cvmfs_target)
-    if spool:
-        info("spool       : %s", spool)
-    else:
-        info("prepub url  : %s", prepub_url)
+    info("prepub url  : %s", prepub_url)
 
     no_relocate = getattr(args, "noRelocate", False)
     relocate_script = join(installroot, "relocate-me.sh")
@@ -829,27 +747,13 @@ def doPublish(args, parser):
 
     if no_relocate:
         # ------------------------------------------------------------------
-        # 3–5. Skip relocation: package was built with --cvmfs-prefix so
-        #      all embedded paths are already correct for CVMFS.
+        # 3. Skip relocation: package was built with --cvmfs-prefix so all
+        #    embedded paths are already correct for CVMFS.
         # ------------------------------------------------------------------
         info("--no-relocate: skipping relocation (package built at final CVMFS path)")
-        if spool:
-            info("Transferring tree to spool …")
-            _rsync_to_spool(copy_dir + "/", spool, pkg_id,
-                            extra_opts=rsync_opts, remove_source=False)
     else:
         # ------------------------------------------------------------------
         # 3. Relocate working copy to final CVMFS target path.
-        #
-        # For the spool path, start inotifywait before relocation so that
-        # modified files are streamed to the spool concurrently.  For the
-        # prepub path we skip inotify — the final tar is built after
-        # relocation completes, so there is nothing to stream incrementally.
-        # ------------------------------------------------------------------
-        watcher = _stream_with_inotify(copy_dir, spool, pkg_id, rsync_opts) if spool else None
-
-        # ------------------------------------------------------------------
-        # 4. Relocate working copy to final CVMFS target path
         # ------------------------------------------------------------------
         info("Relocating to %s …", cvmfs_target)
         env = {**os.environ, "INSTALL_BASE": cvmfs_target}
@@ -861,45 +765,10 @@ def doPublish(args, parser):
         )
         if result.returncode != 0:
             error("relocate-me.sh failed (exit %d)", result.returncode)
-            if watcher:
-                watcher.terminate()
             sys.exit(result.returncode)
 
-        # ------------------------------------------------------------------
-        # 5. Stop watcher (spool path) or skip (prepub path)
-        # ------------------------------------------------------------------
-        if spool:
-            if watcher:
-                import time
-                # Give the drain thread a moment to flush the last events.
-                time.sleep(1)
-                watcher.terminate()
-                watcher.wait()
-            else:
-                info("Transferring relocated tree to spool …")
-                _rsync_to_spool(copy_dir + "/", spool, pkg_id,
-                                extra_opts=rsync_opts, remove_source=False)
-
     # ------------------------------------------------------------------
-    # 6a. Legacy spool path — write .done sentinel
-    # ------------------------------------------------------------------
-    if spool:
-        info("Writing sentinel %s.done …", pkg_id)
-        _write_sentinel(spool, pkg_id, cvmfs_target, rsync_opts=rsync_opts)
-
-        # ------------------------------------------------------------------
-        # 7a. Cleanup working copy (spool path)
-        # ------------------------------------------------------------------
-        info("Cleaning up working copy …")
-        shutil.rmtree(copy_dir, ignore_errors=True)
-        if not scratch_dir:
-            shutil.rmtree(_tmpparent, ignore_errors=True)
-
-        info("Done — package %s queued for ingestion.", pkg_id)
-        return
-
-    # ------------------------------------------------------------------
-    # 6b. cvmfs-prepub direct path — each independent directory tree is
+    # 4. cvmfs-prepub path — each independent directory tree is
     #     tar'd and submitted to *its own* CVMFS path.  The package payload
     #     and the modulefiles live in different trees (install_dir vs
     #     module_dir), so a single tar would land the modulefiles inside the

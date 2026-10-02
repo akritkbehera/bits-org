@@ -192,6 +192,45 @@ class EnforceTestCase(unittest.TestCase):
         kept = json.loads(self.put["MANIFESTS/b1/x.el9.json"])
         self.assertEqual([p["package"] for p in kept["packages"]], ["Good"])
 
+    def test_recert_failure_reported_not_crash(self):
+        # Objects are deleted, then a PRE-EXISTING manifest conflict makes the
+        # re-certification raise. enforce_store must catch it, report, and return
+        # 1 — not propagate a traceback and not undo the (idempotent) deletions.
+        from bits_helpers import certify as _certify
+        from bits_helpers.utilities import resolve_store_path
+        # make_s3_probe is stubbed too: the real one builds a boto3 client, so
+        # without boto3 installed it exits the test instead of reaching the mock.
+        with patch.object(_certify, "certify_by_arch",
+                          side_effect=_certify.CertifyConflict("pre-existing sha256 conflict")), \
+             patch.object(_certify, "make_s3_probe", return_value=None):
+            rc = compliance.enforce_store("b3://bkt", self.rec, self.d,
+                                          key_pem="/tmp/does-not-need-to-exist.pem")
+        self.assertEqual(rc, 1)
+        # the restricted tarball was still deleted before the re-cert failed
+        self.assertIn(resolve_store_path("el9", "beef01") + "/Secret-1-1.el9.tar.gz",
+                      self.deleted)
+
+
+class RecipeSourcePrefixNameTest(unittest.TestCase):
+    """_recipe_source_prefixes must resolve %(name)s (the package name) in a
+    source URL, so restricted packages whose URL templates the name (qgraf,
+    kkmcee, starlight, …) have their SOURCES/cache/ archives purged too."""
+
+    def test_name_substitution_resolves_prefix(self):
+        from bits_helpers.download import getUrlChecksum
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        base = "https://example.cern.ch/src"
+        _recipe(d, "qgraf.sh",
+                'package: qgraf\nversion: "3.1.4"\nredistributable: none\n'
+                'sources:\n  - %s/%%(name)s-%%(version)s.tgz' % base)
+        rec = compliance.scan_recipes(d)
+        prefixes, unresolved = compliance._recipe_source_prefixes(d, rec, {"qgraf"})
+        self.assertEqual(unresolved, [])           # %(name)s no longer unresolved
+        h = getUrlChecksum("%s/qgraf-3.1.4.tgz" % base)
+        self.assertIn("SOURCES/cache/%s/%s/" % (h[:2], h),
+                      [p for p, _why in prefixes])
+
 
 if __name__ == "__main__":
     unittest.main()

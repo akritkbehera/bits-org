@@ -35,6 +35,7 @@ dependencies = [
   'jinja2',
   'boto3',
   'cryptography',
+  'qrcode',
 ]
 
 [project.optional-dependencies]
@@ -59,7 +60,7 @@ script-files = ["bits", "bitsBuild", "bitsDoctor", "bitsDeps", "pb", "aliBuild"]
 write_to = "bits_helpers/_version.py"
 
 [tool.setuptools.package-data]
-bits_helpers = ['build_template.sh']
+bits_helpers = ['build_template.sh', 'relocate-me.sh', 'relativize-configs.sh', 'view-list.sh']
 
 [tool.setuptools.packages.find]
 where = ["."]

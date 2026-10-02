@@ -498,11 +498,38 @@ class DualRemoteSyncTestCase(unittest.TestCase):
         helper = sync.remote_from_url("b3://bucket", "b3://bucket", ARCHITECTURE, "/work")
         self.assertIsInstance(helper, sync.Boto3RemoteSync)
 
+    def test_cern_s3_path_style_url_uses_swift(self):
+        self.assertEqual(sync.normalise_store_url("https://s3.cern.ch/bkt"),
+                         "https://s3.cern.ch/swift/v1/bkt")
+        self.assertEqual(sync.normalise_store_url("https://s3.cern.ch/swift/v1/bkt"),
+                         "https://s3.cern.ch/swift/v1/bkt")
+        self.assertEqual(sync.normalise_store_url("http://S3.cern.ch:443/bkt/sub"),
+                         "http://S3.cern.ch/swift/v1/bkt/sub")
+        for other in ("b3://bkt", "https://example.org/bkt", ""):
+            self.assertEqual(sync.normalise_store_url(other), other)
+        helper = sync.remote_from_url("https://s3.cern.ch/bkt", "", ARCHITECTURE, "/work")
+        self.assertIsInstance(helper, sync.HttpRemoteSync)
+        self.assertEqual(helper.remoteStore, "https://s3.cern.ch/swift/v1/bkt")
+
+    def test_write_store_alone_is_also_read(self):
+        # Without a read store the write store used to be dropped (NoRemoteSync).
+        helper = sync.remote_from_url("", "b3://bucket", ARCHITECTURE, "/work")
+        self.assertIsInstance(helper, sync.Boto3RemoteSync)
+        self.assertEqual(helper.writeStore, "bucket")
+        self.assertEqual(helper.remoteStore, "bucket")
+        self.assertIsInstance(sync.remote_from_url("", "", ARCHITECTURE, "/work"),
+                              sync.NoRemoteSync)
+
     @patch("bits_helpers.sync.error", new=MagicMock())
     def test_cvmfs_read_store_is_rejected(self):
         # cvmfs:// --remote-store is retired; deployed reuse is via --reuse-from.
         with self.assertRaises(SystemExit):
             sync.remote_from_url("cvmfs:///cvmfs/x/", "", ARCHITECTURE, "/work")
+
+    @patch("bits_helpers.sync.error", new=MagicMock())
+    def test_cvmfs_write_store_alone_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            sync.remote_from_url("", "cvmfs:///somewhere", ARCHITECTURE, "/work")
 
     @patch("bits_helpers.sync.error", new=MagicMock())
     def test_cvmfs_write_target_is_rejected(self):

@@ -59,16 +59,10 @@ from typing import Optional
 from bits_helpers.log import debug, info, warning, banner, dieOnError
 from bits_helpers.git import Git
 from bits_helpers.workarea import updateReferenceRepoSpec, logged_scm
-from bits_helpers.utilities import (
-    checkForFilename,
-    getConfigPaths,
-    getGeneratedPackages,
-    getRecipeReader,
-    parseRecipe,
-    resolve_spec_data,
-    symlink,
-    _parse_req_matcher,
-)
+from bits_helpers.utilities import resolve_spec_data, symlink
+from bits_helpers.recipe import getGeneratedPackages, getRecipeReader, parseRecipe
+from bits_helpers.paths import checkForFilename, getConfigPaths
+from bits_helpers.matchers import _parse_req_matcher
 
 # Maximum provider-discovery iterations (guards against run-away recursion)
 MAX_PROVIDER_ITERATIONS = 20
@@ -138,10 +132,10 @@ def _check_for_shadows(
             warning(
                 "%s is being prepended and will shadow %d recipe(s) already "
                 "visible from %s: %s\n"
-                "  To suppress this warning grant prepend explicitly in bits.rc:\n"
-                "    provider_policy = %s:prepend\n"
+                "  To suppress this warning grant prepend explicitly:\n"
+                "    --provider-policy %s:prepend\n"
                 "  Or force the safe default:\n"
-                "    provider_policy = %s:append",
+                "    --provider-policy %s:append",
                 label, len(shadowed), existing_dir,
                 ", ".join(sorted(shadowed)),
                 provider_name or "?",
@@ -189,8 +183,8 @@ def _add_to_bits_path(
         warning(
             "Provider %r requested repository_position: prepend but no "
             "provider_policy entry grants it.  Falling back to append (safe "
-            "default).  To allow prepend, add to bits.rc:\n"
-            "  provider_policy = %s:prepend",
+            "default).  To allow prepend, pass:\n"
+            "  --provider-policy %s:prepend",
             provider_name, provider_name,
         )
         position = "append"
@@ -352,6 +346,22 @@ def clone_or_update_provider(
                "commit_hash resolved to empty string for provider '%s' tag '%s' — "
                "refusing to construct checkout_dir to prevent clobbering the "
                "package cache." % (package, tag))
+
+    # M2: optional integrity pin. When the provider recipe declares ``commit:``,
+    # the resolved commit MUST match it — so a force-push or account compromise
+    # that moves ``tag`` to a different commit fails the build fail-closed instead
+    # of silently changing what is cloned and built. Accepts a full hash or a
+    # >= 7-char prefix; moving the pin is a deliberate, reviewed recipe change.
+    pin = str(spec.get("commit") or "").strip().lower()   # blank/None -> no pin
+    if pin:
+        got = str(commit_hash).lower()
+        dieOnError(len(pin) < 7 or not got.startswith(pin),
+                   "Repository provider '%s' is pinned to commit '%s' but tag '%s' "
+                   "resolves to '%s' — refusing to build (the branch moved, or the "
+                   "pin is malformed). Update the `commit:` pin deliberately if this "
+                   "change is intended." % (package, pin, tag, commit_hash))
+        debug("provider %s: commit %s verified against pin %s", package, short_hash, pin)
+
     checkout_dir = join(cache_root, short_hash)
 
     # ── 3. Cache-hit check ───────────────────────────────────────────────
@@ -452,6 +462,7 @@ def load_always_on_providers(
   bits_providers: str = None,
   taps: dict = None,
   provider_policy: dict = None,
+  force_tracked: bool = False,
 ) -> dict:
   """Clone providers that must be loaded unconditionally before any
   dependency-graph traversal.
@@ -530,9 +541,15 @@ def load_always_on_providers(
       continue
     debug("Always-loading provider '%s' from config dir", pkg)
     try:
-      checkout_dir, commit_hash = clone_or_update_provider(
-        spec, work_dir, reference_sources, fetch_repos,
-      )
+      _local = None if force_tracked else _local_provider_dir(config_dir, pkg)
+      if _local:
+        checkout_dir, commit_hash = _local, _local_provider_hash(_local)
+        info("Using local checkout of provider '%s' at %s (commit %s)",
+             pkg, _local, commit_hash[:12])
+      else:
+        checkout_dir, commit_hash = clone_or_update_provider(
+          spec, work_dir, reference_sources, fetch_repos,
+        )
       _add_to_bits_path(
         checkout_dir,
         recipe_position=spec.get("repository_position", "append"),
@@ -574,18 +591,83 @@ def cwd_is_recipe_dir() -> bool:
   return os.path.exists("defaults-release.sh")
 
 
+def no_recipes_hint(config_dir):
+  """What to do when *config_dir* holds no recipe repository: check out the
+  community's repository first and run bits inside it (aliBuild: alidist)."""
+  where = os.path.abspath(config_dir)
+  if os.environ.get("BITS_BRANDING", "").strip().lower() == "alibuild":
+    return ("No recipes in %s. Check them out first:\n"
+            "  aliBuild init        # checks out alidist here\n"
+            "or point -c/--config-dir at a recipe directory." % where)
+  return ("No recipe repository in %s. bits builds from a community recipe\n"
+          "repository: check yours out first and run bits inside it, e.g.\n"
+          "  git clone https://github.com/bitsorg/stacks.bits && cd stacks.bits\n"
+          "  # or: bits init stacks.bits && cd stacks.bits   (alice.bits, lhcb.bits, ...)\n"
+          "or point -c/--config-dir at one." % where)
+
+
+def resolve_config_dir(args):
+  """Resolve ``args.configDir`` in place: when it is the default and the current
+  directory looks like a checked-out recipe repo, use ``.``; then abort with a
+  'bits init' hint if no recipes are found. This is the read-only form used by
+  ``status``/``cvmfs-path``; the ``build`` path additionally network-bootstraps a
+  config dir before the same final check."""
+  if not exists(args.configDir):
+    _default = os.environ.get("BITS_REPO_DIR", "alidist")
+    if args.configDir == _default and cwd_is_recipe_dir():
+      debug("Recipe files detected in current directory; using '.' as config dir")
+      args.configDir = "."
+  dieOnError(not exists(args.configDir), no_recipes_hint(args.configDir))
+
+
+# ── Local provider shadowing ────────────────────────────────────────────────
+
+def _local_provider_dir(config_dir, package):
+  """Return ``<config_dir>/<package>`` when it is a local directory of recipes.
+
+  Lets a repository provider that is already DECLARED (a ``provides_repository``
+  recipe) but also checked out locally next to its recipe be used from that
+  checkout instead of cloned — mirroring how a locally checked-out package
+  shadows its source. Only a declared provider is ever shadowed; this never
+  scans for undeclared directories, so the recipe/package discovery path is
+  unchanged (the local dir simply takes the clone's place on ``BITS_PATH``).
+  """
+  d = join(abspath(config_dir), package)
+  if os.path.isdir(d) and glob.glob(join(d, "*.sh")):
+    return d
+  return None
+
+
+def _local_provider_hash(directory):
+  """Best-effort reproducible identity of a local provider checkout: the git
+  HEAD commit (plus a ``-dirty`` marker when the tree has changes), or
+  ``local`` when the directory is not a git checkout."""
+  scm = Git()
+  err, out = scm.exec(("rev-parse", "HEAD"), directory=directory, check=False)
+  if err or not out.strip():
+    return "local"
+  commit = out.strip()
+  err2, dirty = scm.exec(("status", "--porcelain"), directory=directory, check=False)
+  if not err2 and dirty.strip():
+    warning("Local provider checkout %s has uncommitted changes; recording "
+            "provenance as %s-dirty.", directory, commit[:10])
+    return commit + "-dirty"
+  return commit
+
+
 # ── Backward-compat bootstrap ───────────────────────────────────────────────
 
 def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
-  """Bootstrap a default recipe repository when no config dir exists.
+  """Bootstrap a recipe repository when the config dir does not exist.
 
-  Called when ``bits build <PKG>`` is run without a pre-existing recipe
-  directory.  The lookup order for which community recipe repo to clone is:
+  Called when ``bits build <PKG>`` names a missing recipe directory with ``-c``
+  (the default, ``.``, always exists).  The lookup order for which community
+  recipe repo to clone is:
 
-  1. **``organisation`` from bits.rc / ``--organisation``** — if set to e.g.
-     ``lhcb``, bits looks for ``lhcb.bits.sh`` in the bits-providers checkout.
-  2. **``default.bits.sh``** — fallback for backward-compatibility with the
-     original ALICE workflow when no organisation is configured.
+  1. **``$BITS_ORGANISATION``** — if set to e.g. ``LHCB``, bits looks for
+     ``lhcb.bits.sh`` in the bits-providers checkout.
+  2. **``default.bits.sh``** — legacy fallback; current bits-providers no longer
+     ships one, so with no organisation nothing is bootstrapped.
 
   Procedure:
 
@@ -618,11 +700,10 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
     return None
 
   # ── 2. Resolve candidate recipe file ──────────────────────────────────
-  # Prefer <organisation>.bits.sh when an organisation is configured so that
-  # "bits init --organisation lhcb && bits build PKG" just works without any
-  # other arguments.  Fall back to default.bits.sh for ALICE backward compat.
-  # Organisation is stored in uppercase in bits.rc (e.g. "ALICE", "LHCB") but
-  # the bits-providers filenames are lowercase (alice.bits.sh, lhcb.bits.sh).
+  # Prefer <organisation>.bits.sh when $BITS_ORGANISATION is set; default.bits.sh
+  # is a legacy fallback (no longer in bits-providers). The organisation is given
+  # uppercase (e.g. "ALICE", "LHCB"), the bits-providers filenames are lowercase
+  # (alice.bits.sh, lhcb.bits.sh).
   organisation = (getattr(args, "organisation", None) or "").lower()
   candidates = []
   if organisation:
@@ -747,6 +828,18 @@ def resolve_registry_repo(args, name: str, work_dir: str, quiet: bool = False):
 
 # ── Iterative provider discovery ────────────────────────────────────────────
 
+def announce_providers(provider_dirs: dict) -> None:
+    """Print the 'Repository providers loaded' banner for *provider_dirs*."""
+    if provider_dirs:
+        banner(
+            "Repository providers loaded:\n%s",
+            "\n".join(
+                "  %s  ->  %s  (commit %s)" % (name, checkout, commit[:10])
+                for checkout, (name, commit) in provider_dirs.items()
+            ),
+        )
+
+
 def fetch_repo_providers_iteratively(
     packages: list,
     config_dir: str,
@@ -758,6 +851,8 @@ def fetch_repo_providers_iteratively(
     overrides: dict = None,
     defaults: list = None,
     default_vars: dict = None,
+    force_tracked: bool = False,
+    announce: bool = True,
 ) -> dict:
     """Discover, clone, and register all repository-provider packages
     reachable from the *packages* list.
@@ -827,9 +922,15 @@ def fetch_repo_providers_iteratively(
 
             # ── New provider found ───────────────────────────────────────
             if spec.get("provides_repository") and pkg not in cloned:
-                checkout_dir, commit_hash = clone_or_update_provider(
-                    spec, work_dir, reference_sources, fetch_repos,
-                )
+                _local = None if force_tracked else _local_provider_dir(config_dir, pkg)
+                if _local:
+                    checkout_dir, commit_hash = _local, _local_provider_hash(_local)
+                    info("Using local checkout of provider '%s' at %s (commit %s)",
+                         pkg, _local, commit_hash[:12])
+                else:
+                    checkout_dir, commit_hash = clone_or_update_provider(
+                        spec, work_dir, reference_sources, fetch_repos,
+                    )
                 _add_to_bits_path(
                     checkout_dir,
                     recipe_position=spec.get("repository_position", "append"),
@@ -890,13 +991,7 @@ def fetch_repo_providers_iteratively(
             MAX_PROVIDER_ITERATIONS,
         )
 
-    if provider_dirs:
-        banner(
-            "Repository providers loaded:\n%s",
-            "\n".join(
-                "  %s  ->  %s  (commit %s)" % (name, checkout, commit[:10])
-                for checkout, (name, commit) in provider_dirs.items()
-            ),
-        )
+    if announce:
+        announce_providers(provider_dirs)
 
     return provider_dirs

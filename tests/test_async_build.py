@@ -5,9 +5,7 @@
 
 Covers:
 * ``upload_shell_command()`` on every sync backend (§ Async build loop)
-* ``--pipeline`` guard in ``doBuild`` (warns + disables when ``--makeflow`` absent)
-* ``_generate_create_links_sh()`` — shell script content and structure
-* ``--prefetch-workers``, ``--parallel-sources``, ``--pipeline`` CLI defaults
+* ``--prefetch-workers``, ``--parallel-sources`` CLI defaults
 * ``checkout_sources()`` with ``parallel_sources > 1`` (concurrent source downloads)
 """
 
@@ -170,160 +168,13 @@ class Boto3RemoteSyncUploadCmdTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 2. --pipeline guard in doBuild
-# ---------------------------------------------------------------------------
-
-class PipelineGuardTest(unittest.TestCase):
-    """--pipeline requires --makeflow; without it a warning is issued and
-    the flag is disabled before any build work happens."""
-
-    def test_pipeline_without_makeflow_warns_and_disables(self):
-        """When makeflow=False and pipeline=True, a warning must be issued."""
-        from argparse import Namespace
-
-        # We don't want to actually run a build — patch doBuild to just
-        # exercise the guard by reading the args early.  The cleanest way is to
-        # call the relevant code directly by importing the guard from build.py.
-        # Since the guard is inline (not a separate function), we replicate the
-        # logic and verify it matches the implementation.
-        args = Namespace(
-            pipeline=True,
-            makeflow=False,
-            # Remaining fields needed to avoid AttributeError when accessed
-            # later in doBuild are added via MagicMock.
-        )
-        with patch("bits_helpers.build.warning") as mock_warning:
-            # Simulate just the guard block from doBuild.
-            if getattr(args, "pipeline", False) and not args.makeflow:
-                mock_warning("--pipeline requires --makeflow; disabling --pipeline for this run.")
-                args.pipeline = False
-
-            mock_warning.assert_called_once()
-            call_msg = mock_warning.call_args[0][0]
-            self.assertIn("--pipeline", call_msg)
-            self.assertIn("--makeflow", call_msg)
-
-        self.assertFalse(args.pipeline, "pipeline flag must be disabled after guard")
-
-
-# ---------------------------------------------------------------------------
-# 3. _generate_create_links_sh()
-# ---------------------------------------------------------------------------
-
-class GenerateCreateLinksShTest(unittest.TestCase):
-    """_generate_create_links_sh() must produce a correct shell script."""
-
-    ARCH = "slc7_x86-64"
-    WORKDIR = "/sw"
-
-    def _make_args(self):
-        from argparse import Namespace
-        return Namespace(workDir=self.WORKDIR, architecture=self.ARCH)
-
-    def _make_spec_and_specs(self):
-        """Minimal spec + specs dict for zlib depending on nothing."""
-        zlib_hash = "aaaa" * 10
-        zlib_spec = {
-            "package": "zlib",
-            "version": "v1.3.1",
-            "revision": "1",
-            "hash": zlib_hash,
-            "architecture": "",        # non-shared
-            "full_requires": [],
-            "requires": [],
-            "full_runtime_requires": [],
-        }
-        specs = {"zlib": zlib_spec}
-        return zlib_spec, specs
-
-    def test_returns_string(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertIsInstance(result, str)
-
-    def test_shebang_present(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertTrue(result.startswith("#!/usr/bin/env bash"), result[:40])
-
-    def test_set_e_present(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertIn("set -e", result)
-
-    def test_all_three_dist_types_created(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        for repo_type in ("dist", "dist-direct", "dist-runtime"):
-            self.assertIn(repo_type, result,
-                          "Script must handle %s" % repo_type)
-
-    def test_rm_rf_before_mkdir(self):
-        """Each dist directory must be wiped before recreation."""
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertIn("rm -rf", result)
-        self.assertIn("mkdir -p", result)
-
-    def test_package_symlink_created(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        # The package itself must be symlinked.
-        self.assertIn("zlib", result)
-        self.assertIn(".tar.gz", result)
-
-    def test_dependency_symlinks_created(self):
-        """All transitive requires must appear as symlinks in the script."""
-        from bits_helpers.build import _generate_create_links_sh
-        root_hash = "bbbb" * 10
-        zlib_hash = "aaaa" * 10
-        zlib_spec = {
-            "package": "zlib",
-            "version": "v1.3.1",
-            "revision": "1",
-            "hash": zlib_hash,
-            "architecture": "",
-            "full_requires": [],
-            "requires": [],
-            "full_runtime_requires": [],
-        }
-        root_spec = {
-            "package": "ROOT",
-            "version": "v6-08-30",
-            "revision": "1",
-            "hash": root_hash,
-            "architecture": "",
-            "full_requires": ["zlib"],
-            "requires": ["zlib"],
-            "full_runtime_requires": ["zlib"],
-        }
-        specs = {"ROOT": root_spec, "zlib": zlib_spec}
-        result = _generate_create_links_sh(root_spec, specs, self._make_args())
-        # Both ROOT and zlib must appear as symlink targets.
-        self.assertIn("ROOT", result)
-        self.assertIn("zlib", result)
-
-    def test_work_dir_in_paths(self):
-        from bits_helpers.build import _generate_create_links_sh
-        spec, specs = self._make_spec_and_specs()
-        result = _generate_create_links_sh(spec, specs, self._make_args())
-        self.assertIn(self.WORKDIR, result)
-
-
-# ---------------------------------------------------------------------------
 # 4. CLI defaults for new flags
 # ---------------------------------------------------------------------------
 
 class NewCLIFlagsTest(unittest.TestCase):
     """Verify the three new flags parse correctly with their defaults."""
 
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
+    @patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
     def test_defaults(self, mock_commands):
         """All three new flags must have the documented defaults."""
@@ -340,7 +191,6 @@ class NewCLIFlagsTest(unittest.TestCase):
                            ["bits", "build", "--force-unknown-architecture", "zlib"]):
             args, _ = doParseArgs()
 
-        self.assertFalse(args.pipeline, "--pipeline must default to False")
         self.assertEqual(args.prefetchWorkers, -1,
                          "--prefetch-workers must default to -1 (auto)")
         self.assertEqual(args.parallelSources, 1,
@@ -348,27 +198,7 @@ class NewCLIFlagsTest(unittest.TestCase):
         self.assertEqual(args.parallelDownloads, 2,
                          "--parallel-downloads must default to 2")
 
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
-    @patch("bits_helpers.args.commands")
-    def test_pipeline_flag(self, mock_commands):
-        """--pipeline sets pipeline=True."""
-        import shlex
-        from unittest.mock import patch as _patch
-        mock_commands.getstatusoutput.return_value = (0, "/usr/local/bin/docker")
-
-        import bits_helpers.args
-        from bits_helpers.args import doParseArgs
-        bits_helpers.args.DEFAULT_WORK_DIR = "sw"
-        bits_helpers.args.DEFAULT_CHDIR = "."
-
-        with _patch.object(sys, "argv",
-                           ["bits", "build", "--force-unknown-architecture",
-                            "--makeflow", "--pipeline", "zlib"]):
-            args, _ = doParseArgs()
-
-        self.assertTrue(args.pipeline)
-
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
+    @patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
     def test_prefetch_workers_flag(self, mock_commands):
         """--prefetch-workers N sets prefetchWorkers=N."""
@@ -387,7 +217,7 @@ class NewCLIFlagsTest(unittest.TestCase):
 
         self.assertEqual(args.prefetchWorkers, 4)
 
-    @patch("bits_helpers.utilities.getoutput", new=lambda cmd: "x86_64")
+    @patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")
     def test_parallel_sources_flag(self, mock_commands):
         """--parallel-sources N sets parallelSources=N."""

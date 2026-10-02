@@ -51,11 +51,16 @@ group (the overall bits-admin key):
 ```json
 {
   "265bf1902ea0d4d9": ["*"],
-  "ab12cd34ef56gh78": ["lcg", "common"]
+  "ab12cd34ef56gh78": ["lcg", "common"],
+  "default": []
 }
 ```
 
-When present, this is enforced both when signing (`bits certify` refuses to sign
+The shipped `key-policy.json` includes `"default": []`, so the policy is
+**strict**: enrol every trusted signing key here (with its groups), or its signed
+entries are dropped by consumers. When you add a key to `keys/`, add it here too.
+
+When present, this is enforced both when signing (`bits sign` refuses to sign
 a group the key isn't authorised for) and by every consumer (`trusted_index`
 drops entries a key wasn't authorised to vouch for, even if signed). When the
 file is absent, no per-key restriction applies (backward compatible). `key_id`

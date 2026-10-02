@@ -218,7 +218,13 @@ cat <<\EOF > "$INSTALLROOT/etc/profile.d/init.sh"
 EOF
 
 # Apply dependency initialisation now, but skip setting the variables below until after the build.
+# Dependencies built since 377f619 put their include dir on CPATH, which acts
+# like -I and shadows the -isystem dirs CMake picks: keep only the inherited
+# CPATH. PythonRecipe adds dependency headers for extension builds itself.
+_bits_cpath="${CPATH-}" _bits_cpath_set="${CPATH+x}"
 . "$INSTALLROOT/etc/profile.d/init.sh"
+if [ -n "$_bits_cpath_set" ]; then export CPATH="$_bits_cpath"; else unset CPATH; fi
+unset _bits_cpath _bits_cpath_set
 
 # Add support for direnv https://github.com/direnv/direnv/
 #
@@ -341,8 +347,6 @@ cat > "$INSTALLROOT/.meta.json" <<\EOF
 EOF
 
 cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH"
-# Find which files need relocation.
-{ grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate"
 
 # Relocate script for <arch>/<pkgname>/<pkgver> structure
 
@@ -445,6 +449,28 @@ find "$_pack_root" -type l | while IFS= read -r _lnk; do
 done
 unset _pack_root
 
+# Make pkg-config and CMake package files relocation-independent: rewrite this
+# package's own absolute install prefix to a location-relative reference. Done
+# HERE - the LAST content change before the rsync + tar below, after POST_INSTALL
+# hooks and the symlink pass - so both the runtime install and the store tarball
+# see the fix. Earlier (before POST_INSTALL) a hook that regenerates .pc/.cmake
+# would re-bake the absolute prefix into the packed tree. .pc anchors on
+# ${pcfiledir}, .cmake on ${CMAKE_CURRENT_LIST_DIR}; the grep guard leaves
+# already-relative configs untouched.
+if [ -w "$INSTALLROOT" ]; then
+  bash "${BITS_SCRIPT_DIR}/bits_helpers/relativize-configs.sh" "$INSTALLROOT"
+  # Find which files need relocation — only now, after every tree mutation, so
+  # configs made relative above drop out and files written by POST_INSTALL hooks
+  # are included.
+  ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH/$PKGPATH" && \
+    { grep -I -H -l -R "\($WORK_DIR\|[@][@]PKGREVISION[@]$PKGHASH[@][@]\)" . || true; } \
+      | sed -e 's|^\./||' > "$INSTALLROOT/etc/profile.d/.bits-relocate" )
+  # The package's file list for release merged views (.bits-view.json).
+  # Not fatal: without it a view lists the package from its tarball.
+  bash "${BITS_SCRIPT_DIR}/bits_helpers/view-list.sh" "$INSTALLROOT" \
+    || echo "bits: WARNING: could not write $PKGNAME's .bits-view.json" >&2
+fi
+
 # Archive creation
 # B7 FIX: replace backtick with $(...) and quote $PKGHASH; use -c (chars) consistently.
 HASHPREFIX=$(echo "$PKGHASH" | cut -c1,2)
@@ -462,19 +488,39 @@ if [ "$CAN_DELETE" = 1 ] && [ -z "$BITS_HAS_WRITE_STORE" ]; then
   # (When a write store is configured the tarball is still needed for upload, so
   # we fall through and create it; doFinalSync removes it again after upload.)
   rm -f "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
-elif [ -z "$CACHED_TARBALL" ] && [ -z "$SKIP_TARBALL" ]; then
-  # Use pigz to compress, if we can, because it's multicore.
-  gzip=$(command -v pigz) || gzip=$(command -v gzip)
-  # We don't have an existing tarball, and we want to keep the one we create now.
-  tar -cC "$WORK_DIR/INSTALLROOT/$PKGHASH" . |
-    # Avoid having broken left overs if the tar fails.
-    $gzip -c > "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
-  mv "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing" \
-     "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
+elif [ -z "$CACHED_TARBALL" ]; then
+  # Deterministic packaging (finding R1): the store tarball must be byte-identical
+  # across build nodes, or two builds of the same hash record different
+  # tarball_sha256 and certification fails. So: archive a SORTED member list with
+  # zeroed numeric owner/group and a fixed mtime, and PIN the compressor. Default
+  # is gzip -n (fully deterministic); a farm with a uniform pigz may override
+  # BITS_TAR_COMPRESSOR (e.g. "pigz -n -p4") — never plain pigz, whose output
+  # depends on the node's thread count. Byte-identity across nodes assumes a
+  # uniform tar + compressor toolchain (same gzip/pigz version). Check a platform
+  # with tools/verify-deterministic-tarball.sh.
+  _comp=${BITS_TAR_COMPRESSOR:-gzip -n}
+  _dst="$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
+  # Prefer GNU tar: it normalises mtime/owner IN THE ARCHIVE (no on-disk change).
+  if command -v gtar >/dev/null 2>&1; then _tar=gtar
+  elif tar --version 2>/dev/null | grep -qi 'GNU tar'; then _tar=tar
+  else _tar=; fi
+  if [ -n "$_tar" ]; then
+    "$_tar" --sort=name --owner=0 --group=0 --numeric-owner --mtime='@0' \
+        -cC "$WORK_DIR/INSTALLROOT/$PKGHASH" . | $_comp -c > "$_dst"
+  else
+    # bsdtar (e.g. macOS without gtar): deterministic order + numeric zero owner.
+    # bsdtar cannot set a uniform archive mtime, so packages are byte-reproducible
+    # here only if file mtimes already match — install GNU tar (brew install
+    # gnu-tar) on macOS build nodes for fully reproducible packages.
+    echo "bits: WARNING: GNU tar not found; $PKGNAME tarball may not be byte-reproducible (install gnu-tar)." >&2
+    ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH" && find . -print | LC_ALL=C sort > "$_dst.list" )
+    ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH" && tar --no-recursion --uid 0 --gid 0 \
+        --numeric-owner -T "$_dst.list" -cf - ) | $_comp -c > "$_dst"
+    rm -f "$_dst.list"
+  fi
+  mv "$_dst" "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
   ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
      "$WORK_DIR/TARS/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PACKAGE_WITH_REV"
-# else: SKIP_TARBALL=1 means a separate tar_template.sh rule creates the
-# tarball and main symlink asynchronously (--pipeline --makeflow mode).
 fi
 wait "$rsync_pid"
 

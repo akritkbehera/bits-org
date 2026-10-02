@@ -113,9 +113,10 @@ def resolve_group_specs(args, parser):
     from bits_helpers.cmd import getstatusoutput
     from bits_helpers.repo_provider import (
         fetch_repo_providers_iteratively, load_always_on_providers)
-    from bits_helpers.utilities import (
-        getConfigPaths, getPackageList, parseDefaults, readDefaults,
-        resolve_variables, validateDefaults)
+    from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
+    from bits_helpers.packages import getPackageList
+    from bits_helpers.paths import getConfigPaths
+    from bits_helpers.matchers import resolve_variables
 
     config_dir = os.path.abspath(args.configDir)
 
@@ -309,7 +310,7 @@ def _recipe_source_prefixes(recipes_dir, rec, restricted):
     ``SOURCES/cache/<h2>/<url_md5>/`` prefix. Returns ``(prefixes, unresolved)``.
     """
     from bits_helpers.download import getUrlChecksum
-    url_re = re.compile(r"^(source|version|tag):[ \t]*(.*?)[ \t]*$", re.M)
+    url_re = re.compile(r"^(source|version|tag|package):[ \t]*(.*?)[ \t]*$", re.M)
     prefixes, unresolved = [], []
     for pkg in sorted(restricted):
         name = rec["by_package"].get(pkg, {}).get("recipe")
@@ -332,11 +333,16 @@ def _recipe_source_prefixes(recipes_dir, rec, restricted):
         if meta.get("source"):
             urls.append(meta["source"])
         from bits_helpers.checksum import parse_entry
+        # %(name)s in a source URL is the package name at build time
+        # (build.py uses spec["package"]); resolve it too so restricted packages
+        # whose URLs template the name (qgraf, kkmcee, starlight, …) are cleaned.
+        pkgname = meta.get("package") or (name[:-3] if name.endswith(".sh") else name)
         for url in urls:
             url, _cs = parse_entry(url)       # strip a ',algo:hex' checksum suffix
-            for key in ("version", "tag"):
-                url = url.replace("%%(%s)s" % key,
-                                  meta.get(key) or meta.get("version") or "")
+            for key, val in (("version", meta.get("version") or ""),
+                             ("tag", meta.get("tag") or meta.get("version") or ""),
+                             ("name", pkgname)):
+                url = url.replace("%%(%s)s" % key, val)
             if "%(" in url:
                 unresolved.append("%s: %s" % (name, url))
                 continue
@@ -460,10 +466,26 @@ def enforce_store(store_url, rec, recipes_dir, key_pem=None, dry_run=False,
         from bits_helpers import certify as _certify
         out = os.path.join(tempfile.mkdtemp(prefix="bits-enforce-"),
                            "common-manifest.json")
-        outputs = _certify.certify_by_arch(
-            remaining_boms, key_pem, out,
-            probe=_certify.make_s3_probe(store_url, work_dir, "enforce"),
-            only_archs=sorted(affected_archs))
+        # The restricted objects are already deleted. Re-certification can still
+        # fail on a PRE-EXISTING manifest problem (e.g. two BOMs disagree on a
+        # package's tarball_sha256 — a non-reproducible build). Don't crash with a
+        # traceback: report that the purge succeeded but the signed manifests are
+        # now stale, and how to finish. Deletions are idempotent, so re-running
+        # after resolving the conflict completes the re-sign.
+        try:
+            outputs = _certify.certify_by_arch(
+                remaining_boms, key_pem, out,
+                probe=_certify.make_s3_probe(store_url, work_dir, "enforce"),
+                only_archs=sorted(affected_archs))
+        except Exception as exc:              # pylint: disable=broad-except
+            error("Restricted objects were removed, but RE-CERTIFICATION FAILED: %s",
+                  exc)
+            error("The signed manifests for %s still reference the removed objects. "
+                  "Resolve the conflict above (it is unrelated to the restricted "
+                  "packages — remove one of the two conflicting build manifests), "
+                  "then re-run this command (deletions are idempotent) or run "
+                  "`bits sign` to re-sign.", ", ".join(sorted(affected_archs)))
+            return 1
         for op, sp, arch in outputs:
             for src, dst in ((op, "MANIFESTS/common-manifest-%s.json" % arch),
                              (sp, "MANIFESTS/common-manifest-%s.json.sig" % arch)):

