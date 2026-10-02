@@ -2,6 +2,13 @@
 
 Bits is a build orchestration tool for complex software stacks. It fetches sources, resolves dependencies, and builds packages in a reproducible, parallel environment.
 
+Beyond building, bits covers the path to deployment:
+
+- **Binary reuse** from a content-addressed S3 store, trusted through signed manifests (`bits certify` / `bits sign`).
+- **CVMFS publishing** where each package is published once per build architecture and releases are views over it (symlink releases plus an LCG-style merged view with a self-locating `setup.sh`).
+- **Supply chain**: deterministic tarballs, CycloneDX/SPDX SBOMs (`bits sbom`), and source/patch checksums with git commit pins (`bits checksums`).
+- **Per-directory profiles** (`bits use`) so repeated options stay out of every command line.
+
 > Full documentation is available in [docs/USERGUIDE.md](docs/USERGUIDE.md), [docs/COOKBOOK.md](docs/COOKBOOK.md), and [docs/REFERENCE.md](docs/REFERENCE.md). This guide covers only the essentials.
 
 ---
@@ -18,7 +25,7 @@ pip install -e .                # install Python dependencies
 ```
 
 **Requirements**: Python 3.8+, git, and [Environment Modules](https://modules.sourceforge.net/) (`modulecmd`).  
-On macOS: `brew install modules`  
+On macOS: `brew install modules`. The first build on macOS records the Homebrew packages the stack needs in `sw/<arch>/Brewfile` and stops until you run `brew bundle --file sw/<arch>/Brewfile` (or re-run with `--brew` to install them on demand; `bits brew` regenerates the file).  
 On Debian/Ubuntu: `apt-get install environment-modules`  
 On RHEL/CentOS: `yum install environment-modules`
 
@@ -38,10 +45,13 @@ root -b
 exit
 ```
 
-### Check system requirements before building
+### Check the machine and the plan before building
 
 ```bash
-bits doctor ROOT
+bits doctor                  # is this machine set up to run bits? (Python modules, git, compiler, container engine, disk, stores)
+bits doctor ROOT             # are ROOT's system requirements satisfied?
+bits build --dry-run ROOT    # per-package plan: installed, local tarball, remote store, reuse overlay or build
+bits build --parallel 4 ROOT # build up to 4 independent packages at once (--builders is an alias)
 ```
 
 ---
@@ -50,20 +60,33 @@ bits doctor ROOT
 
 | Command | Description |
 |---------|-------------|
-| `bits build <pkg>` | Build a package and its dependencies. |
+| `bits build <pkg>` | Build a package and its dependencies (`--dry-run` prints the reuse plan instead). |
 | `bits enter <pkg>/latest` | Spawn a subshell with the package environment loaded. |
 | `bits load <pkg>` | Print commands to load a module (must be `eval`'d). |
 | `bits q [regex]` | List available modules. |
 | `bits clean` | Remove stale build artifacts from a temporary build area. |
 | `bits prune` | Evict old or infrequently used packages from a persistent workDir (was `bits cleanup`, still accepted as a deprecated alias). |
+| `bits doctor` | With no package, check that this machine is set up to run bits. |
 | `bits doctor <pkg> [<pkg>...]` | Check that the system satisfies all recipe requirements before building. |
 | `bits doctor --runner` | Validate the full build-runner environment (compiler, git, Docker, podman, CVMFS, disk, store). |
+| `bits deps <pkg>` | Show the dependency graph (`--outmake FILE` writes it as Makefile rules). |
+| `bits use [<cmd> <args>]` | Save options per directory (`.bitsuse`) so you do not repeat them; with no arguments, show the active profile. |
+| `bits brew` | macOS: write the Homebrew `Brewfile` for the stack (`sw/<arch>/Brewfile`). |
+| `bits publish` | Relocate a built package (or, with `--release-view`, a release view) and hand it to CVMFS via cvmfs-prepub. |
+| `bits certify` | Make a build trusted for reuse: upload what is missing, approve with a passkey via bits-console, open the certification MR. |
+| `bits sign` | Merge build manifests into a signed common manifest (run by the manifests CI after `bits certify`). |
+| `bits sbom <manifest>` | Export a build manifest as CycloneDX 1.6 and/or SPDX 2.3 JSON. |
+| `bits checksums` | Hash every tarball and patch of a recipe repository and pin git tags (`--write` records them). |
+| `bits overlay lcg` | Emit an LCG release view (`LCG_externals` + merged `setup.sh`) over a built closure (was `bits lcg-view`). |
 | `bits verify --from-manifest FILE` | Confirm a live deployment matches the build manifest (SHA-256 and provider commits). |
 
-Two admin/CI groups act on shared infrastructure: **`bits store`** (`ls`, `verify`,
-`gc`, `stats`, `upload`) manages the S3 binary store, and **`bits cvmfs`**
+Two admin/CI groups act on shared infrastructure: **`bits store`** (`ls`, `rm`,
+`verify`, `cat`, `gc`, `stats`, `upload`) manages the S3 binary store, and **`bits cvmfs`**
 (`platforms`, `show`, `summary`, `stage`, `publish`) inspects a deployed CVMFS tree
-and drives producer-side publishing. `bits publish` now means publish-to-CVMFS only.
+and drives producer-side publishing. `bits publish` publishes packages to CVMFS (bare
+`bits publish` bulk-uploads the latest build manifest to the S3 store); single-package
+S3 uploads are `bits store upload`. The old spellings `bits store-stats`,
+`bits cvmfs-stage` and `bits cvmfs-publish` still work but are deprecated.
 
 [Full command reference](docs/REFERENCE.md#16-command-line-reference)
 
@@ -85,7 +108,10 @@ directory is not writeable). `--architecture` is saved to its `[common]` section
 `-w/--work-dir` and `--reference-sources` are saved to `[build]`. `bits use`
 records the same kind of profile from any command's flags (e.g.
 `bits use build --docker`, or `bits use build --store-integrity` to enable
-SHA-256 verification of every recalled tarball).
+SHA-256 verification of every recalled tarball); `bits use` alone shows the
+active profile and `bits use --clear [SECTION]` removes it. A `.bitsuse` file is
+only honoured when it is owned by you. Profiles replace the retired `bits.rc`
+file.
 
 Global settings come from environment variables:
 
@@ -181,9 +207,16 @@ bits build --docker --architecture slc9_aarch64 MyAnalysis
 
 # Use a remote binary store (S3, HTTP, rsync) to share pre-built artifacts
 bits build --remote-store s3://mybucket/builds ROOT
+
+# Read from and upload to the same writable store
+bits build --remote-store s3://mybucket/builds::rw ROOT
 ```
 
-The `--cvmfs-prefix` flag (which embeds the final CVMFS deployment path at compile time so no relocation is needed at publish time) and `bits publish --no-relocate` are used by the **bits-console-triggered CI pipeline** on the build runners — they are not normally typed by end users. See [WORKFLOWS.md Phase 5](docs/WORKFLOWS.md#phase-5--ci-build-and-cvmfs-publication-via-bits-console) for the user-facing workflow and [docs/REFERENCE.md §22](docs/REFERENCE.md#22-docker-support) for the flag reference.
+`--write-store URL` alone only uploads; it is also the read store where no default
+remote store applies. `--store` is a deprecated spelling of `--remote-store` on `bits publish`,
+`certify`, `sign`, `compliance`, `prune` and `bits store upload` (not on `bits build`).
+
+The `--cvmfs-prefix` flag (which embeds the final CVMFS deployment path at compile time so no relocation is needed at publish time) and `bits publish --no-relocate` are used by the **bits-console-triggered CI pipeline** on the build runners — they are not normally typed by end users. See [WORKFLOWS.md Phase 4](docs/WORKFLOWS.md#phase-4--ci-build-and-cvmfs-publication-via-bits-console) for the user-facing workflow and [docs/REFERENCE.md §22](docs/REFERENCE.md#22-docker-support) for the flag reference.
 
 [Docker support](docs/REFERENCE.md#22-docker-support) | [Cross-compilation via QEMU](docs/REFERENCE.md#222-cross-compilation-via-qemu) | [Remote stores](docs/REFERENCE.md#21-remote-binary-store-backends)
 
@@ -204,6 +237,32 @@ bits verify --from-manifest alice-o2-20260411.json \
 ```
 
 [bits doctor reference](docs/REFERENCE.md#bits-doctor) | [bits verify reference](docs/REFERENCE.md#23-bits-verify--deployment-verification)
+
+---
+
+## Publishing, Certification & SBOMs
+
+```bash
+# Make a build trusted for binary reuse (upload missing tarballs, passkey approval, certification MR)
+bits certify
+
+# Publish a release to CVMFS as a view over packages published once per architecture
+bits publish --release-view MyStack
+
+# Software Bill of Materials of a build (CycloneDX 1.6 + SPDX 2.3)
+bits sbom sw/MANIFESTS/bits-manifest-<build>.json -o sbom/
+
+# Check (and with --write, record) checksums and git commit pins of a recipe repository
+bits checksums -c lcg.bits
+```
+
+A community's CVMFS layout comes from its defaults: `cvmfs_packages_template` places
+each package once per build architecture (skipped when the same build hash is already
+published) and `cvmfs_views_template` adds a merged `bin/ lib/ include/ …` view with a
+self-locating `setup.sh`; templates accept `{arch}` and `{day}` tokens. `--view` is the
+deprecated spelling of `--release-view`.
+
+[Publishing and certifying](docs/REFERENCE.md#publishing-and-certifying-a-build--bits-publish-bits-certify) | [bits sbom](docs/REFERENCE.md#bits-sbom) | [bits checksums](docs/REFERENCE.md#bits-checksums)
 
 ---
 
