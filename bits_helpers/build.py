@@ -492,9 +492,8 @@ def _fold_revision_records(records, spec, candidate, busy_revisions, revision_pr
   revisions are never published, so they never appear here. Returns the updated
   ``(candidate, busy_revisions)``.
 
-  Invoked by the counter only as a gap-fill, i.e. with *candidate* ``None`` (the
-  local scan found nothing to reuse), so it never overrides a link-derived reuse
-  choice.
+  Invoked when the scan found no candidate or only a local revision. Matching
+  remote records take precedence over a local candidate.
 
   *records* is a list of ``(revision, hash)`` PAIRS, not a map: one revision may
   carry several hashes (rebuilt after a recipe change), and collapsing them would
@@ -2039,21 +2038,11 @@ def build_one_package(p, ctx):
       # for reuse yet.
       candidate = better_tarball(spec, candidate, (revision, rev_hash, symlink_path))
 
-    # ADR-0005 P2c: if the local version-link scan found NO reuse candidate,
-    # fall back to the revision history recorded by the certified common
-    # manifest and the S3 rev-index markers. This is what lets the reuse/assign
-    # decision survive once the version links are dropped (Phase 2d): the fold
-    # can then supply the reuse candidate (fetched by hash later) and reserve
-    # the revision numbers already taken remotely.
-    #
-    # We deliberately fold ONLY when the scan is empty-handed:
-    # - when the scan already found a candidate we reuse it and never consult
-    #   busyRevisions, so folding could not change the outcome — skipping keeps
-    #   the decision (and the per-package S3 read) identical to before whenever
-    #   the local links are present;
-    # - devel packages are always built locally and never appear in the remote
-    #   manifest/markers.
-    if candidate is None and not spec["is_devel_pkg"]:
+    # A local reuse candidate must not hide a matching remote package. Its
+    # local hash would also change the identities of dependent packages.
+    # Remote candidates already satisfy our preference; devel packages stay local.
+    if (not spec["is_devel_pkg"] and
+        (candidate is None or candidate[0].startswith("local"))):
       try:
         candidate, busyRevisions = _fold_revision_records(
           _revision_index_records(spec, spec_arch, args, workDir, syncHelper),
