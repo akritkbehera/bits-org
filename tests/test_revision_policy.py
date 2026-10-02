@@ -50,7 +50,8 @@ class RevisionPolicyTest(unittest.TestCase):
             self.assertNotIn("force_revision", normal[name])
             self.assertEqual(spec["remote_revision_hash"], normal[name]["remote_revision_hash"])
             self.assertEqual(spec["force_revision"], spec["remote_revision_hash"])
-            self.assertNotEqual(spec["force_revision"], spec["local_revision_hash"])
+            if name != "defaults-release":   # #121: its local hash is its remote hash
+                self.assertNotEqual(spec["force_revision"], spec["local_revision_hash"])
             spec["revision"] = spec["force_revision"]
             self.assertEqual(ver_rev(spec), "1-" + spec["hash"])
             storeHashes(name, hashed, considerRelocation=False)
@@ -115,3 +116,60 @@ class RevisionPolicyTest(unittest.TestCase):
             with patch("bits_helpers.sync.requests.get",
                        side_effect=AssertionError("unexpected network fetch")):
                 sync.fetch_tarball(spec)
+
+
+class RevisionPolicyReviewTest(unittest.TestCase):
+    """Follow-ups from the review of revision_policy: hash."""
+
+    ARCH = "slc9_x86-64"
+    HASH = "ab" + "c0" * 19   # a hex label that starts with letters lstrip("local") ate
+
+    def test_pick_revision_accepts_a_hash_label(self):
+        from bits_helpers.plan import pick_revision
+        spec = {"package": "app", "version": "1"}
+        names = ["app-1-%s.%s.tar.gz" % (self.HASH, self.ARCH)]
+        self.assertEqual(pick_revision(names, spec, self.ARCH, forced=self.HASH), self.HASH)
+        names += ["app-1-2.%s.tar.gz" % self.ARCH, "app-1-10.%s.tar.gz" % self.ARCH]
+        self.assertEqual(pick_revision(names, spec, self.ARCH), "2")
+        self.assertEqual(pick_revision(["app-1-local3.%s.tar.gz" % self.ARCH,
+                                        "app-1-local12.%s.tar.gz" % self.ARCH],
+                                       spec, self.ARCH, local=True), "local3")
+
+    def test_devel_package_keeps_counter_revisions(self):
+        from bits_helpers.hashing import _apply_revision_policy
+        spec = {"revision_policy": "hash", "remote_revision_hash": self.HASH,
+                "is_devel_pkg": True}
+        _apply_revision_policy(spec)
+        self.assertNotIn("force_revision", spec)
+        spec["is_devel_pkg"] = False
+        _apply_revision_policy(spec)
+        self.assertEqual(spec["force_revision"], self.HASH)
+
+    def test_untracked_label_fatal_only_under_hash_policy(self):
+        from bits_helpers import build
+        specs = {"u": {}, "h": {"revision_policy": "hash"},
+                 "ok": {"revision_policy": "hash", "force_revision": ""}}
+        with patch.object(build, "warning") as warn, \
+             patch.object(build, "dieOnError") as die:
+            build.check_untracked_labels(specs, ["u", "ok"])
+            self.assertEqual(warn.call_count, 1)
+            self.assertFalse(any(c.args[0] for c in die.call_args_list))
+        with patch.object(build, "warning"), \
+             patch.object(build, "dieOnError",
+                          side_effect=lambda cond, msg: (_ for _ in ()).throw(SystemExit(msg)) if cond else None):
+            with self.assertRaises(SystemExit):
+                build.check_untracked_labels(specs, ["h"])
+
+    def test_build_link_scan_parses_hash_labels(self):
+        import re
+        from bits_helpers.build import tarball_link_regex, tarball_target_regex
+        spec = {"package": "app", "version": "1"}
+        for rev in (self.HASH, "3", "local2", None):
+            name = "app-1%s.%s.tar.gz" % ("-" + rev if rev else "", self.ARCH)
+            with self.subTest(rev=rev):
+                self.assertTrue(tarball_link_regex(spec, self.ARCH).fullmatch(name))
+                target = "../../%s/store/ab/%s/%s" % (self.ARCH, "ab" * 20, name)
+                self.assertEqual(re.match(tarball_target_regex(spec, self.ARCH), target).groups(),
+                                 ("ab" * 20, rev))
+        self.assertIsNone(tarball_link_regex(spec, self.ARCH).fullmatch(
+            "app-1-v2.%s.tar.gz" % self.ARCH))   # a sibling version, not a revision

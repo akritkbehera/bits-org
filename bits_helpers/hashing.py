@@ -113,8 +113,13 @@ def normalize_recipe_for_hash(recipe):
 
 
 def _apply_revision_policy(spec):
-  """Use package identity as a label without overriding explicit revisions."""
-  if spec.get("revision_policy") == "hash" and "force_revision" not in spec:
+  """Use package identity as a label without overriding explicit revisions.
+
+  Development packages keep their counter (localN) revisions: they are built
+  from a local checkout under their local hash, so the remote hash as label
+  would name a different build of the same package."""
+  if (spec.get("revision_policy") == "hash" and "force_revision" not in spec
+      and not spec.get("is_devel_pkg")):
     spec["force_revision"] = spec["remote_revision_hash"]
 
 
