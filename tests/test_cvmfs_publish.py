@@ -1038,7 +1038,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         want = "%s/bin:/usr/bin:/bin|%s/lib/python3.12/site-packages|%s" % (real, real, real)
         for sh in ("bash", "zsh"):   # locate themselves: the mounted dir, not /cvmfs/...
             if shutil.which(sh):
-                out = subprocess.run([sh, "-c", 'cd / && PATH=/usr/bin:/bin; source "%s/setup.sh" && '
+                out = subprocess.run([sh, "-c", 'cd / && PATH=/usr/bin:/bin; unset PYTHONPATH; source "%s/setup.sh" && '
                                       'echo "$PATH|$PYTHONPATH|$BITS_VIEW"' % d],
                                      capture_output=True, text=True).stdout.strip()
                 self.assertEqual(out, want, sh)
