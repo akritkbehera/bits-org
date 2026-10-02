@@ -17,7 +17,8 @@ import traceback
 from os.path import exists, expanduser
 
 # Internal
-from bits_helpers import __version__
+from bits_helpers import __version__, _VERSION_INFO
+from bits_helpers.version import version_line
 from bits_helpers.args import doParseArgs
 from bits_helpers.build import doBuild
 from bits_helpers.clean import doClean
@@ -73,8 +74,8 @@ def doMain(args, parser):
       sys.exit(1)
 
   if args.action in ("version", None):
-    print("bits version: {version} ({arch})".format(
-      version=__version__ or "unknown", arch=args.architecture or "unknown"))
+    print("{line} [{arch}]".format(
+      line=version_line(_VERSION_INFO), arch=args.architecture or "unknown"))
     sys.exit(0)
 
   if args.action == "doctor":

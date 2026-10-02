@@ -308,7 +308,8 @@ def add_architecture_arguments(subparsers, ctx):
 def add_version_arguments(subparsers, ctx):
   """`bits version` — display the version and architecture (no options)."""
   return subparsers.add_parser("version", help="display %(prog)s version",
-                               description="Display %(prog)s and architecture.")
+                               description="Display the %(prog)s version (tag, commit and "
+                                           "date) and the architecture. Same as --version.")
 
 
 def add_clean_arguments(subparsers, ctx):
@@ -1842,6 +1843,15 @@ def doParseArgs():
   complete documentation please refer to https://alisw.github.io/alibuild.
   """)
 
+  from bits_helpers import _VERSION_INFO
+  from bits_helpers.version import version_line
+  class _PrintVersion(argparse.Action):   # argparse's "version" re-wraps the line
+    def __call__(self, parser, namespace, values, option_string=None):
+      print(version_line(_VERSION_INFO))
+      parser.exit()
+  parser.add_argument("--version", action=_PrintVersion, nargs=0, dest="show_version",
+                      default=argparse.SUPPRESS,
+                      help="Show the bits version (tag, commit and date) and exit.")
   parser.add_argument("-d", "--debug", dest="debug", action="store_true", help="Enable debug log output")
   parser.add_argument("-n", "--dry-run", dest="dryRun", action="store_true",
                       help="Print what would happen, without actually doing it.")

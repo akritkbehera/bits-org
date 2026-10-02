@@ -1662,9 +1662,15 @@ All other `bits` sub-commands pass through to the `bits` binary unchanged.
 ### bits version / architecture
 
 ```bash
-bits version        # print the bits version string and detected architecture
+bits --version      # e.g. bits 0.5-199-g648dfe8 (tag 0.5 +199, commit 648dfe8, 2026-10-02)
+bits version        # the same line plus the detected architecture
 bits architecture   # print only the architecture string (e.g. ubuntu2204_x86-64)
 ```
+
+From a git checkout the version is `git describe --tags` (the plain tag when bits
+runs exactly from it, `-dirty` with local changes) with the commit date; an
+installed package reports its setuptools_scm version. The same string is recorded
+as `bits_version` in build manifests and SBOMs.
 
 ---
 

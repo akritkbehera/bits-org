@@ -125,7 +125,7 @@ Usage: $0 \\
     ${EM}init${EZ}    Initialise a local package. Use ${ET}bits init --help${EZ} for details.
     ${EM}sbom${EZ}    Export a build manifest as a CycloneDX/SPDX SBOM. Use ${ET}bits sbom --help${EZ} for details.
     ${EM}store${EZ}   Inspect/verify/clean the S3 content store. Use ${ET}bits store --help${EZ} for details.
-    ${EM}version${EZ} Display bits version.
+    ${EM}version${EZ} Display bits version: tag, commit and date (also ${ET}bits --version${EZ}).
 
 EoF
 [[ -z "$1" ]] || printf "${ER}ERROR: $*${EZ}\n" >&2
@@ -374,7 +374,7 @@ do
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
-    -n|--dry-run)
+    -n|--dry-run|--version)
         "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
