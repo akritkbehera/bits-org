@@ -5,10 +5,10 @@
 Build provenance helpers: a deterministic ``build_id`` (a per-release coherence
 token) and an ``abi_tag`` (the ABI-relevant build configuration).
 
-See docs/adr/0001-implementation-plan.md. These are *additive* metadata: they
+These are *additive* metadata: they
 are recorded in a package's ``.meta.json`` but never enter the package hash and
 never change build behaviour, so the simple ``bits build`` / aliBuild case is
-unaffected (ADR backward-compatibility constraint).
+unaffected.
 
 Everything here is deliberately defensive — a minimal build with sparse specs or
 a near-empty environment must still produce a value, never raise.

@@ -13,7 +13,7 @@ The aggregation is pure (no S3, no network) so it is unit-testable; the CLI
 (`bits store-stats`, see :func:`doStoreStats`) wires it to the real S3 client
 and manifests.
 
-Store layout the keys follow (ADR-0005):
+Store layout the keys follow (hash-only store):
     TARS/<arch>/store/<h2>/<hash>/<pkg>-<verrev>.<arch>.tar.gz
 """
 import json

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""ADR-0005 Phase 1: reconstruct the local version + dist* symlink layout from
+"""Reconstruct the local version + dist* symlink layout from
 the resolved dependency graph (no S3), matching what the build/reuse paths write.
 """
 

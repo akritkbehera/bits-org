@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""ADR-0005 P2c: the revision counter folds in (version, revision, hash) records
+"""The revision counter folds in (version, revision, hash) records
 from the certified common manifest + S3 rev-index markers, additively.
 
 Two layers are checked:

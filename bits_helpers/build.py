@@ -322,7 +322,7 @@ def _url_not_found(url):
 def trusted_reuse_records(args, work_dir):
   """Verified common-manifest package entries — the primary rev-index source.
 
-  ADR-0005: once the S3 store keeps only hash-keyed tarballs (no version links),
+  Once the S3 store keeps only hash-keyed tarballs (no version links),
   the revision counter derives its ``(version, revision, hash)`` history from the
   signed common manifest instead of scanning ``TARS/<arch>/<pkg>/``. This returns
   the accepted package entries of every configured --trust-manifest (same sources
@@ -455,7 +455,7 @@ def _select_cached_tarball(tarballs, spec, spec_arch):
 
 
 def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
-  """``[(revision, hash), …]`` candidates for (pkg, version, arch), ADR-0005 P2c.
+  """``[(revision, hash), …]`` candidates for (pkg, version, arch).
 
   Union of the store's own content-object names (authoritative for OUR hash), the
   certified common-manifest records, and the S3 rev-index markers (supplement, for
@@ -488,7 +488,7 @@ def _revision_index_records(spec, spec_arch, args, work_dir, sync_helper):
 def _fold_revision_records(records, spec, candidate, busy_revisions, revision_prefix):
   """Fold rev-index ``{revision: hash}`` records into the revision counter state.
 
-  Mirrors the version-link scan (ADR-0005 P2c): a record whose hash matches this
+  Mirrors the version-link scan: a record whose hash matches this
   build becomes a reuse candidate (via :func:`better_tarball`); any other reserves
   its revision number in *busy_revisions*. Records are remote-only — local
   revisions are never published, so they never appear here. Returns the updated
@@ -756,7 +756,7 @@ def create_version_link(spec, arch, work_dir):
 def reconstruct_local_layout(spec, specs, arch, work_dir):
   """Rebuild a package's local version + dist*/closure symlinks from the graph.
 
-  Foundation for ADR-0005: the S3 store keeps only the content-addressed
+  Foundation for the hash-only store: the S3 store keeps only the content-addressed
   tarballs, and this rebuilds the version/dist symlink layout on the node from
   the resolved dependency graph instead of fetching it from S3. Pure graph ->
   symlinks — no S3 access, and it does NOT change the upload/fetch paths yet
@@ -1014,7 +1014,7 @@ def create_provenance_info(package, specs, args):
       deps = sorted(deps)
     return [spec_info(specs[dep]) for dep in deps]
 
-  # ADR-0001 additive provenance: build_id / abi_tag / reuse_policy + a repro
+  # Additive provenance: build_id / abi_tag / reuse_policy + a repro
   # block. Never enters the package hash and never alters behaviour (the simple
   # aliBuild case is unaffected); all reads are defensive so a minimal build
   # still produces a record. Stage 0: reuse_policy is always "strict" and
@@ -2118,7 +2118,7 @@ def build_one_package(p, ctx):
     else:
       spec["hash"] = spec["remote_revision_hash"]
 
-  # ADR-0005: rebuild this package's local version link from the graph now that
+  # Hash-only store: rebuild this package's local version link from the graph now that
   # its revision and hash are final. The version link
   # (TARS/<eff>/<pkg>/<pkg>-<verrev>.<eff>.tar.gz -> the content-addressed
   # store) used to come from the S3 version-link object — written by the upload

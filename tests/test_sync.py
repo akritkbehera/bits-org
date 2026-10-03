@@ -366,7 +366,7 @@ class Boto3TestCase(unittest.TestCase):
     @patch("os.path.islink", new=MagicMock(return_value=True))
     @patch("bits_helpers.sync.Boto3RemoteSync.write_rev_marker", new=MagicMock())
     def test_tarball_upload(self) -> None:
-        """Hash-only upload (ADR-0005): the STORE object is authoritative.
+        """Hash-only upload: the STORE object is authoritative.
 
         If an object already exists at the designated path it is KEPT — never
         overwritten — because a .tar.gz is not byte-reproducible and overwriting
@@ -438,7 +438,7 @@ class Boto3TestCase(unittest.TestCase):
     @patch("os.path.islink", new=MagicMock(return_value=True))
     @patch("bits_helpers.sync.Boto3RemoteSync.write_rev_marker")
     def test_upload_writes_rev_marker(self, mock_marker) -> None:
-        """Every upload records the build's rev-index marker (ADR-0005 P2d)."""
+        """Every upload records the build's rev-index marker."""
         b3sync = sync.Boto3RemoteSync(
             remoteStore="b3://localhost", writeStore="b3://localhost",
             architecture=ARCHITECTURE, workdir=self.workdir)

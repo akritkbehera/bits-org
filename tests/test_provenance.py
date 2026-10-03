@@ -5,7 +5,7 @@
 Tests for bits_helpers/provenance.py (build_id / abi_tag) and the additive
 provenance fields in create_provenance_info().
 
-Doubles as the ADR-0001 Stage-0 backward-compatibility guard: the new fields
+Doubles as the backward-compatibility guard: the new fields
 must be *added* to .meta.json, never replace or drop the pre-existing keys, and
 the helpers must never raise on minimal input.
 """

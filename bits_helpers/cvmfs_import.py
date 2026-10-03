@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
-Importer for foreign CVMFS deployments (ADR-0001 Stage 2).
+Importer for foreign CVMFS deployments.
 
 Turns a deployed release that lacks bits-native metadata (e.g. an LCG release)
 into a bits-consumable overlay: harvest each deployed modulefile's *resolved*
@@ -616,7 +616,7 @@ def _unsafe_component(*comps):
 
 def write_overlay(corpus, build_id, arch, out_root, alias=None,
                   package_hashes=None, abi_tag=""):
-    """Write the per-build_id module+metadata overlay (ADR-0001 D6/D10).
+    """Write the per-build_id module+metadata overlay.
 
     Layout (each build_id dir is one CVMFS nested catalog)::
 

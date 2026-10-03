@@ -362,7 +362,7 @@ class ReleaseBaseTestCase(unittest.TestCase):
 
 
 class ReusePolicyArgsTestCase(unittest.TestCase):
-  """ADR-0001 relaxed-reuse CLI flags parse and default safely."""
+  """Relaxed-reuse CLI flags parse and default safely."""
 
   def _parse(self, cmd):
     with mock.patch("bits_helpers.arch.getoutput", return_value="x86_64"), \

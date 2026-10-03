@@ -315,7 +315,7 @@ def _writer_from_url(write_url, architecture, work_dir):
 
 class RemoteSync:
   """Base for remote-store backends. Supplies documented no-op defaults for the
-  optional STORE-METADATA queries (ADR-0005 rev-index markers and content-object
+  optional STORE-METADATA queries (rev-index markers and content-object
   listings), so a caller may invoke them on ANY backend without hasattr/getattr
   reflection — a backend that records no such metadata simply reports 'nothing'.
   Concrete fetch/upload behaviour is defined by each subclass (NoRemoteSync
@@ -396,7 +396,7 @@ class DualRemoteSync(RemoteSync):
   @staticmethod
   def _first_nonempty(reader_fn, writer_fn, default, *args, **kwargs):
     """The reader's answer if it is non-empty, else the writer's. Store metadata
-    (ADR-0005 rev-index markers, content-object listings) lives on whichever
+    (rev-index markers, content-object listings) lives on whichever
     backend actually holds it; a read-only reader (an http / CVMFS mount) keeps
     none and returns the empty default, which must then fall through to the
     writer. Delegating to the reader alone silently returned empty, so the
@@ -571,7 +571,7 @@ class HttpRemoteSync(RemoteSync):
     return None
 
   def list_store_tarballs(self, arch, pkg_hash):
-    """Basenames of the content objects stored under *pkg_hash* (ADR-0005).
+    """Basenames of the content objects stored under *pkg_hash*.
 
     The object name carries ``<pkg>-<version>-<revision>``, i.e. the authoritative
     ``hash -> revision`` mapping. Best-effort: [] on any error.
@@ -1181,7 +1181,7 @@ class Boto3RemoteSync(RemoteSync):
     return sha
 
   def write_rev_marker(self, spec):
-    """Record this build's revision in the rev-index (ADR-0005).
+    """Record this build's revision in the rev-index.
 
     A write-once marker ``MANIFESTS/rev-index/<arch>/<pkg>/<version>-<revision>``
     whose body is the package hash. Best-effort and idempotent (HEAD-skip), so
@@ -1237,7 +1237,7 @@ class Boto3RemoteSync(RemoteSync):
     return out
 
   def list_store_tarballs(self, arch, pkg_hash):
-    """Basenames of the content objects stored under *pkg_hash* (ADR-0005).
+    """Basenames of the content objects stored under *pkg_hash*.
 
     The object name carries ``<pkg>-<version>-<revision>``, i.e. the authoritative
     ``hash -> revision`` mapping. Best-effort: [] on any error.
@@ -1360,7 +1360,7 @@ class Boto3RemoteSync(RemoteSync):
     if not self.writeStore:
       return
 
-    # Record this build's revision in the rev-index (ADR-0005). Done first and
+    # Record this build's revision in the rev-index. Done first and
     # unconditionally (idempotent HEAD-skip) so the marker is written even when
     # the content tarball already exists and the upload below short-circuits —
     # the revision counter reads these markers once the version links are gone.
@@ -1368,7 +1368,7 @@ class Boto3RemoteSync(RemoteSync):
 
     arch = effective_arch(spec, self.architecture)
 
-    # Hash-only store (ADR-0005): the store keeps ONLY the content-addressed
+    # Hash-only store: the store keeps ONLY the content-addressed
     # tarball. No version-link or dist-symlink objects are written any more — the
     # local version/dist layout is reconstructed on the node from the graph
     # (build.py create_version_link / createDistLinks) and the revision history

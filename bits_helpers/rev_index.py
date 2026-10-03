@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Revision index for the content-addressed store (ADR-0005).
+"""Revision index for the content-addressed store.
 
 Once the S3 store keeps only hash-keyed tarballs and no version links, the
 revision counter can no longer scan ``TARS/<arch>/<pkg>/`` to learn which

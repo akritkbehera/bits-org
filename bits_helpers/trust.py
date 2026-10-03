@@ -405,7 +405,7 @@ def trusted_records(manifest_path, sig_path=None, dirs=None, accept_groups=None,
 
   Same verification gate, but the full accepted package entries are returned
   (each carrying ``package/version/revision/effective_architecture/hash``) so
-  callers can rebuild the revision index (ADR-0005) rather than only the
+  callers can rebuild the revision index rather than only the
   ``{hash: tarball_sha256}`` reuse map. ``(None, [])`` on failure.
   """
   kid, entries = _verified_entries(manifest_path, sig_path, dirs,

@@ -933,7 +933,6 @@ A selection of the main test files (`tests/` holds over 100):
 | CLI flags, recipe YAML fields, environment variables, architecture/store/Docker internals | `docs/REFERENCE.md` (this file) |
 | End-to-end development-to-CVMFS workflow | `docs/WORKFLOWS.md` |
 | Planned features, design decisions, known limitations | `docs/ROADMAP.md` |
-| Architecture decision records | `docs/adr/` |
 
 When a change affects the public CLI (new flag, renamed option, changed default), also update the relevant entry in [§16 Command-Line Reference](#16-command-line-reference) and the short description in README.md.
 

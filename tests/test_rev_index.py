@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Pure rev-index helpers for the content-addressed store (ADR-0005 P2a)."""
+"""Pure rev-index helpers for the content-addressed store."""
 
 import unittest
 

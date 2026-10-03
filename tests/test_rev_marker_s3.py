@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""ADR-0005 P2b: S3 read/write of the rev-index markers (Boto3RemoteSync).
+"""S3 read/write of the rev-index markers (Boto3RemoteSync).
 
 Exercises write_rev_marker (idempotent PUT, body=hash) and read_rev_markers
 (LIST + GET -> {revision: hash}) against a small fake S3 client, plus the
@@ -187,7 +187,7 @@ class _BareReader(sync.RemoteSync):
 
 
 class DualDelegationTestCase(unittest.TestCase):
-    """DualRemoteSync routes store-metadata reads to reader, then writer (ADR-0005 P2d)."""
+    """DualRemoteSync routes store-metadata reads to reader, then writer."""
 
     def test_delegates_read_rev_markers_to_reader(self):
         reader = MagicMock()

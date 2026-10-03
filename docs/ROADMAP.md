@@ -103,8 +103,7 @@ manifests-repo CI then runs `bits sign`, which validates every hash against the 
 and signs the merged manifest — optionally through the console-backend signing service,
 authenticated by the CI ID token and gated by the build's human pre-approval. Package
 tarballs are deterministic (sorted members, zeroed owner, fixed mtime, pinned
-compressor), so packing adds no variation of its own. See
-`docs/adr/0003-s3-upload-authz-and-trusted-reuse.md`.
+compressor), so packing adds no variation of its own.
 
 **SBOM and source pinning.** The build manifest (schema v4) records dependency edges,
 including system-provided dependencies, and the source and tag of every package.

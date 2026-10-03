@@ -5,7 +5,7 @@
 """Compare each built package's on-disk init.sh environment against the
 environment produced by loading its modulefile (the "from modules" env).
 
-Motivation (ADR-0001 follow-up / --initdotsh-from-modules): bits builds today
+Motivation (--initdotsh-from-modules): bits builds today
 source a per-package build-time ``init.sh`` whose env is a *subset* of what the
 runtime/development modulefile exposes — it omits CMAKE_PREFIX_PATH and the
 Python site-packages PYTHONPATH, which is why ~hundreds of recipes hand-rebuild

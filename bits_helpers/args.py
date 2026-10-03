@@ -2167,7 +2167,7 @@ def finaliseArgs(args, parser):
   if hasattr(args, "flavours"):
     args.flavours = _parse_flavours(args.flavours)
 
-  # --build-local: comma/space-separated → list (ADR-0001 relaxed-reuse opt-out).
+  # --build-local: comma/space-separated → list (relaxed-reuse opt-out).
   if hasattr(args, "buildLocal"):
     args.buildLocal = [p for p in (args.buildLocal or "").replace(",", " ").split() if p]
 

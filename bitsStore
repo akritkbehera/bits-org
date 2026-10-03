@@ -30,11 +30,11 @@
 #                          rm without it only tidies the store's MANIFESTS/ copies.
 #                          --deep hashes objects that carry no recorded sha256.
 #
-# NOTE (ADR-0005, hash-only store): new builds write ONLY the content-addressed
+# NOTE (hash-only store): new builds write ONLY the content-addressed
 # tarball under TARS/<arch>/store/<h2>/<hash>/… — no version-link or dist-symlink
 # objects. So `ls`/`rm`/`verify`/`--orphans` operate on the content objects vs
 # the signed manifests (the primary model). The `--links` and `--broken-links`
-# selectors now only match LEGACY pointer objects left by pre-ADR-0005 builds and
+# selectors now only match LEGACY pointer objects left by older builds and
 # are retained for one-time migration cleanup (`bits store rm --links …`).
 #
 # Credentials: ~/.bits/s3keys (override $BITS_AWS_KEYS_FILE).

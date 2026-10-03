@@ -8,7 +8,7 @@ or read an equivalent manifest, classify it, closure-check the set, stamp it wit
 one deterministic ``build_id``, and generate a per-build_id overlay
 (``MODULES/<build_id>/<arch>/``: bits modulefiles + build-sufficient ``init.sh``
 + module-side ``.meta.json`` + a ``.cvmfscatalog`` subcatalog) that relaxed reuse
-can graft without recompiling. See ADR-0001.
+can graft without recompiling.
 
 This is the thin CLI driver; all transform logic lives in
 ``bits_helpers.cvmfs_import`` (stdlib-only, fully unit-tested). The only
