@@ -46,8 +46,8 @@ def _pip_hint(names):
 
 def check_python():
   v = "%d.%d.%d" % sys.version_info[:3]
-  if sys.version_info < (3, 7):
-    return FAIL, "%s is Python %s; bits needs 3.7 or newer" % (sys.executable, v)
+  if sys.version_info < (3, 8):
+    return FAIL, "%s is Python %s; bits needs 3.8 or newer" % (sys.executable, v)
   return PASS, "%s (Python %s)" % (sys.executable, v)
 
 

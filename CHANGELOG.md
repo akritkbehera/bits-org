@@ -35,6 +35,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Fix]** `35f23d3` serve pipeline variables for Re-run/Re-publish with the ops token; `0cb1a13` read the sign-proxy port and token from its agent socket (they rotate); `5819e62` list admin subgroups with `all_available`.
 
 ## CLI surface & configuration
+- **[Change]** Python 3.8 is the minimum (`requires-python >=3.8`; `bits doctor` checks it); 3.7 is no longer supported or tested.
 - **[Change]** `e7f09cb`→`3ce3f49` remove `--makeflow`/`--pipeline` (use `--builders`/`--parallel`); `025f0c2` retire usage analytics.
 - **[Change]** `c244e21` `--remote-store` (`--store` deprecated); `8ab8b19` `--parallel` (`--builders` alias); `daf30b0` `--prefer-system`/`--force-overwrite`; `2460a81` `--search-path`; `43ed396` `--set` alias for `--flavour`.
 - **[Change]** `2e4437b` / `f8eae7f` / `37a7f26` / `ba4bd0d` retire `bits.rc` in favour of trust-gated `bits use` profiles (`.bitsuse` local or `~/.bits/use`).

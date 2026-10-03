@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = 'build-bits'
 dynamic = ['readme', 'version']
 description = 'Build Tool'
-requires-python = '>=3.7'
+requires-python = '>=3.8'
 keywords = ['HEP', 'ALICE']
 license = { file = 'LICENSE.md' }
 authors = [
@@ -20,7 +20,6 @@ classifiers = [
     'Development Status :: 5 - Production/Stable',
     'Intended Audience :: Developers',
     'Topic :: Software Development :: Build Tools',
-    'Programming Language :: Python :: 3.7',
     'Programming Language :: Python :: 3.8',
     'Programming Language :: Python :: 3.9',
     'Programming Language :: Python :: 3.10',
@@ -76,7 +75,7 @@ readme = {file = ["README.md"], content-type = "text/markdown"}
 # essentially every file and is a separate, deliberate flag-day (see #59). This
 # config drives a CHECK-ONLY lint gate.
 line-length = 127
-target-version = "py37"
+target-version = "py38"
 
 [tool.ruff.lint]
 # Start with the real-bug subset only — syntax errors (E9), bad comparisons/
