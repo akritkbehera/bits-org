@@ -4,7 +4,16 @@
 
 Practical recipes for common bits tasks. Each entry is self-contained; refer to the [User Guide](USERGUIDE.md) for background and to the [Reference Manual](REFERENCE.md) for complete flag documentation.
 
+- [Building and using a stack](#building-and-using-a-stack)
+- [Developing packages](#developing-packages)
+- [Versions, sources and recipe repositories](#versions-sources-and-recipe-repositories)
+- [Binary stores and CI](#binary-stores-and-ci)
+- [Disk space and deployments](#disk-space-and-deployments)
+- [Writing Recipes with bits-recipe-tools](#writing-recipes-with-bits-recipe-tools)
+
 ---
+
+## Building and using a stack
 
 ### Build a complete stack from scratch
 
@@ -13,6 +22,39 @@ bits doctor ROOT            # verify system requirements first
 bits build ROOT             # build everything
 bits enter ROOT/latest      # drop into the built environment
 ```
+
+### Use the built environment
+
+**Interactive sub-shell** — opens a new shell with all modules loaded; the prompt changes so it is clear you are inside a bits environment:
+
+```bash
+bits enter ROOT/latest
+root -b
+exit   # return to your normal shell
+```
+
+**Single command** — loads modules and exec's the command without spawning an interactive shell; exit code passes through unchanged:
+
+```bash
+bits setenv ROOT/latest -c root -b
+```
+
+**Persistent load/unload in the current shell** — add the shell helper to `~/.bashrc`, `~/.zshrc`, or `~/.kshrc` once:
+
+```bash
+export BITS_WORK_DIR=/path/to/sw
+eval "$(bits shell-helper)"
+```
+
+Then in any shell session:
+
+```bash
+bits load ROOT/latest,Python/3.11-1   # load one or more modules
+bits unload ROOT                       # unload (version can be omitted)
+bits list                              # show currently loaded modules
+```
+
+Without `shell-helper`, use `eval` manually: `eval "$(bits load ROOT/latest)"`.
 
 ### Inspect the dependency graph before building
 
@@ -34,10 +76,79 @@ bits build --docker --architecture slc9_aarch64 MyAnalysis
 
 The `--architecture` string selects both the OS image and the target CPU. When the target architecture differs from the host, bits automatically injects the matching Docker `--platform` flag so QEMU handles emulation transparently. See [§22.2 Cross-compilation via QEMU](REFERENCE.md#222-cross-compilation-via-qemu) for QEMU setup details.
 
+### Speed up large builds
+
+**Built-in scheduler** — `--parallel 4 --jobs 8` builds up to 4 packages at a time, sharing 8 compile jobs between them; the final top-level package gets all 8 (memory permitting). `--parallel` on its own uses 4; omit it entirely for a serial build (`--builders` is a kept alias):
+
+```bash
+bits build --parallel 4 --jobs 8 my_large_stack
+```
+
+The scheduler dispatches packages as soon as their dependencies are satisfied. Use `--resources` to declare per-package CPU and memory budgets and prevent overcommit (see [Building several packages at once](USERGUIDE.md#building-several-packages-at-once) and the `--resources` option of [`bits build`](REFERENCE.md#bits-build)).
+
+**Prefetch remote tarballs** — when a binary store is in use (`--remote-store`/`--write-store`, or the platform default), bits fetches pre-built tarballs and source archives in the background while packages compile, with as many workers as `--parallel` (at most 4); `--prefetch-workers N` sets the number and `0` turns it off:
+
+```bash
+bits build --parallel 4 \
+           --write-store b3://mybucket/store \
+           --prefetch-workers 4 \
+           my_large_stack
+```
+
+The `--parallel` scheduler also overlaps uploads with downstream builds.
+
+**Parallel source downloads** — fetch multiple source archives concurrently within each package:
+
+```bash
+bits build --parallel-sources 4 my_large_stack
+```
+
+Useful when a recipe lists several large `sources:` URLs.
+
+### Build memory-hungry packages without exhausting RAM
+
+For packages whose parallel builds risk OOM, limit concurrent builds and/or declare per-package resource budgets:
+
+```bash
+# Option 1: reduce concurrent package builds (serial is the default; omit --parallel)
+bits build --jobs 8 my_stack
+
+# Option 2: use a resource file
+bits build --parallel 4 --resources my_resources.json my_stack
+```
+
+Where `my_resources.json` has the format of the build statistics a monitored run writes to `sw/LOGS/<arch>/bits_build_stats.json`: `cpu` is about 100 per core, `rss` is in bytes, `time` is in seconds, `resources` is the machine total and `defaults` applies to packages not listed. Package keys must be lower case. `--auto-resources` reuses a previous run's statistics instead of a file you write. The example is for a 16-core, 64 GiB machine:
+
+```json
+{
+  "resources": {"cpu": 1600, "rss": 68719476736},
+  "packages": {"build": {
+    "gcc":  {"cpu": 400, "rss": 1073741824, "time": 1800},
+    "llvm": {"cpu": 800, "rss": 4294967296, "time": 3600}
+  }},
+  "known": [],
+  "defaults": {"cpu": [100], "rss": [536870912], "time": [60]}
+}
+```
+
+The scheduler will not start a new build unless the declared resources are free.
+
+### Debug a failed build
+
+```bash
+bits build --debug my_package
+# A failed build's directory is kept; the BUILD FAILED message prints its path
+cd sw/BUILD/my_package-latest/
+cat log
+# The build itself runs in the my_package/ subdirectory; re-run the failing command there
+```
+
+## Developing packages
+
 ### Develop and iterate on a single package
 
 ```bash
-bits init libfoo            # create a writable source checkout
+bits init -c . libfoo       # writable source checkout (run inside your recipe repository)
 # … edit source in the libfoo/ directory …
 bits build libfoo           # rebuilds only libfoo (devel mode)
 eval "$(bits load libfoo/latest)"
@@ -65,57 +176,18 @@ force_revision: "dev"   # install path stays …/libfoo/2.3-dev across edits
 ```
 
 ```bash
-bits init libfoo        # writable checkout of the dependency
+bits init -c . libfoo   # writable checkout of the dependency
 # … edit libfoo source …
-bits build MyApp        # rebuilds libfoo only; MyApp is reused and relinks it
+bits build MyApp        # rebuilds libfoo only; MyApp is reused as is
 ```
 
-Only `libfoo` rebuilds; `MyApp` (and everything above it) keeps its identity hash and is reused, picking up the new `libfoo` through its `…/libfoo/2.3-dev` path.
+Only `libfoo` rebuilds; `MyApp` (and everything above it) keeps its identity hash and is reused, picking up the new `libfoo` at run time through its `…/libfoo/2.3-dev` path.
 
-**Caveats.** The consumer is *relinked, not recompiled*, so this is valid only while your change keeps `libfoo` ABI-compatible (same headers / soname). Any build whose closure includes an untracked dependency is recorded `provenance: loose` in `.meta.json` — still publishable, but you own the ABI decision. Bits requires an explicit `force_revision` on each untracked dependency; `""` or a fixed label keeps the install path stable. The hash revision policy does not override an explicit value. See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
+**Caveats.** The consumer is *neither recompiled nor relinked*, so this is valid only while your change keeps `libfoo` binary-compatible (same headers and library version). Any build that includes an untracked dependency is recorded as `provenance: loose` in `.meta.json`, meaning its hash does not cover everything it was built against; it is still publishable, but the compatibility decision is yours.
 
-### Debug a failed build
+Give each untracked dependency an explicit `force_revision` (`""` or a fixed label) so its install path stays stable; without one bits warns, and under `revision_policy: "hash"` it stops. The hash revision policy does not override an explicit value. See [`untracked_requires`](REFERENCE.md#dependencies) in the reference.
 
-```bash
-bits build --debug --keep-tmp my_package
-# Build directory path is printed in the log
-cd sw/BUILD/my_package-*/
-cat log
-# Re-run the failing command manually to iterate quickly
-```
-
-### Use the built environment
-
-**Interactive sub-shell** — opens a new shell with all modules loaded; the prompt changes so it is clear you are inside a bits environment:
-
-```bash
-bits enter ROOT/latest
-root -b
-exit   # return to your normal shell
-```
-
-**Single command** — loads modules and exec's the command without spawning an interactive shell; exit code passes through unchanged:
-
-```bash
-bits setenv ROOT/v6-30 -c root -b
-```
-
-**Persistent load/unload in the current shell** — add the shell helper to `~/.bashrc`, `~/.zshrc`, or `~/.kshrc` once:
-
-```bash
-BITS_WORK_DIR=/path/to/sw
-eval "$(bits shell-helper)"
-```
-
-Then in any shell session:
-
-```bash
-bits load ROOT/latest,Python/3.11-1   # load one or more modules
-bits unload ROOT                       # unload (version can be omitted)
-bits list                              # show currently loaded modules
-```
-
-Without `shell-helper`, use `eval` manually: `eval "$(bits load ROOT/latest)"`.
+## Versions, sources and recipe repositories
 
 ### Override a package version without editing the recipe
 
@@ -126,7 +198,7 @@ Defaults profiles can pin package versions globally without modifying recipe fil
 overrides:
   root:
     version: "6.32.02"
-    tag: "v6-32-02"        # tarball URL %(version)s and the git tag both follow
+    tag: "v6-32-02"        # git tag to check out; %(version)s in source URLs follows version
   boost:
     version: "1.85.0"
 ```
@@ -137,22 +209,22 @@ Then build with:
 bits build --defaults release::myproject MyStack
 ```
 
-Keys are matched case-insensitively as `re.fullmatch` regexes, so `root` and `ROOT` both work and patterns such as `clhep|geant4` are valid. This is the recommended way to pin versions: useful for shared recipes where different projects need different versions, or for emergency pinning when a new version breaks downstream packages.
+Keys are case-insensitive patterns that must match the whole package name, so `root` and `ROOT` both work and `clhep|geant4` matches both packages. This is the recommended way to pin versions: useful for shared recipes where different projects need different versions, or for emergency pinning when a new version breaks downstream packages.
 
 ### Pin a dependency's version from within a recipe
 
-A recipe can pin the version of one of its dependencies directly in the `requires` / `build_requires` list using the `name = version` form. The pin updates both `version` and `tag` of the named dependency:
+A recipe can pin the version of one of its dependencies directly in the `requires` / `build_requires` list using the `name = version` form. The pin sets both `version` and `tag` of the named dependency to the same string, so use it only for packages whose git tag equals their version (such as `fmt`); for ROOT-style tags (`v6-32-02`) use `overrides:` with both `version:` and `tag:`. Unlike `overrides:` keys, the name must be spelt exactly as in the dependency's `package:` field (e.g. `CMake` in lcg.bits):
 
 ```yaml
 package: myanalysis
 version: "1.0"
 requires:
-  - root = 6.32.02            # pin root for this whole build
-  - boost = 1.85.0:slc7.*     # pin only on slc7 architectures
-  - vdt = v0.4.4:defaults=dev4   # pin only under --defaults dev4
-  - fmt                       # plain dependency, no pin
+  - fmt = 11.1.4                  # pin fmt for this whole build
+  - libfoo = 1.2.3:slc7.*         # pin only on slc7 architectures
+  - libbar = 2.0:defaults=dev4    # pin only under --defaults dev4
+  - ROOT                          # plain dependency, no pin
 build_requires:
-  - cmake
+  - CMake
 ---
 ```
 
@@ -166,21 +238,28 @@ A [repository provider](REFERENCE.md#13-repository-provider-feature) such as `lc
 # bits-providers/lcg.bits.sh
 package: lcg.bits
 version: "1"
-tag: "LCG_106"              # branch, tag, or commit; defaults to the repo's main branch
+tag: "LCG_106"              # branch, tag, or commit; if omitted, `version` is used
 provides_repository: true
 source: https://github.com/bitsorg/lcg.bits
 ---
 ```
 
-To choose the snapshot at invocation time without editing the recipe, append `@<tag>` to the bits-providers URL:
+To choose the snapshot without editing the provider recipe, override its `tag:` (or `source:`) from a defaults profile; the key is the provider's name, matched exactly (case-insensitive, not as a pattern):
 
-```bash
-export BITS_PROVIDERS="https://github.com/bitsorg/bits-providers@LCG_106"
-# or for one invocation:
-BITS_PROVIDERS=https://github.com/bitsorg/bits-providers@LCG_106 bits build LCG
+```yaml
+# defaults-myproject.sh
+overrides:
+  lcg.bits:
+    tag: "LCG_106"
 ```
 
-The provider's commit hash is folded into every dependent package's build hash, so changing the provider version triggers a rebuild of everything sourced from it. Note that provider repositories are cloned *before* defaults `overrides:` are applied, so an `overrides:` entry does **not** change which provider snapshot is fetched — use the `tag:` field or the `@<tag>` URL suffix instead.
+Appending `@<tag>` to the bits-providers URL pins the registry repository itself (and so the `tag:` its `lcg.bits.sh` records), not `lcg.bits` directly:
+
+```bash
+export BITS_PROVIDERS="https://github.com/bitsorg/bits-providers@<registry-tag>"
+```
+
+A provider's commit does **not** enter the build hash: moving to a new snapshot rebuilds only the packages whose own recipes or inputs changed (and what depends on them). The commit used is recorded in the build manifest.
 
 ### Check out a recipe repository and develop against it
 
@@ -199,19 +278,44 @@ The **aliBuild** front-end is the legacy path instead: `aliBuild init` checks ou
 
 ### Use a private recipe repository alongside the defaults
 
-Set `BITS_PATH` to prepend a custom repository to the search path:
+Set `BITS_PATH` to add a repository to the recipe search path. A plain name such as `myorg` means `<recipe dir>/myorg.bits`; an absolute path is used as is. These directories are searched *after* the main recipe directory:
 
 ```bash
-BITS_PATH=myorg.bits bits build MyPackage
+BITS_PATH=myorg bits build MyPackage
 ```
 
-Or configure it persistently:
+Or record it for this directory (`--search-path` is the flag form of `BITS_PATH`; an exported `BITS_PATH` takes precedence):
 
 ```bash
-bits init --config-dir myorg.bits MyPackage
+bits use build --search-path myorg
 ```
 
-Useful for building private packages that depend on public recipes, or for maintaining a vendor-specific overlay (e.g. a fork of `gcc` with custom patches) without modifying the main recipe repository.
+Useful for building private packages that depend on public recipes without modifying the main recipe repository. Because the main recipe directory is searched first, a recipe it already has (e.g. `gcc`) is not replaced this way; a defaults `overrides:` block can change its fields (`version`, `tag`, `source`, …) but not its build script.
+
+### Enforce reproducible source downloads with checksums
+
+First, compute and write checksums for all sources:
+
+```bash
+bits build --write-checksums MyPackage
+```
+
+This creates or updates `checksums/mypackage.checksum` (lower-case package name) in the recipe directory. To record a whole recipe repository without building, run `bits checksums -c lcg.bits --write` (and `bits checksums -c stacks.bits --write --defaults all --recipes lcg.bits` for a repository of defaults profiles, for the sources their overrides introduce). Then enforce them on all future builds:
+
+```bash
+bits build --enforce-checksums MyPackage
+```
+
+Or make it the site default in a defaults profile:
+
+```yaml
+# defaults-production.sh
+checksum_mode: enforce
+```
+
+Any mismatch or missing checksum aborts the build, catching supply-chain tampering or silent mirror corruption.
+
+## Binary stores and CI
 
 ### Set up a project with a persistent binary store
 
@@ -222,7 +326,7 @@ Instead of passing `--remote-store` on every `bits build` invocation, record it 
 bits use build --remote-store https://store.example.com/store \
                --write-store  b3://mybucket/store
 
-# Every subsequent invocation picks up the settings automatically
+# Every later invocation from this directory picks up the settings
 bits build ROOT
 ```
 
@@ -240,108 +344,7 @@ bits build --remote-store b3://mybucket/bits-cache::rw ROOT
 bits build --remote-store b3://mybucket/bits-cache ROOT
 ```
 
-See [§21 Remote binary store backends](REFERENCE.md#21-remote-binary-store-backends) for the full list of backends (HTTP, S3, boto3, rsync, CVMFS) and detailed CI/CD patterns.
-
-### Enforce reproducible source downloads with checksums
-
-First, compute and write checksums for all sources:
-
-```bash
-bits build --write-checksums MyPackage
-```
-
-This creates or updates `checksums/MyPackage.checksum` in the recipe directory. To record a whole recipe repository without building, run `bits checksums -c lcg.bits --write` (and `bits checksums -c stacks.bits --write --defaults all --recipes lcg.bits` for a repository of defaults profiles, for the sources their overrides introduce). Then enforce them on all future builds:
-
-```bash
-bits build --enforce-checksums MyPackage
-```
-
-Or make it the site default in a defaults profile:
-
-```yaml
-# defaults-production.sh
-checksum_mode: enforce
-```
-
-Any mismatch or missing checksum aborts the build, catching supply-chain tampering or silent mirror corruption.
-
-### Speed up large builds
-
-**Built-in Python scheduler** — build up to N packages in parallel, each using M cores. `--parallel` on its own uses 4; omit it entirely for a serial build (`--builders` is a kept alias):
-
-```bash
-bits build --parallel 4 --jobs 8 my_large_stack
-```
-
-The scheduler dispatches packages as soon as their dependencies are satisfied. Use `--resources` to declare per-package CPU and memory budgets and prevent overcommit (see [Building several packages at once](USERGUIDE.md#building-several-packages-at-once) and the `--resources` option of [`bits build`](REFERENCE.md#bits-build)).
-
-**Prefetch remote tarballs** — with the `--parallel` scheduler, hide network latency by fetching tarballs in the background while packages compile:
-
-```bash
-bits build --parallel 4 \
-           --write-store b3://mybucket/store \
-           --prefetch-workers 4 \
-           my_large_stack
-```
-
-`--prefetch-workers` fetches tarballs before the build loop needs them; the `--parallel` scheduler already overlaps uploads with downstream builds.
-
-**Parallel source downloads** — fetch multiple source archives concurrently within each package:
-
-```bash
-bits build --parallel-sources 4 my_large_stack
-```
-
-Useful when a recipe lists several large `sources:` URLs.
-
-### Build memory-hungry packages without exhausting RAM
-
-For packages whose parallel builds risk OOM, limit concurrent builds and/or declare per-package resource budgets:
-
-```bash
-# Option 1: reduce concurrent package builds (serial is the default; omit --parallel)
-bits build --jobs 8 my_stack
-
-# Option 2: use a resource file
-bits build --parallel 4 --resources my_resources.json my_stack
-```
-
-Where `my_resources.json` declares expected CPU and memory per package:
-
-```json
-{
-  "gcc": {"cpu": 4, "rss_mb": 1024},
-  "llvm": {"cpu": 8, "rss_mb": 4096}
-}
-```
-
-The Python scheduler will not start a new build unless the declared resources are free.
-
-### Evict old packages to free disk space
-
-```bash
-# Evict packages not used in the last 14 days
-bits prune --max-age 14
-
-# Free space until at least 50 GiB is available, removing least-recently-used packages first
-bits prune --min-free 50
-
-# Dry run: show what would be removed without deleting anything
-bits prune --max-age 7 --min-free 100 -n
-```
-
-Bits tracks a sentinel file for each installed package; `bits prune` (formerly `bits cleanup`) sorts by last-touched time and evicts the oldest entries first. Combine both flags to enforce both a time limit and a disk-space floor in a single pass. See [§7 bits cleanup](USERGUIDE.md#7-cleaning-up) for full options.
-
-### Verify a live deployment against a build manifest
-
-After publishing to CVMFS (or any shared store), confirm that what is deployed matches what was built:
-
-```bash
-bits verify --from-manifest alice-o2-20260411.json \
-            --cvmfs-root /cvmfs/alice.cern.ch
-```
-
-`bits verify` reads the SHA-256 digests and provider commit SHAs recorded in the manifest and checks them against the live files on disk. Any mismatch is reported as an error. The manifest is written automatically during `bits build` to `$WORK_DIR/MANIFESTS/`. See [§23 bits verify](REFERENCE.md#23-bits-verify--deployment-verification) for full options.
+See [§21 Remote binary store backends](REFERENCE.md#21-remote-binary-store-backends) for the full list of backends (HTTP, S3 via s3cmd, S3-compatible via boto3, rsync or a local path; reuse from CVMFS is `--reuse-from`) and detailed CI/CD patterns.
 
 ### CI/CD: build and publish only on the main branch
 
@@ -358,6 +361,35 @@ fi
 ```
 
 This ensures PR builds benefit from the shared cache without polluting the production store.
+
+## Disk space and deployments
+
+### Evict old packages to free disk space
+
+```bash
+# Evict packages not used in the last 14 days
+bits prune --max-age 14
+
+# Free space until at least 50 GiB is available, removing least-recently-used packages first
+# (--max-age defaults to 7 days; --disk-pressure-only turns the age limit off)
+bits prune --min-free 50 --disk-pressure-only
+
+# Dry run: show what would be removed without deleting anything
+bits prune --max-age 7 --min-free 100 -n
+```
+
+Bits tracks a sentinel file for each installed package; `bits prune` (formerly `bits cleanup`) sorts by last-touched time and evicts the oldest entries first. Combine both flags to enforce both a time limit and a disk-space floor in a single pass. See [§7 Cleaning up](USERGUIDE.md#7-cleaning-up) for full options.
+
+### Verify a live deployment against a build manifest
+
+After publishing to CVMFS (or any shared store), confirm that what is deployed matches what was built:
+
+```bash
+bits verify --from-manifest alice-o2-20260411.json \
+            --cvmfs-root /cvmfs/alice.cern.ch
+```
+
+`bits verify` recomputes the SHA-256 of each package tarball in the store under `--cvmfs-root` (then `--work-dir`) and compares it with the manifest; each provider's recorded commit is compared with its local checkout, when there is one. A mismatch is reported as FAIL (exit code 1) and a missing tarball as MISS (exit code 2); running it on a machine of a different architecture than the manifest's is also a FAIL. The manifest is written automatically during `bits build` to `$WORK_DIR/MANIFESTS/`. See [§23 bits verify](REFERENCE.md#23-bits-verify--deployment-verification) for full options.
 
 ---
 
@@ -378,37 +410,50 @@ Run() {
 }
 ```
 
-`build_template.sh` calls `Run "$@"` if the function is defined after sourcing the compiled recipe script.
+After sourcing the recipe, `build_template.sh` calls `Run "$@"`; a recipe without `Run()` gets a do-nothing default.
 
 ### How bits-recipe-tools works
 
-`bits-recipe-tools` ships include files — `CMakeRecipe`, `AutoToolsRecipe`, and others — each of which defines a `Run()` function that orchestrates the build in terms of five lifecycle hooks:
+`bits-recipe-tools` ships include files — `CMakeRecipe`, `AutoToolsRecipe`, `MesonRecipe`, `PythonRecipe` and others — each of which provides a `Run()` function that calls these hooks (shell functions) in order:
 
 | Hook | Default behaviour |
 |------|-------------------|
-| `Prepare()` | Sets up the build directory and any pre-configure steps. |
+| `Prepare()` | Copies the source into a private build directory (the shared source tree is never modified). |
 | `Configure()` | Runs `cmake` (or `./configure`) with standard flags. |
 | `Make()` | Runs `make -j$JOBS` (or `cmake --build`). |
+| `UnitTest()` | Does nothing. |
 | `MakeInstall()` | Runs `make install` (or `cmake --install`). |
-| `PostInstall()` | Runs any post-install fixups (e.g. removing libtool archives). |
+| `MakeModule()` | Writes the modulefile (see `MODULE_OPTIONS` below). |
+| `PostInstall()` | Does nothing; override it for post-install fixups. |
+| `Clean()` | Removes libtool `*.la` files from `$INSTALLROOT/lib`. |
 
-A recipe overrides only the hooks it needs to customise; all others run with sensible defaults. `bits-recipe-tools` must be listed as a `build_requires` of the recipe.
+A recipe overrides a hook by defining a function with the same name **after** the `. $(bits-include …)` line; all other hooks keep their defaults. `bits-recipe-tools` must be listed as a `build_requires` of the recipe.
+
+`PythonRecipe` differs: its `PostInstall()` rewrites script shebangs (keep that logic if you override it), a `Preload` step follows, and its `Clean()` does nothing.
 
 ### MODULE_OPTIONS — controlling modulefile generation
 
-Set `MODULE_OPTIONS` **before** sourcing the include file so the `PostInstall()` hook picks it up:
+Set `MODULE_OPTIONS` **after** sourcing the include file, which resets it to `--bin --lib` (also the value you get if you do not set it). The `MakeModule` step reads it and writes the modulefile to `$INSTALLROOT/etc/modulefiles/<package>`:
 
 ```bash
-MODULE_OPTIONS="--bin --lib"
 . $(bits-include CMakeRecipe)
+MODULE_OPTIONS="--bin --lib"
 ```
 
 | Flag | Effect on the modulefile |
 |------|--------------------------|
-| `--bin` | Prepends `$INSTALLROOT/bin` to `PATH`. |
-| `--lib` | Prepends `$INSTALLROOT/lib` to `LD_LIBRARY_PATH`. |
+| `--bin` | Prepends `$INSTALLROOT/bin` to `PATH`, and defines `<PACKAGE>_ROOT` (as `--root`). |
+| `--lib` | Prepends `$INSTALLROOT/lib` and `lib64` to `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS), and defines `<PACKAGE>_INCLUDE_DIR`. |
 | `--cmake` | Adds `$INSTALLROOT` to `CMAKE_PREFIX_PATH`. |
-| `--root` | Defines `ROOT_<PACKAGE>` (uppercased name) as `$INSTALLROOT`. |
+| `--root` | Defines `<PACKAGE>_ROOT` (name uppercased, `-` turned into `_`) as `$INSTALLROOT`. |
+| `--inc` | Defines `<PACKAGE>_INCLUDE_DIR` as `$INSTALLROOT/include`. |
+| `--pkgconfig` | Prepends `lib/pkgconfig` and `lib64/pkgconfig` to `PKG_CONFIG_PATH`. |
+| `--python` | Prepends `lib/pythonX.Y/site-packages` to `PYTHONPATH` (needs `PYTHON_MAJOR_MINOR`, e.g. from `PythonRecipe`). |
+| `--pylib` | Prepends `$INSTALLROOT/lib` to `PYTHONPATH`. |
+| `--pysite` | Prepends `lib/python/site-packages` to `PYTHONPATH`. |
+| `--root-inc` | Prepends `$INSTALLROOT/include` to `ROOT_INCLUDE_PATH` (where ROOT looks for headers). |
+
+PATH-style entries (bin, lib, lib64, pkgconfig, site-packages, `ROOT_INCLUDE_PATH`) are added only if the directory exists; the `_ROOT`, `_INCLUDE_DIR` and `CMAKE_PREFIX_PATH` settings are always written.
 
 ### Example — CMake library (cppgsl, header-only)
 
@@ -418,17 +463,21 @@ version: "4.0.0"
 source: https://github.com/microsoft/GSL.git
 tag: "v4.0.0"
 build_requires:
-  - cmake
+  - CMake
   - bits-recipe-tools
 ---
 # Header-only: CMake discovery + ROOT variable, no runtime paths
-MODULE_OPTIONS="--cmake --root"
 . $(bits-include CMakeRecipe)
+MODULE_OPTIONS="--cmake --root"
 
 # Override only Configure to disable tests; everything else is inherited.
+# Use $BITS_CMAKE_SRC / $BITS_CMAKE_BUILD: the default Make() and
+# MakeInstall() work in $BITS_CMAKE_BUILD.
 Configure() {
-  cmake -S "$SOURCEDIR" -B "$BUILDDIR" \
+  cmake -S "$BITS_CMAKE_SRC" -B "$BITS_CMAKE_BUILD" \
         -DCMAKE_INSTALL_PREFIX="$INSTALLROOT" \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        ${CMAKE_PREFIX_PATH:+-DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}"} \
         -DGSL_TEST=OFF \
         -DCMAKE_BUILD_TYPE=Release
 }
@@ -442,16 +491,19 @@ version: "1.4.2"
 source: https://example.com/libfoo.git
 tag: "v1.4.2"
 build_requires:
-  - autotools
+  - autoconf
+  - automake
+  - libtool
   - bits-recipe-tools
 ---
+. $(bits-include AutoToolsRecipe)
 MODULE_OPTIONS="--bin --lib --root"
-. $(bits-include AutotoolsRecipe)
 
-# Default Configure() runs: "$SOURCEDIR/configure" --prefix="$INSTALLROOT"
-# Override to add custom options.
+# Default Configure() runs ./autogen.sh (if present), then ./configure --prefix="$INSTALLROOT",
+# in the private copy of the source. Override to add custom options.
 Configure() {
-  "$SOURCEDIR/configure" \
+  if [ -f autogen.sh ]; then ./autogen.sh || return 1; fi
+  ./configure \
     --prefix="$INSTALLROOT" \
     --enable-shared \
     --disable-static
@@ -460,7 +512,7 @@ Configure() {
 
 ### Example — Custom post-install fixup
 
-Override `PostInstall()` to remove files that should not be installed or to patch up the modulefile:
+Override `PostInstall()` to remove files that should not be installed:
 
 ```yaml
 package: mylib
@@ -468,25 +520,23 @@ version: "2.0.0"
 source: https://example.com/mylib.git
 tag: "v2.0.0"
 build_requires:
-  - cmake
+  - CMake
   - bits-recipe-tools
 ---
-MODULE_OPTIONS="--bin --lib --cmake"
 . $(bits-include CMakeRecipe)
+MODULE_OPTIONS="--bin --lib --cmake"
 
 PostInstall() {
   # Remove static archives and libtool metadata left by make install
   find "$INSTALLROOT/lib" \( -name '*.a' -o -name '*.la' \) -delete
-  # Call the default PostInstall to generate the modulefile
-  defaults_PostInstall
 }
 ```
 
-Call `defaults_PostInstall` at the end of any `PostInstall()` override to ensure the modulefile is still generated correctly.
+There is nothing to call back into: the default `PostInstall()` does nothing, and `MakeModule` has already written the modulefile.
 
 ### Error handling in recipes — how failures are detected
 
-bits runs every recipe body under `set -e` **and** `set -o pipefail`, captures the recipe's real exit code, and tees all output to the per-package `log`. When a build fails, the `BUILD FAILED` message now includes an **Error excerpt** — the matched high-signal error lines plus the tail of the log — so you usually do not need to open the log by hand. Re-run with `--debug` (and optionally `--keep-tmp`) to keep the build tree for manual iteration.
+bits runs every recipe body under `set -e` **and** `set -o pipefail`, captures the recipe's real exit code, and tees all output to the per-package `log`. When a build fails, the `BUILD FAILED` message includes an **Error excerpt** — the matched high-signal error lines plus the tail of the log — so you usually do not need to open the log by hand. The build directory is kept after a failure (its path is printed under **Build Directory**), so you can inspect it and iterate there by hand; add `--debug` for more verbose bits output.
 
 Because failure detection relies on a command exiting non-zero, two authoring pitfalls can let a real error slip through. Both are recipe bugs, not framework bugs.
 
@@ -495,20 +545,30 @@ Because failure detection relies on a command exiting non-zero, two authoring pi
 ```bash
 # BAD: if wget/tar/cmake fails, set -e is suppressed (left of &&) and
 #      `make` still runs — on missing or half-prepared inputs.
-Make() {
+Run() {
   wget "$url" && tar xf "$tarball" && cmake "$SOURCEDIR" && cp -r extra .
   make -j"$JOBS"
   make install
 }
 
 # GOOD: separate statements so set -e fires on the first failure.
-Make() {
+Run() {
   wget "$url"
   tar xf "$tarball"
   cmake "$SOURCEDIR"
   cp -r extra .
   make -j"$JOBS"
   make install
+}
+```
+
+**Inside bits-recipe-tools hooks, `set -e` does not apply.** The include files run the hooks as one chain (`Prepare && Configure && Make && …`), and bash switches `set -e` off inside functions called from such a chain. In `Prepare()`, `Configure()`, `Make()` and the other hooks only the **last** command decides whether the hook fails, so add `|| return 1` to every earlier command that can fail:
+
+```bash
+Make() {
+  wget "$url" || return 1
+  tar xf "$tarball" || return 1
+  make -j"$JOBS"
 }
 ```
 
@@ -522,7 +582,7 @@ grep -rl g77 . | xargs --no-run-if-empty sed -i 's/\bg77\b/gfortran/g'
 { grep -rl g77 . || true; } | xargs --no-run-if-empty sed -i 's/\bg77\b/gfortran/g'
 ```
 
-**Known limitation — errors that exit 0 are not intercepted.** bits can only detect a failure that produces a non-zero exit code. A third-party `configure` or `make` that prints errors but still returns 0 (e.g. a broken shell test inside a vendored `configure`) will not be caught automatically. Inspect the **Error excerpt** in the failure message or the full `log`; if a package "succeeds" but is incomplete, search its log for `error:` / `command not found` and fix the upstream script or add a `MakeInstall()`/`PostInstall()` sanity check that fails loudly.
+**Known limitation — errors that exit 0 are not intercepted.** bits can only detect a failure that produces a non-zero exit code. A third-party `configure` or `make` that prints errors but still returns 0 (e.g. a broken shell test inside a vendored `configure`) will not be caught automatically. Inspect the **Error excerpt** in the failure message or the full `log`; if a package "succeeds" but is incomplete, search its log for `error:` / `command not found` and fix the upstream script or make a sanity check the last command of `PostInstall()` so it fails loudly (e.g. `test -f "$INSTALLROOT/lib/libfoo.so"`).
 
 ---
 
