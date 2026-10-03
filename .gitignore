@@ -14,3 +14,5 @@ build.log
 .tox
 # For setuptools_scm
 bits_helpers/_version.py
+# Design records (ADRs) are kept outside the repository
+docs/adr/
