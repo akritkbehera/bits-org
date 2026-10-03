@@ -406,6 +406,9 @@ def doStatus(args, parser) -> None:
         bits_providers    = getattr(args, "bits_providers", None),
         taps              = taps,
         provider_policy   = getattr(args, "provider_policy", {}),
+        overrides         = overrides,
+        defaults          = args.defaults,
+        default_vars      = defaults_meta.get("variables"),
     )
     provider_seed = (list(defaults_meta.get("requires", []))
                      + list(defaults_meta.get("build_requires", [])))

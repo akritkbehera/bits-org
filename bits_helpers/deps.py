@@ -123,7 +123,9 @@ def doDeps(args, parser):
   # `lcg.bits` provider recipe): cloning them extends BITS_PATH so the iterative
   # walk below can then see and clone the providers they declare.
   always_on_dirs = load_always_on_providers(
-      bits_providers = getattr(args, "bits_providers", None), **_prov)
+      bits_providers = getattr(args, "bits_providers", None),
+      overrides = overrides, defaults = args.defaults,
+      default_vars = defaultsMeta.get("variables"), **_prov)
   provider_dirs = fetch_repo_providers_iteratively(
       packages = [args.package]
                  + list(defaultsMeta.get("requires", []))

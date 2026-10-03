@@ -144,7 +144,9 @@ def resolve_group_specs(args, parser):
         provider_policy   = getattr(args, "provider_policy", {}) or {},
     )
     always_on = load_always_on_providers(
-        bits_providers=getattr(args, "bits_providers", None), **prov)
+        bits_providers=getattr(args, "bits_providers", None),
+        overrides=overrides, defaults=args.defaults,
+        default_vars=defaultsMeta.get("variables"), **prov)
     provider_dirs = fetch_repo_providers_iteratively(
         packages     = list(args.packages)
                        + list(defaultsMeta.get("requires", []))

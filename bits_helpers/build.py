@@ -2868,6 +2868,9 @@ def doBuild(args, parser):
     taps              = taps,
     provider_policy   = getattr(args, "provider_policy", {}),
     force_tracked     = getattr(args, "forceTracked", False),
+    overrides         = overrides,
+    defaults          = args.defaults,
+    default_vars      = defaultsMeta.get("variables"),
   )
   # Discovery <-> defaults resolution is a FIXED POINT, not one pass. The override
   # that turns the `release` variable into an lcg.bits branch tag

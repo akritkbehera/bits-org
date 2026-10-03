@@ -102,6 +102,27 @@ class TestBuildStats(unittest.TestCase):
     def test_autoload_missing_returns_none(self):
         self.assertIsNone(bs.autoload_stats_path(self.dir))
 
+    def test_package_names_match_case_insensitively(self):
+        # The stats file keeps the recipe's spelling (ROOT); lookups lower-case it.
+        stats = {"resources": {"cpu": 1000, "rss": 10**10},
+                 "packages": {"build": {"ROOT": {"cpu": 700, "rss": 10**9, "time": 9}}},
+                 "known": [], "defaults": {"cpu": [100], "rss": [10**6], "time": [1]}}
+        rm = ResourceManager(stats, _FakeScheduler())
+        rm.allocResourcesForExternals(["build:ROOT"], count=1)
+        self.assertEqual(rm.seenPackages["build:ROOT"]["cpu"], 700)   # not the default 100
+
+    def test_scheduler_build_times_match_case_insensitively(self):
+        # Critical-path weights come from the same stats; the caller's keys survive.
+        from bits_helpers.scheduler import Scheduler
+        path = os.path.join(self.dir, "stats.json")
+        with open(path, "w") as fh:
+            json.dump({"resources": {"cpu": 1000, "rss": 10**10},
+                       "packages": {"build": {"ROOT": {"cpu": 100, "rss": 10**6, "time": 50}}},
+                       "known": [], "defaults": {"cpu": [100], "rss": [10**6], "time": [1]}}, fh)
+        s = Scheduler(2, buildStats=path)
+        s.jobs["build:ROOT"] = {"taskType": "build"}
+        self.assertEqual(s._job_cost("build:ROOT"), 50.0)
+
     def test_output_consumable_by_resource_manager(self):
         sd = _write_trace(self.dir, "root", [{"rss": 2_000_000, "cpu": 200, "time": 60}])
         bs.aggregate_and_write(self.dir, {"root": sd})

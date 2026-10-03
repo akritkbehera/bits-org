@@ -461,6 +461,9 @@ def load_always_on_providers(
   taps: dict = None,
   provider_policy: dict = None,
   force_tracked: bool = False,
+  overrides: dict = None,
+  defaults: list = None,
+  default_vars: dict = None,
 ) -> dict:
   """Clone providers that must be loaded unconditionally before any
   dependency-graph traversal.
@@ -538,6 +541,8 @@ def load_always_on_providers(
             pkg)
       continue
     debug("Always-loading provider '%s' from config dir", pkg)
+    # Same defaults `overrides: <provider>: {source, tag}` as the iterative path.
+    _apply_provider_override(spec, pkg, overrides, defaults, default_vars)
     try:
       _local = None if force_tracked else _local_provider_dir(config_dir, pkg)
       if _local:

@@ -72,7 +72,7 @@ class Scheduler:
         _stats = json.load(ref)
       self.resourceManager = ResourceManager(_stats, self)
       try:
-        self._buildTimes = {p: float(v.get("time", 0) or 0)
+        self._buildTimes = {p.lower(): float(v.get("time", 0) or 0)
                             for p, v in _stats.get("packages", {}).get("build", {}).items()}
         _dt = _stats.get("defaults", {}).get("time", [])
         if _dt and float(_dt[0]) > 0:
@@ -204,7 +204,7 @@ class Scheduler:
     if job.get("taskType") != "build":
       return 0.0
     pkg = taskId.split(":", 1)[1] if ":" in taskId else taskId
-    return self._buildTimes.get(pkg, self._defaultCost)
+    return self._buildTimes.get(pkg.lower(), self._defaultCost)   # stats keep the recipe spelling
 
   def compute_critical_paths(self):
     """Set each job's ``priority`` from the longest weighted path to the sink

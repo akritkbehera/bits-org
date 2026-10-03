@@ -246,6 +246,30 @@ class TestLoadAlwaysOnProviders(unittest.TestCase):
 
     @patch("bits_helpers.repo_provider._add_to_bits_path")
     @patch("bits_helpers.repo_provider.clone_or_update_provider")
+    def test_always_load_recipe_honours_defaults_override(self, mock_clone, mock_add):
+        # overrides: <provider>: {source, tag} applies here as on the iterative path.
+        checkout_dir = os.path.join(self.work_dir, "my-recipes")
+        os.makedirs(checkout_dir)
+        mock_clone.return_value = (checkout_dir, "feed1234")
+        _make_provider_sh(self.config_dir, "my-recipes",
+                          "https://github.com/org/my-recipes.git")
+        load_always_on_providers(
+            config_dir        = self.config_dir,
+            work_dir          = self.work_dir,
+            reference_sources = self.ref_dir,
+            fetch_repos       = False,
+            bits_providers    = None,
+            overrides         = {"my-recipes": {"source": "https://example.org/fork.git",
+                                                "tag": "LCG_%(rel)s"}},
+            defaults          = ["release"],
+            default_vars      = {"rel": "110"},
+        )
+        spec = mock_clone.call_args[0][0]
+        self.assertEqual(spec["source"], "https://example.org/fork.git")
+        self.assertEqual(spec["tag"], "LCG_110")
+
+    @patch("bits_helpers.repo_provider._add_to_bits_path")
+    @patch("bits_helpers.repo_provider.clone_or_update_provider")
     def test_recipe_without_always_load_not_cloned(self, mock_clone, mock_add):
         """Recipes that only have provides_repository but not always_load are skipped."""
         _make_provider_sh(self.config_dir, "optional-recipes",

@@ -117,7 +117,7 @@ bits build --jobs 8 my_stack
 bits build --parallel 4 --resources my_resources.json my_stack
 ```
 
-Where `my_resources.json` has the format of the build statistics a monitored run writes to `sw/LOGS/<arch>/bits_build_stats.json`: `cpu` is about 100 per core, `rss` is in bytes, `time` is in seconds, `resources` is the machine total and `defaults` applies to packages not listed. Package keys must be lower case. `--auto-resources` reuses a previous run's statistics instead of a file you write. The example is for a 16-core, 64 GiB machine:
+Where `my_resources.json` has the format of the build statistics a monitored run writes to `sw/LOGS/<arch>/bits_build_stats.json`: `cpu` is about 100 per core, `rss` is in bytes, `time` is in seconds, `resources` is the machine total and `defaults` applies to packages not listed. Package names are matched case-insensitively. `--auto-resources` reuses a previous run's statistics instead of a file you write. The example is for a 16-core, 64 GiB machine:
 
 ```json
 {

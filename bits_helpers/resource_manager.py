@@ -29,7 +29,7 @@ class ResourceManager:
     """
 
     def __init__(self, ESstats, scheduler, highestPriorityOnly=False):
-        self.esStats = ESstats
+        self.esStats = dict(ESstats)   # shallow copy: the caller keeps its own keys
         self.scheduler = scheduler
         self.machineResources = ESstats["resources"]
         self.resourceList = ["cpu", "rss"]
@@ -37,6 +37,11 @@ class ResourceManager:
         self.highestPriorityOnly = highestPriorityOnly
         self.seenPackages = {}
         self.priorityList = ["time"]  # can be any list from the stat keys
+        # Lookups lower-case the package name, so key the stats the same way: the
+        # stats file and hand-written resource files use the recipe's spelling.
+        self.esStats["packages"] = {
+            xtype: {pkg.lower(): v for pkg, v in pkgs.items()}
+            for xtype, pkgs in self.esStats["packages"].items()}
         # Cap per-package resource requirements at the machine totals so that
         # a package can always eventually be scheduled.
         for xtype in self.esStats["packages"]:
