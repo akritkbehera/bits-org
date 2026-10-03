@@ -419,13 +419,27 @@ class TestStoreUploadRedistributable(unittest.TestCase):
     recipe forbids binary redistribution — mirroring the build-time and bulk gates
     so no upload path leaks a restricted binary into a world-readable store."""
 
-    def _run(self, entry):
+    def _run(self, entry, store="b3://bucket"):
         writer = _FakeWriter()
         with patch.object(publish, "_load_manifest_spec", return_value=entry), \
-             patch.object(sync, "remote_from_url", return_value=writer):
+             patch.object(sync, "remote_from_url", return_value=writer) as rfu, \
+             patch.dict(os.environ, {}, clear=False):
             publish._publish_s3(entry["package"], entry.get("version"), ARCH,
-                                "/wd", "b3://bucket", _Parser())
+                                "/wd", store, _Parser())
+            self.endpoint = os.environ.get("BITS_S3_ENDPOINT_URL")
+        self.store_used = rfu.call_args[0][0] if rfu.call_args else None
         return writer
+
+    def test_https_store_is_normalised_like_bits_publish(self):
+        # The default store is an https:// URL; without normalisation the upload
+        # fell through to the rsync backend.
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BITS_S3_ENDPOINT_URL", None)
+            w = self._run({"package": "ROOT", "version": "6.30", "revision": "1", "hash": "h3"},
+                          store="https://s3.cern.ch/swift/v1/alibuild-repo")
+        self.assertEqual(self.store_used, "b3://alibuild-repo")
+        self.assertEqual(self.endpoint, "https://s3.cern.ch")
+        self.assertEqual(w.tarballs, ["h3"])
 
     def test_refuses_non_redistributable(self):
         w = self._run({"package": "QGRAF", "version": "3.6", "revision": "1",

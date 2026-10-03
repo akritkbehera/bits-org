@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Certification core: turn a set of build manifests into a signed common manifest.
 
-This is the forge-agnostic heart of the group-signed trusted-reuse model
-(docs/adr/0004-group-signed-trusted-reuse.md). Given the per-build BOM manifests
+This is the forge-agnostic heart of the group-signed trusted-reuse model.
+Given the per-build BOM manifests
 that ``bits publish`` uploads (MANIFESTS/<build_id>/<host>-<UTC>.json), it:
 
   1. merges them into one *common manifest* — the trust unit — deduped by content

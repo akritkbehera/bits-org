@@ -320,7 +320,7 @@ class RemoteStoreUnificationTest(unittest.TestCase):
 
 
 class PublishToRemovalTest(unittest.TestCase):
-    """Phase 3.4: `bits publish` is CVMFS-only; `--to` and `--write-store` are
+    """`bits publish` is CVMFS-only; `--to` and `--write-store` are
     gone (the S3-store write moved to `bits store upload`)."""
 
     def test_to_flag_rejected(self):

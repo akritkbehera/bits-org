@@ -280,8 +280,12 @@ def _find_brewfile(args) -> str:
     """Return the first existing Brewfile path among conventional locations."""
     candidates = []
     cfg = getattr(args, "configDir", "") or ""
-    # The canonical location is <configDir>/macos/Brewfile (next to the recipes);
-    # check it first, then fall back to legacy locations for back-compat.
+    # `bits brew` / `bits build --brew` write <work-dir>/<arch>/Brewfile; check it
+    # first, then the hand-kept locations next to the recipes.
+    arch = getattr(args, "architecture", "") or ""
+    if arch:
+        from bits_helpers.brew import default_brewfile_path
+        candidates.append(default_brewfile_path(getattr(args, "workDir", "") or "sw", arch))
     for base in (cfg, ".", os.path.join(cfg, "..", "stacks.bits")):
         candidates.append(os.path.join(base, "macos", "Brewfile"))
         candidates.append(os.path.join(base, "Brewfile"))

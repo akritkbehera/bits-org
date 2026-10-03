@@ -109,7 +109,8 @@ def verify_package(entry: dict, arch: str,
     entry:
         A dict corresponding to one ``packages[]`` element from the manifest.
     arch:
-        The ``architecture`` field from the manifest top level.
+        The manifest's top-level ``architecture``; the entry's own
+        ``effective_architecture`` (``share``, own_hash arch) wins when set.
     search_roots:
         Ordered list of filesystem roots to search for the tarball store.
     """
@@ -117,6 +118,7 @@ def verify_package(entry: dict, arch: str,
     expected_sha = entry.get("tarball_sha256")
     pkg_hash = entry.get("hash", "")
     outcome = entry.get("outcome", "")
+    arch = entry.get("effective_architecture") or arch
 
     if not tarball or not expected_sha:
         if outcome == "already_installed":
@@ -214,7 +216,8 @@ def doVerify(args, parser) -> None:  # noqa: N802
 
     # ── Architecture check ────────────────────────────────────────────────────
     host_arch = detectArch()
-    arch_match = (arch == host_arch)
+    # append_arch qualifiers extend the platform arch (slc9_x86-64-gcc13, …dbg)
+    arch_match = bool(host_arch) and arch.startswith(host_arch)
     arch_status = PASS if arch_match else FAIL
     if not arch_match:
         counts[FAIL] += 1

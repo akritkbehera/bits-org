@@ -239,11 +239,11 @@ The `--cvmfs-prefix` flag (which embeds the final CVMFS deployment path at compi
 ## Validating Builds and Deployments
 
 ```bash
-# Check runner environment before first use (compiler, git, Docker, podman, disk…)
-bits doctor --runner --cvmfs-repos /cvmfs/alice.cern.ch
+# Check this machine is set up for bits (Python modules, git, compiler, container engine, stores)
+bits doctor
 
-# Machine-readable runner report for CI / bits-console health panel
-bits doctor --runner --json
+# On a CI build runner: Docker daemon, podman, QEMU binfmt, CVMFS mounts, disk, store, prepub
+bits doctor --runner --cvmfs-repos /cvmfs/alice.cern.ch [--prepub-url URL] [--json]
 
 # Verify that a live CVMFS deployment matches a recorded build manifest
 bits verify --from-manifest alice-o2-20260411.json \

@@ -33,7 +33,7 @@ It is used one of two ways, matching the server's ``auth_mode``:
 
 * **signed** (default) — the secret stays here and each request carries an
   ``X-Bits-Auth`` MAC bound to its method, URI, fields and payload
-  (:mod:`bits_helpers.httpsig`, ADR-0008 D3). Observing a request yields
+  (:mod:`bits_helpers.httpsig`). Observing a request yields
   nothing reusable.
 * **bearer** (``--prepub-bearer-auth``) — the legacy header, for a server
   still running ``auth_mode: bearer``. The secret travels on every request.

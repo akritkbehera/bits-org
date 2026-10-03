@@ -322,9 +322,9 @@ function configBits() {
 
 configBits
 
-# Deprecated command aliases (Phase 3.4): warn once and forward to the grouped
+# Deprecated command aliases: warn once and forward to the grouped
 # form. One arm per alias — retiring one is deleting its arm. Kept one release
-# for callers in sibling repos (see Phase 3.4 §7). Runs before the group arms
+# for callers in sibling repos. Runs before the group arms
 # below so a rewritten command flows into the right one.
 case "${1:-}" in
   cvmfs-stage)
@@ -358,7 +358,7 @@ fi
 
 # `bits cvmfs {platforms,show,summary,stage,publish} …` → the CVMFS group.
 # platforms/show/summary read a deployed tree (no work dir); stage/publish are
-# the producer-side ops (ADR-0011), delegated inside cvmfs_inspect.main to their
+# the producer-side ops, delegated inside cvmfs_inspect.main to their
 # own CLIs. Handled here, before work-dir/module setup: it talks to the tree /
 # S3, not the local install tree.
 if [[ "${1:-}" == "cvmfs" ]]; then

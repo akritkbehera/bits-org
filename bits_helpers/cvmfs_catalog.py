@@ -14,7 +14,7 @@ queried directory is served by a single, dedicated nested catalog rooted exactly
 there, we can read that catalog's content hash from the cvmfs client's existing
 `user.catalog_counters` magic xattr, fetch the one catalog object over HTTP,
 decompress it, and run a single local SQLite query to list every entry — no
-per-file FUSE walk. See ADR-001 (Option E).
+per-file FUSE walk.
 
 This helper is self-contained (stdlib only) and imports nothing from bits, so it
 runs as a plain script:

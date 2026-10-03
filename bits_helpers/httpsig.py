@@ -3,8 +3,7 @@
 
 """bits_helpers.httpsig — request signing for the cvmfs-prepub API.
 
-Implements ADR-0008 D3 option T1, the client half of ``internal/httpsig`` in
-cvmfs-bits.
+The client half of ``internal/httpsig`` in cvmfs-bits.
 
 Why sign instead of sending the token
 -------------------------------------

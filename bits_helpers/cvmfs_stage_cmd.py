@@ -21,7 +21,7 @@ Taking both from one line is what guarantees the objects are written to the
 store the repository is served from.
 
 When that file is absent or unreadable -- an s3.conf is conventionally 0600
-owned by the publishing user -- the search order from ADR-0011 D10 applies
+owned by the publishing user -- this search order applies
 instead: $HOME/.bits/<repo>.s3.conf, then /etc/cvmfs/keys/<repo>.s3.conf, then
 /etc/cvmfs/s3/<repo>.s3.conf. That is a fine way to find a CREDENTIAL and a
 poor way to decide which BUCKET, so it warns when it is used.
@@ -30,7 +30,7 @@ This command never contacts the gateway and never holds a gateway or prepub
 credential: publishing goes through prepub, which holds both.
 
 The S3 credential is NOT scoped, and saying otherwise would misstate the
-security posture. ADR-0011 D2 wants a credential able to write only its own
+security posture. The design wants a credential able to write only its own
 staging prefix; RGW at CERN cannot express that without an administrator
 granting `user-policy` capability (`radosgw-admin caps add --uid=... --caps=
 "user-policy=*"`), which has not happened. So today this is the repository's
@@ -148,7 +148,7 @@ def run_prepare(cmd):
 
 
 def find_s3_conf(repo, explicit=None):
-    """$HOME/.bits first, then the system path (ADR-0011 D10).
+    """$HOME/.bits first, then the system path.
 
     Readability, not mere existence: an s3.conf is conventionally 0600 owned
     by the publishing user, so a path that exists but cannot be read by THIS
@@ -201,7 +201,7 @@ def prepare_lock(repo, spool=None, timeout=1800):
     (which requires -n) lifts this lock; it stays OFF by default until a full
     pipeline run at scale is proven clean.
 
-    This costs nothing that matters: the parallelism ADR-0011 buys is across the
+    This costs nothing that matters: the parallelism staged publishing buys is across the
     runner fleet, not within one host, and a prepare that waits is still off the
     publisher's critical path.
     """
@@ -279,7 +279,7 @@ def main(argv=None):
                          "the PREPARE succeeds where the path is already "
                          "occupied. Deletes state: never implied. NOTE this "
                          "does not make a republish work end to end -- the "
-                         "graft refuses an existing path (ADR-0011 D17).")
+                         "graft refuses an existing path.")
     ap.add_argument("--no-stats-db", action="store_true",
                     help="pass -n to swissknife: prepare without opening the "
                          "repository's statistics database. A prepare's row "
@@ -292,13 +292,13 @@ def main(argv=None):
                     help="skip the per-host prepare serialisation lock so "
                          "prepares of one repository run concurrently. Requires "
                          "--no-stats-db: the lock exists only because concurrent "
-                         "prepares abort on the shared statistics database "
-                         "(MEASUREMENTS §28), and -n removes exactly that. Off "
+                         "prepares abort on the shared statistics database, "
+                         "and -n removes exactly that. Off "
                          "by default; prove a full pipeline run is clean before "
                          "turning it on.")
     ap.add_argument("--base-retries", type=int, default=4,
                     help="re-read the base and re-prepare this many times when "
-                         "the repository head moves mid-prepare (ADR-0011 D16)")
+                         "the repository head moves mid-prepare")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the prepare command and stop; makes no network "
                          "call, so it can be run anywhere")
@@ -312,14 +312,14 @@ def main(argv=None):
     try:
         # --no-prepare-lock lifts the per-host serialisation that keeps
         # concurrent prepares off the shared statistics database. Without -n
-        # that database is still opened and the losers abort (MEASUREMENTS §28),
+        # that database is still opened and the losers abort,
         # so refuse the combination rather than hand out a flag that crashes
         # under the very concurrency it promises.
         if a.no_prepare_lock and not a.no_stats_db:
             raise StageError(
                 "--no-prepare-lock requires --no-stats-db: without -n, "
-                "concurrent prepares abort on the shared statistics database "
-                "(MEASUREMENTS §28), which is the only reason the lock exists")
+                "concurrent prepares abort on the shared statistics database, "
+                "which is the only reason the lock exists")
 
         # No default. The previous one -- http://cvmfs-stratum-zero.cern.ch/
         # cvmfs/<repo> -- names a stratum0 web front end rather than the object
@@ -519,7 +519,7 @@ def main(argv=None):
                 prepare_cm = (contextlib.nullcontext() if a.no_prepare_lock
                               else prepare_lock(a.repo, a.spool or None))
                 with prepare_cm:
-                    # RETRY ON A MOVED BASE. See ADR-0011 D16: the base is read
+                    # RETRY ON A MOVED BASE: the base is read
                     # from stratum0 moments before swissknife reads the same
                     # manifest, and prepub commits an earlier package in
                     # between, so the head moves under a prepare that has not
@@ -562,8 +562,7 @@ def main(argv=None):
                                     "add-only by construction, so the\n"
                                     "  published subtree has to be deleted "
                                     "first. prepub does that itself when\n"
-                                    "  replace_on_conflict is enabled. See "
-                                    "ADR-0011 D17."
+                                    "  replace_on_conflict is enabled."
                                     % (found, base))
                             else:
                                 # The walk raises both when it completed and
@@ -582,7 +581,7 @@ def main(argv=None):
                                     "contains the path twice. Check:\n"
                                     "      ls -d /cvmfs/%s/%s\n"
                                     "  If it IS there, a staged publish cannot "
-                                    "replace it (ADR-0011 D17) -- use a\n"
+                                    "replace it -- use a\n"
                                     "  path that is free. If it is NOT, the "
                                     "duplicate is inside the tar and this is\n"
                                     "  a packaging bug, not a publishing one."
@@ -601,7 +600,7 @@ def main(argv=None):
                         if attempt == max(1, a.base_retries):
                             raise StageError(
                                 "the repository head moved under this prepare "
-                                "%d times (ADR-0011 D16).\n"
+                                "%d times.\n"
                                 "  Another publish is committing while this "
                                 "one prepares. Raise --base-retries,\n"
                                 "  or serialise publishing so a prepare is not "

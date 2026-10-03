@@ -229,7 +229,8 @@ def check_file(path: str, filename: str, checksum_or_none, mode: str) -> None:
                 "No checksum declared for %r. "
                 "Add a checksum suffix to the recipe entry, e.g.:\n"
                 "  - <url>,%s\n"
-                "Or run with --check-checksums to generate checksums."
+                "Or record the checksums of the whole recipe repository with "
+                "`bits checksums --write`."
                 % (filename, checksum_file(path)))
         # warn mode: silently ignore missing declarations
         return

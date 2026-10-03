@@ -7,7 +7,7 @@ mocks of the reader. The bug this code exists to prevent — sending the root
 catalog instead of the subtree — is a bug about which row you pick, so a test
 that stubs out the picking proves nothing.
 
-Shapes are taken from the testbed run recorded in MEASUREMENTS §21: a root
+Shapes are taken from the testbed run recorded on the testbed: a root
 catalog covering "/", a subtree catalog covering the lease path, and a third
 nested catalog that the prepare did NOT re-stage.
 """
@@ -286,7 +286,7 @@ class TestPrepareArgv(unittest.TestCase):
 
     def test_never_passes_the_gateway_flags(self):
         """-P is a session token and -H a gateway key. Either one turns a
-        prepare into a publish nobody asked for (MEASUREMENTS §18)."""
+        prepare into a publish nobody asked for."""
         a = self.argv()
         self.assertNotIn("-P", a)
         self.assertNotIn("-H", a)
@@ -697,7 +697,7 @@ class TestMainWiring(unittest.TestCase):
     def test_no_prepare_lock_is_gated_on_no_stats_db_and_then_bypasses_the_lock(self):
         """--no-prepare-lock lifts the per-host serialisation, but only WITH
         --no-stats-db -- without -n the shared statistics DB is still opened and
-        concurrent prepares abort (MEASUREMENTS §28).
+        concurrent prepares abort.
 
         NEGATIVE CONTROL 1: drop the gate in main() and the first run no longer
         names --no-stats-db (it fails later at the read-back probe instead), so
@@ -778,7 +778,7 @@ class TestMainWiring(unittest.TestCase):
 
 
     def test_a_moved_base_is_retried_with_a_freshly_read_head(self):
-        """ADR-0011 D16: prepub commits an earlier package while this one
+        """prepub commits an earlier package while this one
         prepares, so the head moves between our read and swissknife's.
 
         NEGATIVE CONTROL: drop the retry and the first (3, stale) result
@@ -850,7 +850,7 @@ class TestMainWiring(unittest.TestCase):
         entries are already in the catalog. Nobody should have to read
         "UNIQUE constraint failed: catalog.md5path_1" to learn that the path
         is taken -- nor be pointed at --replace, which fixes only this half
-        and leaves the graft to refuse (ADR-0011 D17).
+        and leaves the graft to refuse.
 
         NEGATIVE CONTROL: drop the path_exists branch and this surfaces as
         "prepare failed with exit -6", naming neither the path nor the flag.
@@ -880,11 +880,11 @@ class TestMainWiring(unittest.TestCase):
         msg = err.getvalue()
         self.assertIn("p/1.0", msg)              # the path it refused
         # The actionable instruction is "use a free path", NOT "--replace":
-        # --replace lets the prepare finish and the graft then refuses
-        # (ADR-0011 D17). An earlier message led with the flag, which would
+        # --replace lets the prepare finish and the graft then refuses.
+        # An earlier message led with the flag, which would
         # have sent the reader round a loop ending in a receiver error.
         self.assertIn("NOT ALREADY", msg)
-        self.assertIn("ADR-0011 D17", msg)
+        self.assertIn("replace_on_conflict", msg)       # what prepub needs
         self.assertIn("add-only", msg)
         self.assertIn("It IS in the repository", msg)   # checked, not assumed
         self.assertIn(H_FOUND, msg)                     # and names the catalog

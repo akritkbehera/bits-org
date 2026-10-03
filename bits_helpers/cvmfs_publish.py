@@ -6,7 +6,7 @@ This is the Python home for what cvmfs-prepub-publish.yml did per package in
 bash: resolve the CVMFS path from the package's own .meta.json, untar, relocate,
 relativise absolute symlinks, sanitize, tar, stage (bits cvmfs-stage) and submit
 to prepub. Concentrating it here lets the packages of one build be prepared
-CONCURRENTLY and biggest-first — the lever MEASUREMENTS §31 identified — with a
+CONCURRENTLY and biggest-first — the measured lever for publish time — with a
 real thread pool instead of hand-rolled bash fan-out, and with unit tests.
 
 Increment 1 (this file): the SINGLE-package pipeline `publish_one`, proven to
@@ -355,7 +355,7 @@ def payload_size(spec, tars_root, default_arch):
     for EVERY outcome including reused artefacts — else the (uniform ~4 KB)
     publish tar, else 0. Never raises; any miss degrades to the tar/zero
     fallback. The tar must not be the primary key: uniform across packages, it
-    collapsed the sort to manifest order and sent the biggest payload last (§32)."""
+    collapsed the sort to manifest order and sent the biggest payload last."""
     work_dir = os.environ.get("BITS_WORK_DIR") or os.path.dirname(tars_root.rstrip("/"))
     try:
         from bits_helpers.cleanup import sentinel_path
@@ -372,7 +372,7 @@ def payload_size(spec, tars_root, default_arch):
 
 def order_biggest_first(specs, tars_root, default_arch):
     """Sort package specs by PAYLOAD size, largest first (LPT), so the longest
-    unit starts first and does not tail the window (MEASUREMENTS §31/§32). Size
+    unit starts first and does not tail the window. Size
     is payload_size (the GC sentinel du). Stable within a size."""
     return sorted(specs, key=lambda s: payload_size(s, tars_root, default_arch),
                   reverse=True)
@@ -1164,10 +1164,10 @@ def main(argv=None):
                          "revisions keep objects until GC) and re-adds the new "
                          "content. New paths are unaffected. REQUIRES the prepub "
                          "daemon to also run with replace_on_conflict, else the "
-                         "graft still refuses (ADR-0011 D17).")
+                         "graft still refuses.")
     ap.add_argument("--workers", type=int, default=1,
                     help="prepare up to N packages concurrently, biggest tar "
-                         "first (MEASUREMENTS §31). Default 1 = serial, manifest "
+                         "first. Default 1 = serial, manifest "
                          "order (today's behaviour). Staged path only: N>1 needs "
                          "--no-stats-db + --no-prepare-lock (concurrent prepares).")
     ap.add_argument("--release-view", action="store_true",
@@ -1211,8 +1211,7 @@ def main(argv=None):
             and not (a.no_stats_db and a.no_prepare_lock)):
         ap.error("--workers > 1 on the staged path requires --no-stats-db and "
                  "--no-prepare-lock: concurrent prepares otherwise abort on the "
-                 "shared statistics database and the per-host prepare lock "
-                 "(MEASUREMENTS §28)")
+                 "shared statistics database and the per-host prepare lock")
 
     with open(a.manifest) as fh:
         _man = json.load(fh)
@@ -1239,15 +1238,18 @@ def main(argv=None):
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
 
     from bits_helpers.utilities import is_virtual_package
+    from bits_helpers.sync import binary_redistributable
 
     def _publishable(s):
         # virtual / repository-loader packages produce nothing for CVMFS
         if is_virtual_package(s):
             return False
-        # non-redistributable: kept in the store, never in public CVMFS. Exact
-        # replica of the CI (jq `.redistributable != false`): only a literal
-        # boolean false excludes; the current enum values never do.
-        if s.get("redistributable") is False:
+        # binaries not redistributable (redistributable: sources|none, legacy
+        # false, unknown -> fail closed): never in public CVMFS. Same gate as
+        # the store uploads.
+        if not binary_redistributable(s):
+            sys.stderr.write("[publish] SKIPPED %s@%s: redistributable: %s\n" % (
+                s.get("package"), s.get("version"), s.get("redistributable")))
             return False
         if a.one and s.get("package") != a.one:
             return False
@@ -1295,7 +1297,7 @@ def main(argv=None):
     rc = 0
     if a.workers > 1:
         # Biggest-first: the longest prepare (chunk/compress/upload to S3) starts
-        # first, so it does not land on the tail and gate the window (§31).
+        # first, so it does not land on the tail and gate the window.
         from concurrent.futures import ThreadPoolExecutor, as_completed
         ordered = order_biggest_first(publishable, ctx["tars_root"], a.arch)
         # Cross-check: print the biggest-first order with sizes (to stderr, so it

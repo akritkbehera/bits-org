@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Reachability garbage collection for the shared content-addressed store.
 
-Baseline, correctness-preserving growth control (ADR-0004 §6). The roots are
+Baseline, correctness-preserving growth control. The roots are
 every content hash in the *verified* signed common manifest — its key set is
 exactly the set of live artifact hashes. Any store object whose hash is not a
 root is sweepable once it is older than a grace period. Because objects are

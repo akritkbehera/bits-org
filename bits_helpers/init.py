@@ -140,12 +140,12 @@ def _checkout_recipes_only(args):
 
   This is the classic ``aliBuild init`` behaviour when no PACKAGE is given:
   check out the recipes for development. The repository and branch come from
-  ``--dist`` (default ``alisw/alidist@master``); the destination is
+  ``--dist`` (default ``alisw/alidist``, its default branch); the destination is
   ``--config-dir`` (default ``alidist``).
   """
   dist = args.dist if isinstance(args.dist, dict) else {}
   repo = dist.get("repo") or "alisw/alidist"
-  ver  = dist.get("ver") or "master"
+  ver  = dist.get("ver") or ""          # "" = the repository's default branch
   url  = repo if ":" in repo else "https://github.com/" + repo
 
   if path.exists(args.configDir):
@@ -153,7 +153,7 @@ def _checkout_recipes_only(args):
     return
   if args.dryRun:
     info("Would clone recipes from %s (branch %s) into %s.\n"
-         "--dry-run / -n specified. Doing nothing.", url, ver, args.configDir)
+         "--dry-run / -n specified. Doing nothing.", url, ver or "default", args.configDir)
     return
 
   cmd = ["clone", "--origin", "upstream", url]

@@ -361,16 +361,18 @@ class TestBatchDriver(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(sorted(seen), ["a", "big", "c", "d"])
 
-    def test_non_redistributable_false_is_excluded(self):
-        # exact CI replica: a literal boolean false excludes; enum strings do not.
+    def test_non_redistributable_binaries_are_excluded(self):
+        # Same gate as the store uploads: only packages whose BINARIES may be
+        # redistributed reach public CVMFS (manifests record the enum value).
         import json
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
         tars = os.path.join(t, "TARS")
-        pkgs = [{"package": "keep", "version": "1.0", "effective_architecture": "el9",
-                 "redistributable": "all"},
-                {"package": "drop", "version": "1.0", "effective_architecture": "el9",
-                 "redistributable": False}]
-        for name in ("keep", "drop"):
+        forms = {"keep": "all", "bin": "binaries", "dflt": None,
+                 "none": "none", "src": "sources", "legacy": False, "typo": "weird"}
+        pkgs = [dict({"package": n, "version": "1.0", "effective_architecture": "el9"},
+                     **({} if v is None else {"redistributable": v}))
+                for n, v in forms.items()]
+        for name in forms:
             d = os.path.join(tars, "el9", name); os.makedirs(d)
             with open(os.path.join(d, "%s-1.0.el9.tar.gz" % name), "wb") as fh:
                 fh.write(b"x")
@@ -379,7 +381,7 @@ class TestBatchDriver(unittest.TestCase):
             json.dump({"packages": pkgs}, fh)
         seen = []
         self._run(m, tars, 1, lambda spec, ctx: seen.append(spec["package"]) or [])
-        self.assertEqual(seen, ["keep"])            # 'drop' excluded, 'keep' kept
+        self.assertEqual(seen, ["keep", "bin", "dflt"])   # none/sources/false/typo dropped
 
     def test_one_failure_fails_the_batch(self):
         m, tars = self._manifest([("a", 10), ("bad", 100), ("c", 5)])

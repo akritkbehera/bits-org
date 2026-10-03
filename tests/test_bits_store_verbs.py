@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2015-2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Phase 3.4: the `gc` and `stats` verbs folded into the bitsStore tool
+"""The `gc` and `stats` verbs folded into the bitsStore tool
 (`bits store gc` / `bits store stats`). These exercise the argparse surface and
 prove the verbs are recognized past the default-`ls` logic and reach the
 S3-credential gate — no live S3 needed."""

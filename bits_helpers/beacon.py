@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Best-effort reuse beacon (ADR-0004 §6, usage-informed GC).
+"""Best-effort reuse beacon (usage-informed GC).
 
 When a build reuses artifacts from the shared store, it reports the small
 references (build id + content hashes) to a console endpoint so the console can

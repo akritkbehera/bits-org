@@ -5,7 +5,7 @@
 Build provenance helpers: a deterministic ``build_id`` (a per-release coherence
 token) and an ``abi_tag`` (the ABI-relevant build configuration).
 
-See docs/adr/0001-cvmfs-relaxed-reuse.md. These are *additive* metadata: they
+See docs/adr/0001-implementation-plan.md. These are *additive* metadata: they
 are recorded in a package's ``.meta.json`` but never enter the package hash and
 never change build behaviour, so the simple ``bits build`` / aliBuild case is
 unaffected (ADR backward-compatibility constraint).

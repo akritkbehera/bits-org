@@ -1161,7 +1161,7 @@ bits doctor --check-store PACKAGE ...        # pre-build store availability repo
 
 **Recipe-check mode** (with `PACKAGE`) evaluates each package's `system_requirement` and `prefer_system` snippets in the dependency tree and reports which packages can be satisfied by the host and which will be built by bits. The `PACKAGE` positional argument is required in this mode.
 
-**`--runner` mode** skips the recipe scan and instead runs a structured checklist of the build-runner environment. Each check returns PASS / FAIL / WARN / SKIP. WARN is advisory; only FAIL affects the exit code.
+**`--runner` mode** skips the recipe scan and instead runs a structured checklist of the build-runner environment. Each check returns PASS / FAIL / WARN / SKIP. WARN is advisory; only FAIL affects the exit code. It is meant for CI build hosts: a missing Docker daemon is a FAIL, and it does not check Python modules or the write store, so on a workstation use setup mode instead.
 
 | Check performed | When included |
 |-----------------|---------------|
@@ -1173,7 +1173,7 @@ bits doctor --check-store PACKAGE ...        # pre-build store availability repo
 | podman availability and user-namespace support | always |
 | CVMFS repository path(s) accessible and non-empty | `--cvmfs-repos` / `$BITS_CVMFS_REPOS` |
 | Free disk space in `--work-dir` ≥ `--min-disk` GiB | always |
-| Remote store reachable and credentials present | when `--remote-store` is configured |
+| Remote store reachable (`https://`: HEAD request; `s3://`: `~/.s3cfg` present; `b3://`: `AWS_ACCESS_KEY_ID` set) | when a remote store is configured (including the default store) |
 | cvmfs-prepub service healthy (`GET <URL>/api/v1/health`) | `--prepub-url` |
 
 **`--check-store` mode** runs the standard dependency-tree resolution (same as recipe-check mode), computes the expected tarball hash for each package bits would need to build, and probes the remote store to report which are pre-built. The report is informational: exit code is always 0. Use it to estimate how much of a build will compile vs. be downloaded.
@@ -1266,7 +1266,7 @@ bits doctor --runner -a slc9_x86-64 \
     --cvmfs-repos /cvmfs/alice.cern.ch
 ```
 
-**Example — runner health check (JSON, for bits-console):**
+**Example — runner health check (JSON):**
 ```bash
 bits doctor --runner --json \
     --cvmfs-repos /cvmfs/alice.cern.ch \
@@ -1547,7 +1547,7 @@ Clones the upstream source repository for each named package into a writable loc
 
 | Option | Description |
 |--------|-------------|
-| `--dist [USER/REPO@]BRANCH` | Recipe repository cloned into the config dir if that does not exist yet (`[user/repo@]branch` or `[url@]branch`). Default: `alisw/alidist@master`. |
+| `--dist [USER/REPO@]BRANCH` | Recipe repository cloned into the config dir if that does not exist yet (`[user/repo@]branch` or `[url@]branch`; a bare `branch` is a branch of `alisw/alidist`). Default: `alisw/alidist` on its default branch. |
 | `-z PREFIX`, `--devel-prefix PREFIX` | Directory for development checkouts. Default: `.`. |
 | `-c DIR`, `--config-dir DIR` | Recipe directory. Default: `<devel-prefix>/alidist`. |
 | `--reference-sources DIR` | Mirror directory to speed up cloning. Default: `<work-dir>/MIRROR`. |

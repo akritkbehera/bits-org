@@ -1039,7 +1039,7 @@ def create_provenance_info(package, specs, args):
   _untracked = list(specs[package].get("untracked_requires", ()))
   if specs[package].get("own_hash"):
     # own_hash deliberately excludes the merged defaults-release from the identity
-    # hash (ADR-0012), so the record must NOT claim to certify the full closure.
+    # hash, so the record must NOT claim to certify the full closure.
     # Record it honestly and list the excluded dep. Distinct from "loose" (a user
     # decoupling a linked dep) and NOT contagious: consumers fold the package's
     # stable hash and certify their own closure. Recorded only; spec not mutated.
@@ -3389,7 +3389,7 @@ def doBuild(args, parser):
     # Read the container fingerprint (only present in a bits-containers image), so
     # own_hash packages can fold the build environment — bison/flex/glibc/binutils
     # + base compiler versions, the inputs that pruned system_requirements hide
-    # (ADR-0012 D4). Empty on non-container builds; best-effort inside the runner.
+    # Empty on non-container builds; best-effort inside the runner.
     args.container_fingerprint = ""
     try:
       _fp_rc, _fp_out = getstatusoutput_docker(
@@ -3456,7 +3456,7 @@ def doBuild(args, parser):
     x["auto_patch"] = _global_auto_patch and bool(x.get("auto_patch", True))
 
   # own_hash packages fold the container fingerprint into their identity so the
-  # build environment they build the compiler with is captured (ADR-0012 D4).
+  # build environment they build the compiler with is captured.
   # Fail loud rather than fold "none" if a --docker build cannot read it: an empty
   # read would hash a container build under the native identity, letting a later
   # native build wrongly reuse it. Off-container (native) "none" is legitimate.

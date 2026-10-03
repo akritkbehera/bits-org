@@ -79,7 +79,7 @@ fields as additive and key off ``schema_version``.
       "version":                str,
       "revision":               str,
       "pkg_family":             str,              # aliBuild family subdir, e.g. "Pythia"; empty if none
-      "effective_architecture": str,              # "shared" for noarch packages; build arch otherwise
+      "effective_architecture": str,              # "share" for noarch packages; build arch otherwise
       "hash":                   str,              # content-addressable build hash
       "commit_hash":            str,              # source commit hash (or "0")
       "outcome":                "already_installed" | "from_store" | "built_from_source",
@@ -433,8 +433,8 @@ class BuildManifest:
             compute ``tarball_sha256``.
         effective_architecture:
             The architecture string actually used in paths and tarball names
-            for this package.  ``"shared"`` for packages that declare
-            ``architecture: shared``; the real build arch otherwise.  Used by
+            for this package.  ``"share"`` for packages that declare
+            ``architecture: share``; the real build arch otherwise.  Used by
             the publish pipeline to locate the tarball and choose the correct
             CVMFS path template.
         """
@@ -449,8 +449,8 @@ class BuildManifest:
             #   $WORK_DIR/<arch>/<pkg_family>/<package>/<version>-<revision>/
             # Empty string means no family subdir (standard layout).
             "pkg_family":             spec.get("pkg_family", ""),
-            # effective_architecture is "shared" for noarch packages (those
-            # that declare `architecture: shared` in their recipe), and the
+            # effective_architecture is "share" for noarch packages (those
+            # that declare `architecture: share` in their recipe), and the
             # real build architecture for all other packages.  The publish
             # pipeline uses this to locate the tarball under TARS/<eff_arch>/
             # and to select the appropriate CVMFS path template.

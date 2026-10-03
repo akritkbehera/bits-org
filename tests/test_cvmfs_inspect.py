@@ -205,7 +205,7 @@ class CvmfsInspectTest(unittest.TestCase):
 
 
 class TestGroupDispatch(unittest.TestCase):
-    """Phase 3.4: `bits cvmfs stage|publish` delegate to the producer CLIs, and
+    """`bits cvmfs stage|publish` delegate to the producer CLIs, and
     everything else still goes through the inspect subparser."""
 
     def test_stage_delegates_with_remaining_argv(self):

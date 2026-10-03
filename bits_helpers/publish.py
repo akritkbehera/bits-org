@@ -140,6 +140,7 @@ def _publish_s3(package, version, architecture, work_dir, write_store, parser, d
     spec = {"package": e["package"], "version": e.get("version"),
             "revision": e.get("revision"), "hash": e["hash"]}
     arch = e.get("effective_architecture") or architecture
+    write_store = _normalize_s3_store(write_store)   # https://host/bucket -> b3://bucket
     if dry_run:
         banner("[dry-run] would publish %s-%s (%s) to %s"
                % (spec["package"], spec.get("version"), spec["hash"][:12], write_store))

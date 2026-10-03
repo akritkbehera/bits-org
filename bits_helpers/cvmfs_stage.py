@@ -13,7 +13,7 @@ Why the second value needs code rather than a `sed` on the manifest
 -------------------------------------------------------------------
 The manifest the prepare writes names the **root** catalog it computed against
 its base revision. The graftable **subtree** catalog for the lease path is a
-different object (MEASUREMENTS §21, verified on the testbed).
+different object (verified on the testbed).
 
 Sending the root hash does not fail. It is a syntactically valid catalog hash,
 and after promotion it really is in the store, so every check prepub makes on
@@ -24,7 +24,7 @@ found by walking, and the walk is the part worth testing.
 The walk must consult the repository as well as the staging prefix
 ------------------------------------------------------------------
 The prepare rewrites only the catalogs it changed. An unchanged nested catalog
-is still *referenced* by the tree but is not re-staged: in §21, `/golden/smoke`
+is still *referenced* by the tree but is not re-staged: on the testbed, `/golden/smoke`
 returned 404 from the staging prefix and 200 from the repository. A walker that
 assumes the staging prefix is self-contained works on a toy repository and dies
 on a real one.
@@ -496,10 +496,10 @@ def prepare_argv(repo, lease_path, tar_path, stage_prefix, s3_conf,
     regress here is testable only by inspecting the argv: **neither -P (session
     token) nor -H (gateway key) may appear**. Those two flags are what make the
     binary talk to a gateway; omitting them is the entire mechanism by which a
-    producer prepares without publishing (MEASUREMENTS §18). A prepare that
+    producer prepares without publishing. A prepare that
     silently acquired a lease would be a publish nobody asked for.
 
-    Flag-for-flag the invocation proven in §18.
+    Flag-for-flag the invocation proven on the testbed.
     """
     spool = spool or "/var/spool/cvmfs/%s" % repo
     pubkey = pubkey or "/etc/cvmfs/keys/%s.pub" % repo
@@ -537,7 +537,7 @@ def prepare_argv(repo, lease_path, tar_path, stage_prefix, s3_conf,
         # revision being prepared, so a caller that did not mean to republish
         # gets a loud failure instead of silently discarding whatever was
         # there -- possibly a different build that landed at the same path.
-        # ADR-0011: anything that deletes state runs only on an explicit flag,
+        # Anything that deletes state runs only on an explicit flag,
         # never as a side effect of a missing-file heuristic.
         # -f goes with it, and is not optional here: -D alone classifies the
         # entry through the read-only union view, which a MOUNTLESS prepare
@@ -561,7 +561,7 @@ def prepare_argv(repo, lease_path, tar_path, stage_prefix, s3_conf,
         # describes a publish it deliberately never made, and OpenStandardDB
         # creates, prunes and vacuums a file SHARED by every ingest of this
         # repository on the host -- which is why concurrent prepares abort on
-        # it (MEASUREMENTS.md §28).
+        # it.
         #
         # This flag ALONE changes no timing: prepare_lock still serialises
         # prepares. It removes the documented blocker; it does not lift the

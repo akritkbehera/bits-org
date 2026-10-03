@@ -132,13 +132,11 @@ def _check_for_shadows(
             warning(
                 "%s is being prepended and will shadow %d recipe(s) already "
                 "visible from %s: %s\n"
-                "  To suppress this warning grant prepend explicitly:\n"
-                "    --provider-policy %s:prepend\n"
-                "  Or force the safe default:\n"
+                "  Expected if this provider is meant to override them; to keep\n"
+                "  the existing recipes first use:\n"
                 "    --provider-policy %s:append",
                 label, len(shadowed), existing_dir,
                 ", ".join(sorted(shadowed)),
-                provider_name or "?",
                 provider_name or "?",
             )
 

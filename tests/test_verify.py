@@ -356,6 +356,34 @@ class TestDoVerify(unittest.TestCase):
                 doVerify(args, None)
             self.assertEqual(ctx.exception.code, 1)
 
+    def _verify_exit(self, tmp, manifest):
+        from bits_helpers.verify import doVerify
+        path = os.path.join(tmp, "manifest.json")
+        with open(path, "w") as fh:
+            json.dump(manifest, fh)
+        with self.assertRaises(SystemExit) as ctx:
+            doVerify(self._args(path, work_dir=tmp, no_providers=True), None)
+        return ctx.exception.code
+
+    def test_share_package_found_under_its_effective_architecture(self):
+        # An `architecture: share` package lives under TARS/share/…, not under
+        # the manifest's top-level architecture.
+        content = b"noarch content"
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_file(os.path.join(tmp, _store_rel("5ba7e01", "Data-1-1.share.tar.gz", "share")),
+                        content)
+            code = self._verify_exit(tmp, self._make_manifest(packages=[{
+                "package": "Data", "version": "1", "revision": "1", "hash": "5ba7e01",
+                "tarball": "Data-1-1.share.tar.gz", "tarball_sha256": _sha256(content),
+                "effective_architecture": "share", "outcome": "built"}]))
+        self.assertEqual(code, 0)
+
+    def test_qualified_architecture_matches_its_platform(self):
+        # append_arch qualifiers (…-gcc13) still run on the bare platform.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._verify_exit(tmp, self._make_manifest(arch=self.ARCH + "-gcc13")), 0)
+            self.assertEqual(self._verify_exit(tmp, self._make_manifest(arch="ubuntu2404_x86-64")), 1)
+
     def test_exits_0_on_correct_sha256(self):
         from bits_helpers.verify import doVerify
         pkg_hash = "cafebabe01"

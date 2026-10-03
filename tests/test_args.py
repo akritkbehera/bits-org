@@ -439,5 +439,26 @@ class CvmfsPathSetTest(unittest.TestCase):
       args, _ = doParseArgs()
     self.assertEqual(args.flavours, {"release": "LCG_110", "foo": "true"})
 
+class SubcommandDryRunTestCase(unittest.TestCase):
+  """-n/--dry-run listed in init/clean/publish help keeps the hoisted value."""
+
+  def test_dry_run_reaches_the_subcommand(self):
+    for argv in (["clean"], ["init"], ["publish", "ROOT"]):
+      for flag, expected in (([], False), (["-n"], True), (["--dry-run"], True)):
+        with patch.object(sys, "argv", ["bits"] + argv + flag):
+          args, _ = doParseArgs()
+        self.assertIs(args.dryRun, expected, argv + flag)
+
+
+class DistStringTestCase(unittest.TestCase):
+  """--dist [USER/REPO@]BRANCH: a bare value is the branch of the default repo."""
+
+  def test_forms(self):
+    from bits_helpers.args import bits_string
+    self.assertEqual(bits_string("v1.2"), {"repo": "alisw/alidist", "ver": "v1.2"})
+    self.assertEqual(bits_string("me/recipes@dev"), {"repo": "me/recipes", "ver": "dev"})
+    self.assertEqual(bits_string(""), {"repo": "alisw/alidist", "ver": ""})
+
+
 if __name__ == '__main__':
   unittest.main()

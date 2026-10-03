@@ -279,7 +279,7 @@ def storeHashes(package, specs, considerRelocation):
   # ordinary recipes, so their hashes are byte-identical to before.)
   # own_hash packages also fold the container fingerprint (build environment:
   # bison/flex/glibc/binutils + base compiler) so the inputs that pruned
-  # system_requirements hide are captured (ADR-0012 D4). "none" off-container.
+  # system_requirements hide are captured. "none" off-container.
   if spec.get("own_hash"):
     h_all("container-fingerprint:" + (spec.get("container_fingerprint") or "none"))
   untracked = set(spec.get("untracked_requires", ()))
@@ -287,7 +287,7 @@ def storeHashes(package, specs, considerRelocation):
   # excludes the merged defaults-release from its IDENTITY hash, so the same tag/
   # sources hash identically across communities and the S3 cache is reused. The
   # axis still differentiates via the tag override on the recipe's own spec, and
-  # defaults-release stays in deps_hash (dev rebuilds still see it). See ADR-0012.
+  # defaults-release stays in deps_hash (dev rebuilds still see it).
   if spec.get("own_hash"):
     untracked = untracked | {"defaults-release"}
   dh = Hasher()

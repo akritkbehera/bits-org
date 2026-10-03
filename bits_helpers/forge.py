@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 CERN
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Forge abstraction for the manifests-repo certification gate (ADR-0004 §2, P4).
+"""Forge abstraction for the manifests-repo certification gate.
 
 Certification is a merge-request approval by a group admin: the forge (GitLab
 first, GitHub later) is the identity + approval authority. This module keeps the

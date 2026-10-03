@@ -283,7 +283,7 @@ class SourceKeysExcludedFromTextHashTestCase(unittest.TestCase):
 
 class OwnHashTestCase(unittest.TestCase):
     """own_hash excludes the merged defaults-release from a package's IDENTITY
-    hash (ADR-0012): the same recipe/tag hashes identically across communities,
+    hash: the same recipe/tag hashes identically across communities,
     while the axis (tag) still differentiates. Without the flag, community
     defaults change the hash — the negative control."""
 

@@ -217,6 +217,13 @@ def _parse_provider_policy(value: str) -> dict:
   return result
 
 
+def add_dry_run_help(p, what):
+  """List the global -n/--dry-run in a subcommand's --help. SUPPRESS keeps the
+  value the top-level parser already set (the flag is hoisted before the verb)."""
+  p.add_argument("-n", "--dry-run", dest="dryRun", action="store_true",
+                 default=argparse.SUPPRESS, help=what)
+
+
 # This is syntactic sugar for the --dist option (which should really be called
 # --dist-tag). It can be either:
 # - A tag name
@@ -224,8 +231,7 @@ def _parse_provider_policy(value: str) -> dict:
 def bits_string(s):
   repo, have_repo_spec, ver = s.partition("@")
   if not have_repo_spec:
-    repo, ver = "alisw/alidist", "master"
-    print(s)
+    repo, ver = "alisw/alidist", s   # bare BRANCH ("" = the repo's default branch)
   return {"repo": repo, "ver": ver}
 
 
@@ -317,6 +323,7 @@ def add_clean_arguments(subparsers, ctx):
   clean_parser = subparsers.add_parser("clean", help="clean up build area",
                                        description="Clean up the build area.")
   # Options for clean subcommand
+  add_dry_run_help(clean_parser, "List what would be deleted, without deleting it.")
   ctx.architecture(clean_parser,
                    help=("Clean up build results for this architecture. Default is the current system "
                          "architecture, which is '%(default)s'."))
@@ -633,6 +640,7 @@ def add_init_arguments(subparsers, ctx):
   init_parser = subparsers.add_parser("init", help="initialise local packages",
                                       description="Initialise development packages.")
   # Options for the init subcommand
+  add_dry_run_help(init_parser, "Show what would be cloned or written, without doing it.")
   init_parser.add_argument("pkgname", nargs="?", default="", metavar="PACKAGE",
                            help="Package to clone locally. One of the packages in CONFIGDIR.")
   ctx.architecture(init_parser,
@@ -649,7 +657,7 @@ def add_init_arguments(subparsers, ctx):
                            type=bits_string,
                            help=("Download the given repository containing build recipes into "
                                  "CONFIGDIR. Syntax: [user/repo@]branch or [url@]branch. The "
-                                 "default repo is 'alisw/alidist; the default branch is the "
+                                 "default repo is 'alisw/alidist'; the default branch is the "
                                  "repository's main branch."))
 
   init_dirs = init_parser.add_argument_group(title="Customise bits directories")
@@ -979,6 +987,7 @@ def add_publish_arguments(subparsers, ctx):
       ),
   )
   # Options for the publish command
+  add_dry_run_help(publish_parser, "Show what would be published, without submitting anything.")
   publish_parser.add_argument("package", metavar="PACKAGE", nargs="?", default=None,
                               help="Name of the package to publish. With --release-view, optional: names "
                                    "the release's top package to pick its build_id when the build area "
@@ -1008,7 +1017,7 @@ def add_publish_arguments(subparsers, ctx):
                               help=("Skip the relocation step. Use this when the package was built "
                                     "directly at its final CVMFS path (--cvmfs-prefix on bits build), "
                                     "so all embedded paths are already correct."))
-  # `bits publish PACKAGE` is CVMFS-only (Phase 3.4). The single-package S3-store
+  # `bits publish PACKAGE` is CVMFS-only. The single-package S3-store
   # write moved to `bits store upload`; the bulk `--from-manifest` S3 upload below
   # is unchanged. `--to`/`--write-store` were removed with the single-package s3 path.
   publish_parser.add_argument("--manifest", "--from-manifest", dest="fromManifest", nargs="?",
@@ -1118,7 +1127,7 @@ def add_sign_arguments(subparsers, ctx):
           "Merge one or more published build manifests into a single common "
           "manifest, validate every content hash against the S3 store, and sign "
           "the result with the release Ed25519 key. The signed common manifest "
-          "is what clients trust for binary reuse (see docs/adr/0004). Normally "
+          "is what clients trust for binary reuse. Normally "
           "run by the manifests-repo CI after `bits certify` opened the MR."
       ),
   )
@@ -1172,7 +1181,7 @@ def add_sign_arguments(subparsers, ctx):
                                     "this MR; e.g. from a git diff). Default: every group present."))
   certify_parser.add_argument("--architectures", dest="architectures", metavar="A1,A2", default=None,
                               help=("Certify only these platforms: merge, store-validate and sign only "
-                                    "BOMs of these effective architectures ('shared' is one too), leaving "
+                                    "BOMs of these effective architectures ('share' is one too), leaving "
                                     "other platforms' signed manifests untouched. A listed platform whose "
                                     "BOMs are all gone gets an EMPTY signed manifest (revocation). "
                                     "Default: every architecture present in the manifests."))
@@ -1211,7 +1220,7 @@ def add_compliance_arguments(subparsers, ctx):
       description=(
           "Summarise licence-compliance status: scan recipes for "
           "license:/redistributable: metadata (missing licences, unverified "
-          "LicenseRef-* ids, the redistributable:false CVMFS-exclusion list), "
+          "LicenseRef-* ids, the list of packages kept off CVMFS by redistributable:), "
           "probe whether the S3 store answers unauthenticated requests, and "
           "report every stored or certified package whose current recipe "
           "forbids redistribution. With PACKAGE roots (e.g. 'bits compliance "
@@ -1654,7 +1663,7 @@ def add_build_arguments(subparsers, ctx):
                             help="Override the per-runner instance label (default <fqdn>-<runner-id>).")
   build_remote.add_argument("--reuse-policy", dest="reusePolicy", choices=["strict", "relaxed"],
                             default=None,
-                            help=("CVMFS reuse strictness (ADR-0001). 'strict' (default): reuse only on "
+                            help=("CVMFS reuse strictness. 'strict' (default): reuse only on "
                                   "exact content-hash match; result is publishable. 'relaxed': also graft "
                                   "deployed packages of a blessed release matched by (name, architecture, "
                                   "build_id) for fast local dev; the result is loose-provenance and is "
@@ -1818,13 +1827,12 @@ def add_build_arguments(subparsers, ctx):
   build_parser.add_argument(
       "--from-manifest", dest="fromManifest", metavar="FILE", default=None,
       help=(
-          "Replay a previous build from a manifest JSON file written by bits.  "
-          "The manifest records the requested packages, architecture, defaults, "
-          "providers, and per-package checksums.  When this flag is given the "
-          "PACKAGE positional argument is optional; if omitted, the packages "
-          "listed in the manifest's 'requested_packages' field are built.  "
-          "Each recalled tarball is verified against the manifest's "
-          "'tarball_sha256' to detect store tampering.  "
+          "Rebuild the packages a manifest JSON file written by bits requested "
+          "('requested_packages'); versions, defaults and tarballs are resolved "
+          "afresh from the current invocation.  The PACKAGE positional argument "
+          "is optional; if given, it replaces the manifest's package list.  "
+          "Recalled tarballs are not checked against the manifest (remote reuse "
+          "is still gated by the signed-manifest check, see --require-signed-reuse).  "
           "Example: bits build --from-manifest bits-manifest-latest.json"
       ),
   )
@@ -1869,7 +1877,7 @@ def doParseArgs():
   publish_parser = add_publish_arguments(subparsers, ctx)
   certify_parser = add_certify_arguments(subparsers, ctx)
   sign_parser = add_sign_arguments(subparsers, ctx)
-  # `gc` and `store-stats` moved into the `store` group (Phase 3.4): they are now
+  # `gc` and `store-stats` moved into the `store` group: they are now
   # `bits store gc` / `bits store stats`, handled by the bitsStore tool.
   compliance_parser = add_compliance_arguments(subparsers, ctx)
   status_parser = add_status_arguments(subparsers, ctx)
@@ -1880,8 +1888,8 @@ def doParseArgs():
 
   import_parser = add_import_arguments(subparsers, ctx)
 
-  # gc / store-stats options moved to the bitsStore tool (Phase 3.4:
-  # `bits store gc` / `bits store stats`).
+  # gc / store-stats options moved to the bitsStore tool
+  # (`bits store gc` / `bits store stats`).
 
   cvmfs_path_parser = add_cvmfs_path_arguments(subparsers, ctx)
 
@@ -2204,8 +2212,7 @@ def finaliseArgs(args, parser):
       args.pkgname = list(_manifest_data.get("requested_packages", []))
       if not args.pkgname:
         parser.error("--from-manifest: manifest has no 'requested_packages'")
-    # Store the loaded manifest data on args so doBuild can use it for
-    # version pinning and tarball verification.
+    # Keep the loaded manifest on args (currently only requested_packages is used).
     args.fromManifestData = _manifest_data
 
   # ── architecture template (defaults-release.sh) ──────────────────────────
