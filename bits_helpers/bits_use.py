@@ -121,10 +121,7 @@ def _src_label(path):
 # ── profile read/write ────────────────────────────────────────────────────────
 
 def _join(tokens):
-    try:
-        return shlex.join(tokens)          # Python 3.8+
-    except AttributeError:                 # pragma: no cover
-        return " ".join(shlex.quote(t) for t in tokens)
+    return shlex.join(tokens)
 
 
 def read_all(path=PROFILE):
@@ -191,6 +188,8 @@ def write_section(section, tokens, path=None):
         target = path
         sections = read_all(path)
     section = COMMON if section in ("global", COMMON) else section.lower()
+    if section == "cleanup":   # prune's deprecated name: one section for both
+        section = "prune"
     sections[section] = list(tokens)
     _write_all(sections, target)
     return target
@@ -235,7 +234,7 @@ TOP_FLAGS = {"-d", "--debug", "-n", "--dry-run"}
 # store, version, help, cvmfs-stage/publish) and `verify` (accepts neither
 # --architecture nor --defaults) take a different option set and are excluded.
 INJECT_ACTIONS = {
-    "build", "deps", "doctor", "status", "clean", "cleanup", "gc",
+    "build", "deps", "doctor", "status", "clean", "prune", "cleanup", "gc",
     "import", "publish", "certify", "sign", "compliance",
     "q", "query", "enter", "setenv", "printenv", "load", "unload",
 }
@@ -270,13 +269,29 @@ def rewrite_argv(argv, path=None):
     action = argv[ai].lower()
     if action not in INJECT_ACTIONS:
         return argv
-    inject = sec.get(COMMON, []) + sec.get(action, [])
+    if action in ("prune", "cleanup"):   # cleanup is prune's deprecated name
+        inject = sec.get(COMMON, []) + sec.get("prune", []) + sec.get("cleanup", [])
+    else:
+        inject = sec.get(COMMON, []) + sec.get(action, [])
     if not inject:
         return argv
     return argv[:ai + 1] + inject + argv[ai + 1:]
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
+USAGE = """\
+usage: bits use [SECTION] ARGS...   save ARGS for SECTION (default: common)
+       bits use                     show the active profile and where it lives
+       bits use --clear [SECTION]   clear one section, or the whole profile
+
+SECTION is a command (build, deps, publish, q, enter, ...): its ARGS are
+inserted into that command. [common] goes into every architecture-aware
+command, so keep it to options they all take (--architecture). Saving a
+section replaces it. Saved args come before your own, so a flag on the
+command line still wins. The profile is ./.bitsuse, or ~/.bits/use/ when
+the directory is not writeable."""
+
 
 def _show():
     path = _read_path()
@@ -308,6 +323,11 @@ def main(argv=None):
         return 0
     if not argv:
         return _show()
+    # Help anywhere is a request for help, never a value to save: a saved
+    # --help would turn every later command into its help text.
+    if argv[0] == "help" or any(t in ("-h", "--help") for t in argv):
+        print(USAGE)
+        return 0
     if argv[0] in ("--clear", "clear"):
         sect = argv[1] if len(argv) > 1 else None
         ok = clear_section(sect)

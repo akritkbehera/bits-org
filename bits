@@ -118,11 +118,11 @@ Usage: $0 \\
     ${EM}build${EZ}   Build a package. Use ${ET}bits build --help${EZ} for details.
     ${EM}checksums${EZ} Compute/record a recipe repository's checksums. Use ${ET}bits checksums --help${EZ} for details.
     ${EM}clean${EZ}   Clean build artifacts. Use ${ET}bits clean --help${EZ} for details.
-    ${EM}cleanup${EZ} Evict stale packages from a persistent workDir. Use ${ET}bits cleanup --help${EZ} for details.
     ${EM}compliance${EZ} Audit licence metadata and the store. Use ${ET}bits compliance --help${EZ} for details.
     ${EM}deps${EZ}    Show dependency tree. Use ${ET}bits deps --help${EZ} for details.
     ${EM}doctor${EZ}  Verify build environment. Use ${ET}bits doctor --help${EZ} for details.
     ${EM}init${EZ}    Initialise a local package. Use ${ET}bits init --help${EZ} for details.
+    ${EM}prune${EZ}   Evict stale packages from a persistent workDir. Use ${ET}bits prune --help${EZ} for details.
     ${EM}sbom${EZ}    Export a build manifest as a CycloneDX/SPDX SBOM. Use ${ET}bits sbom --help${EZ} for details.
     ${EM}store${EZ}   Inspect/verify/clean the S3 content store. Use ${ET}bits store --help${EZ} for details.
     ${EM}version${EZ} Display bits version: tag, commit and date (also ${ET}bits --version${EZ}).

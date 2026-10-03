@@ -176,8 +176,8 @@ To choose the snapshot at invocation time without editing the recipe, append `@<
 
 ```bash
 export BITS_PROVIDERS="https://github.com/bitsorg/bits-providers@LCG_106"
-# or per-invocation:
-bits build --providers https://github.com/bitsorg/bits-providers@LCG_106 LCG
+# or for one invocation:
+BITS_PROVIDERS=https://github.com/bitsorg/bits-providers@LCG_106 bits build LCG
 ```
 
 The provider's commit hash is folded into every dependent package's build hash, so changing the provider version triggers a rebuild of everything sourced from it. Note that provider repositories are cloned *before* defaults `overrides:` are applied, so an `overrides:` entry does **not** change which provider snapshot is fetched — use the `tag:` field or the `@<tag>` URL suffix instead.
@@ -215,18 +215,18 @@ Useful for building private packages that depend on public recipes, or for maint
 
 ### Set up a project with a persistent binary store
 
-Instead of passing `--remote-store` on every `bits build` invocation, write it once with `bits init`:
+Instead of passing `--remote-store` on every `bits build` invocation, record it once with `bits use`:
 
 ```bash
 # One-time setup, inside your community repository — records a bits use profile
-bits init --remote-store https://store.example.com/store \
-          --write-store  b3://mybucket/store
+bits use build --remote-store https://store.example.com/store \
+               --write-store  b3://mybucket/store
 
 # Every subsequent invocation picks up the settings automatically
 bits build ROOT
 ```
 
-The store settings are saved to the profile's `[build]` section (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable). To check what would be saved before touching the file system, add `--dry-run`.
+The store settings are saved to the profile's `[build]` section (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable); `bits use` with no arguments shows what is saved.
 
 ### Share pre-built artifacts over S3
 
@@ -273,7 +273,7 @@ Any mismatch or missing checksum aborts the build, catching supply-chain tamperi
 bits build --parallel 4 --jobs 8 my_large_stack
 ```
 
-The scheduler dispatches packages as soon as their dependencies are satisfied. Use `--resources` to declare per-package CPU and memory budgets and prevent overcommit (see [§5 Parallel build modes](REFERENCE.md#5-building-packages)).
+The scheduler dispatches packages as soon as their dependencies are satisfied. Use `--resources` to declare per-package CPU and memory budgets and prevent overcommit (see [Building several packages at once](USERGUIDE.md#building-several-packages-at-once) and the `--resources` option of [`bits build`](REFERENCE.md#bits-build)).
 
 **Prefetch remote tarballs** — with the `--parallel` scheduler, hide network latency by fetching tarballs in the background while packages compile:
 

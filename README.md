@@ -106,33 +106,34 @@ S3 uploads are `bits store upload`. The old spellings `bits store-stats`,
 
 ## Configuration
 
-Run `bits init` with configuration options (and no package) to record them as a
-per-directory profile, so you do not repeat them on every build:
+Record per-directory settings with `bits use`, so you do not repeat them on every
+command. Options after a section name apply to that command; without one they go to
+`[common]`, applied to every architecture-aware command:
 
 ```bash
-bits init --work-dir /path/to/sw \
-          --remote-store https://mybucket/builds
+bits use --architecture x86_64-el9-gcc14-opt
+bits use build --work-dir /path/to/sw --remote-store https://mybucket/builds --docker
 ```
 
 The profile is stored in `./.bitsuse` (or under `~/.bits/use/` when the current
-directory is not writeable). `--architecture` is saved to its `[common]` section;
-`--remote-store`, `--write-store`, `--defaults`, `-c/--config-dir`,
-`-w/--work-dir` and `--reference-sources` are saved to `[build]`. `bits use`
-records the same kind of profile from any command's flags (e.g.
-`bits use build --docker`, or `bits use build --store-integrity` to enable
-SHA-256 verification of every recalled tarball); `bits use` alone shows the
-active profile and `bits use --clear [SECTION]` removes it. A `.bitsuse` file is
-only honoured when it is owned by you. Profiles replace the retired `bits.rc`
-file.
+directory is not writeable). Each `bits use SECTION …` replaces that section;
+`bits use` alone shows the active profile, `bits use --clear [SECTION]` removes it and
+`bits use --help` lists the forms. A `.bitsuse` file is only honoured when it is owned
+by you. Profiles replace the retired `bits.rc` file.
+
+`bits init` with configuration options and no package
+(e.g. `bits init --work-dir /path/to/sw --remote-store URL`) writes the same profile:
+`--architecture` to `[common]`; the store, defaults, config-dir, work-dir and
+reference-sources options to `[build]`, replacing those sections.
 
 Global settings come from environment variables:
 
 | Variable | Related flag | Description |
 |----------|--------------|-------------|
-| `$BITS_ORGANISATION` | `--organisation` | Community name (uppercase), e.g. `LHCB`. Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`. |
+| `$BITS_ORGANISATION` | — | Community name (uppercase), e.g. `LHCB`. Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`. |
 | `$BITS_WORK_DIR` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
 | `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
-| `$BITS_PROVIDERS` | `--providers` | Repository provider set URL(s). |
+| `$BITS_PROVIDERS` | — | URL of the bits-providers registry, optionally `@tag` (default `https://github.com/bitsorg/bits-providers`; off under the `aliBuild` wrapper). |
 | `$BITS_PATH` | `--search-path` | Recipe search path. |
 | `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `bits store` (`gc`/`stats`/`upload`), `certify`, `publish`, `compliance`. |
 | `$BITS_PREREQUISITES_URL` | — | URL shown when `bits doctor` cannot find the C++ compiler or git. |

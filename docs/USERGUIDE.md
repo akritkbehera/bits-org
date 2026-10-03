@@ -26,7 +26,7 @@ Key capabilities at a glance:
 - Automatic topological dependency resolution and ordering
 - Content-addressable incremental builds — only rebuilds what changed
 - Parallel package builds and multi-core compilation
-- Remote binary stores (HTTP, S3, CVMFS, rsync) to share pre-built artifacts
+- Remote binary stores (HTTP, S3, rsync) to share pre-built artifacts, plus reuse of packages already deployed on CVMFS (`--reuse-from`)
 - Docker-based builds for cross-compilation or reproducible CI environments
 - Git and Sapling SCM support
 - Dynamic recipe repositories loaded at dependency-resolution time
@@ -91,7 +91,8 @@ brew install cmake autoconf automake libtool pkg-config gnu-tar wget modules
 **Per-recipe system packages.** A few recipes deliberately use a library or tool from
 the system instead of building it (these are declared as `system_requirement` recipes,
 e.g. `readline`, `elfutils`/`libdw`, `perf`). When such a package is missing, bits stops
-early with an explicit install hint rather than failing mid-build. You don't need to
+early and lists the missing requirements rather than failing mid-build;
+`bits doctor <package>` then prints each recipe's install hint. You don't need to
 install them all up front — build what you need and follow the hint, or check ahead of
 time with:
 
@@ -133,6 +134,7 @@ See [REFERENCE.md — macOS Homebrew system layer](REFERENCE.md#macos-homebrew-s
 git clone https://github.com/bitsorg/bits.git
 cd bits
 export PATH=$PWD:$PATH
+python3 -m venv .venv && source .venv/bin/activate   # activate it in every new shell; recent distributions refuse a system-wide pip install
 pip install -e .
 ```
 
@@ -173,7 +175,7 @@ exit                                    # return to your normal shell
 
 For another community the steps are the same, e.g.
 `git clone https://github.com/bitsorg/lhcb.bits && cd lhcb.bits && bits build DaVinci`.
-Record per-directory options (work directory, stores) once with `bits init --work-dir …`
+Record per-directory options (work directory, stores) once with `bits use build …`
 inside the repository (see [Configuration](#4-configuration)).
 
 ### ALICE: the aliBuild workflow
@@ -189,23 +191,25 @@ aliBuild build O2
 
 ## 4. Configuration
 
-Record per-directory build settings once with `bits init` (given configuration options and no package), so you do not repeat them on every build:
+Record per-directory settings once with `bits use`, so you do not repeat them on every command. It saves command-line options in a profile and inserts them into later commands. A leading section name says which command they belong to (`build`, `deps`, `publish`, …); without one they go to `[common]`, which is applied to every architecture-aware command, so keep it to options all of them accept (`--architecture`).
 
 ```bash
-bits init --work-dir /path/to/sw \
-          --remote-store https://s3.cern.ch/swift/v1/mybucket
+bits use --architecture x86_64-el9-gcc14-opt                 # [common]: every arch-aware command
+bits use build --work-dir /path/to/sw --parallel 4 \
+               --remote-store https://s3.cern.ch/swift/v1/mybucket   # [build]: bits build only
+bits use                                                     # show the active profile and where it lives
+bits use --clear build                                       # clear one section (no SECTION: clear all)
 ```
 
-This writes a `bits use` profile — `./.bitsuse` in the current directory, or a record under `~/.bits/use/` when the directory is not writeable. `--architecture` is saved to the profile's `[common]` section; `--remote-store`, `--write-store`, `--defaults`, `-c/--config-dir`, `-w/--work-dir` and `--reference-sources` are saved to `[build]`. `bits use` records the same kind of profile from any command's flags (e.g. `bits use build --docker`, or `bits use build --store-integrity` to enable SHA-256 verification of every recalled tarball).
+Each `bits use SECTION …` replaces that whole section, so give all of a section's options in one call. Saved arguments are inserted before your own, so an explicit flag on the command line still wins. The flags of any command that reads the profile (`build`, `deps`, `doctor`, `status`, `clean`, `prune`, `publish`, `certify`, `sign`, `compliance`, `import`, `q`, `enter`, `load`, …) can be saved this way, e.g. `bits use build --docker --store-integrity` (SHA-256 verification of every recalled tarball). For a work directory shared by every command, including `bits enter` and `bits q`, set `$BITS_WORK_DIR` instead.
+
+`bits init` with configuration options and no PACKAGE writes the same profile for the settings it knows: `--architecture` to `[common]`; `--remote-store`, `--write-store`, `--defaults`, `-c/--config-dir`, `-w/--work-dir` and `--reference-sources` to `[build]` (replacing those sections, as `bits use` does). Add `--dry-run` to see what it would save:
 
 ```bash
-bits use --architecture x86_64-el9-gcc14-opt     # [common]: every arch-aware command
-bits use build --parallel 4 --docker             # [build]: bits build only
-bits use                                         # show the active profile and where it lives
-bits use --clear build                           # clear one section (no SECTION: clear all)
+bits init --work-dir /path/to/sw --remote-store https://s3.cern.ch/swift/v1/mybucket
 ```
 
-Saved arguments are inserted before your own, so an explicit flag on the command line still wins. A local `.bitsuse` is only honoured when it is owned by you; otherwise the `~/.bits/use/` record is used.
+The profile is `./.bitsuse` in the current directory, or a record under `~/.bits/use/` when the directory is not writeable or not owned by you. A local `.bitsuse` is only honoured when it is owned by you; otherwise the `~/.bits/use/` record is used. `bits use --help` lists these forms.
 
 > **`bits.rc` is retired.** Earlier versions read `bits.rc` / `.bitsrc` / `~/.bitsrc`; those files are no longer read. Move per-directory settings into a `bits use` profile and global ones into the environment variables below.
 
@@ -213,16 +217,16 @@ Global settings come from environment variables:
 
 | Variable | Related flag | Description |
 |----------|--------------|-------------|
-| `$BITS_ORGANISATION` | `--organisation` | Community name (uppercase), e.g. `LHCB`. Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`. |
+| `$BITS_ORGANISATION` | — | Community name (uppercase), e.g. `LHCB`. Used only when `-c`/`--config-dir` names a directory that does not exist: bits then clones that community's recipe repository from the registry and uses it. The `aliBuild` wrapper sets `ALICE`. |
 | `$BITS_WORK_DIR` | `-w` / `--work-dir` | Output directory for built packages (default: `sw`). |
 | `$BITS_REPO_DIR` | `-c` / `--config-dir` | Root directory for recipe repositories. |
-| `$BITS_PROVIDERS` | `--providers` | Repository provider set URL(s). |
+| `$BITS_PROVIDERS` | — | URL of the bits-providers registry, optionally `@tag` (default `https://github.com/bitsorg/bits-providers`; off under the `aliBuild` wrapper). |
 | `$BITS_PATH` | `--search-path` | Recipe search path. |
 | `$BITS_S3_STORE` | `--remote-store` (store ops) | Default S3 store for `bits store` (`gc`/`stats`/`upload`), `certify`, `publish`, `compliance`. |
 
 `$BITS_ORGANISATION` is set **uppercase** (`ALICE`, `LHCB`, …). Bits lowercases it internally when resolving the community recipe repository from bits-providers (e.g. `LHCB` → `lhcb.bits.sh` → `https://github.com/bitsorg/lhcb.bits`). Normally you do not need it: check out the community repository and run bits inside it.
 
-Settings follow the precedence `CLI flag > bits use profile > environment variable > built-in default`. For the full list of environment variables, see [REFERENCE.md §20](REFERENCE.md#20-environment-variables) and [REFERENCE.md — bits init](REFERENCE.md#bits-init).
+Settings follow the precedence `CLI flag > bits use profile > environment variable > built-in default`; the exception is `$BITS_PATH`, which, when set, overrides `--search-path`. For the full list of environment variables, see [REFERENCE.md §20](REFERENCE.md#20-environment-variables) and [REFERENCE.md — bits init](REFERENCE.md#bits-init).
 
 ---
 
@@ -236,7 +240,7 @@ Bits resolves the full transitive dependency graph of each requested package, co
 
 ### How a build proceeds
 
-1. **Recipe discovery** — Bits locates `<package>.sh` in each directory on `search_path` (appending `.bits` to each name). Repository-provider packages (see [§13](REFERENCE.md#13-repository-provider-feature)) are cloned first to extend the search path before the main resolution pass.
+1. **Recipe discovery** — Bits locates `<package>.sh` in the recipe directory, then in each `BITS_PATH` entry (`--search-path`; a relative NAME means `<config-dir>/NAME.bits`, an absolute path is used as is). Repository-provider packages (see [§13](REFERENCE.md#13-repository-provider-feature)) are cloned first to extend the search path before the main resolution pass.
 2. **Dependency resolution** — `requires`, `build_requires`, and `runtime_requires` fields are read recursively, forming a DAG. Cycles are reported as errors.
 3. **Hash computation** — A hash is computed for each package from its recipe text, source commit, dependency hashes, and environment. Packages with a matching hash in a store are downloaded instead of rebuilt.
 4. **Source fetching** — Source repositories are cloned into a local mirror and then checked out into a build area. Up to 8 repositories are fetched in parallel.
@@ -247,7 +251,7 @@ Bits resolves the full transitive dependency graph of each requested package, co
 
 | Option | Description |
 |--------|-------------|
-| `--defaults PROFILE` | Defaults profile(s) to load. Combines multiple files with `::` (e.g. `--defaults release::myproject`). Default: `release`. |
+| `--defaults PROFILE` | Defaults profile(s) to load, combined with `::`; `release` is always the base (`--defaults gcc15` means `release::gcc15`). Default: `release`. |
 | `--set NAME[=VALUE]` | Set a build-wide flavour variable (alias of `--flavour`); gates conditional `(?NAME)` requires/sources/patches and overrides a defaults `variables:` entry. |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
 | `--parallel [N]` | Number of packages to build simultaneously. Bare `--parallel` uses 4; omit it for serial (the default). With N>1 each build's `$JOBS` is divided across the builders (`-j ÷ N`) so the concurrent jobs together stay within one machine's worth of cores. (`--builders` is a kept alias.) |
@@ -283,7 +287,7 @@ Without `--parallel` packages are built one after another, each with the full `-
 bits build --dry-run ROOT
 ```
 
-Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — **installed**, **local tarball**, **from remote store**, or **build** — followed by a summary. Nothing is downloaded or installed; http(s):// and b3:// stores are only listed. `bits status --check-store` uses the same store listing. On macOS a dry run also writes `sw/<arch>/Brewfile`.
+Computes every package's hash exactly as the build would and prints, in build order, where each one would come from — **installed**, **local tarball**, **from remote store**, **from reuse overlay** — or that it would be **built**, followed by a summary. Nothing is downloaded or installed; http(s):// and b3:// stores are only listed, and other stores (s3://, rsync) are not checked. `bits status --check-store` uses the same store listing. On macOS a dry run also writes `sw/<arch>/Brewfile`.
 
 ### Sharing binaries through a store
 
@@ -311,7 +315,7 @@ See [REFERENCE.md — bits deps](REFERENCE.md#bits-deps).
 
 ## 6. Managing Environments
 
-Bits uses the standard [Environment Modules](https://modules.sourceforge.net/) system (`modulecmd`) to manage runtime environments. A *module* corresponds to one built package version. The `bits` shell script discovers `modulecmd` automatically — on macOS via Homebrew, on Linux via `envml` or `$PATH`. If it cannot be found, it prints the appropriate install command.
+Bits uses the standard [Environment Modules](https://modules.sourceforge.net/) system (`modulecmd`) to manage runtime environments. A *module* corresponds to one built package version. The `bits` shell script discovers `modulecmd` automatically — on `$PATH`, next to `envml`, or via Homebrew's `modules` formula. If it cannot be found, it prints the appropriate install command.
 
 ### Enter a sub-shell with modules loaded
 
@@ -321,7 +325,7 @@ bits enter ROOT/latest
 exit   # return to your normal shell
 ```
 
-`bits enter` sets the shell prompt so it is always clear when inside a bits environment. Nesting `bits enter` inside another bits environment is blocked.
+`bits enter` prefixes the shell prompt with the loaded modules, e.g. `[ROOT/latest]` (sh/bash/ksh/zsh, unless `--shellrc` is given), so it is always clear when inside a bits environment. Nesting `bits enter` inside another bits environment is blocked.
 
 | Option | Description |
 |--------|-------------|
@@ -378,12 +382,13 @@ bits clean [options]
 
 | Option | Description |
 |--------|-------------|
-| `-w DIR` | Work directory to clean. Default: `sw`. |
+| `-w DIR` | Work directory to clean. Default: `$BITS_WORK_DIR` (or `$ALICE_WORK_DIR`), else `sw`. |
+| `-C DIR`, `--chdir DIR` | Change to DIR first (or `$BITS_CHDIR`). |
 | `-a ARCH` | Restrict to this architecture. |
-| `--aggressive-cleanup` | Also remove source mirrors and `TARS/` content. |
+| `--aggressive-cleanup` | Also remove `SOURCES/` (source checkouts and download cache) and the tarballs under `TARS/<arch>/store` and `TARS/share/store`. Git mirrors (`MIRROR/`) are kept. |
 | `-n`, `--dry-run` | Show what would be removed without deleting. |
 
-The default (non-aggressive) clean removes the `TMP/` staging area, stale `BUILD/` directories (those without a `latest` symlink), and stale versioned installation directories. Aggressive cleanup additionally removes source mirrors and `TARS/` content. Use `bits clean` after temporary or experimental builds to reclaim disk space without affecting the persistent package cache.
+The default (non-aggressive) clean removes the `TMP/` and `INSTALLROOT/` staging areas, `BUILD/` directories no `*-latest*` symlink points to, and installed versions (for the selected architecture and `share/`) no `latest*` symlink points to. Aggressive cleanup additionally removes `SOURCES/` and the tarballs under `TARS/<arch>/store` and `TARS/share/store`; tarball symlinks and `MIRROR/` are kept. Use `bits clean` after temporary or experimental builds to reclaim disk space without affecting the persistent package cache.
 
 ### bits prune — evict packages from a persistent workDir
 
@@ -398,12 +403,13 @@ bits prune [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `-w DIR`, `--work-dir DIR` | `sw` | workDir to manage. |
+| `-w DIR`, `--work-dir DIR` | `$BITS_WORK_DIR` (or `$ALICE_WORK_DIR`), else `sw` | workDir to manage. |
 | `-a ARCH`, `--architecture ARCH` | auto-detected | Architecture to evict packages for. |
 | `--max-age DAYS` | `7.0` | Evict packages whose sentinel has not been touched in more than `DAYS` days. Set to `0` to disable age-based eviction. |
 | `--min-free GIB` | _(none)_ | Evict the least-recently-used packages until at least `GiB` GiB of free disk space is available. |
 | `--disk-pressure-only` | — | Run only the disk-pressure eviction pass; skip age-based eviction. |
 | `--retain` | — | Manifest-rooted sweep over all architectures: keep the packages of the newest `--keep-builds N` (default 2) build manifests and anything certified but not yet on CVMFS; evict what is safely upstream (stored, in the verified signed manifest and published to CVMFS). Signed manifests come from `--remote-store` and/or `--trust-manifest`; an architecture whose manifest cannot be verified is skipped. |
+| `--grace-days DAYS` | `1.0` | With `--retain`: never evict anything modified more recently than DAYS days ago. |
 | `-n`, `--dry-run` | — | Show which packages would be evicted without removing anything. |
 
 **How it works.** Every time a package is built or confirmed already installed, bits touches a *sentinel file* at `$WORK_DIR/.packages/<arch>/<package>/<version>`. The `prune` command reads these sentinels, sorts packages by last-touched time (oldest first), and evicts those that are too old or that need to be removed to recover disk space.
@@ -439,7 +445,7 @@ bits publish ROOT --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.02/x8
 bits publish --release-view LCG_110 --cvmfs-target /cvmfs/sft.cern.ch/lcg   # merged view under Views/ (--view is deprecated)
 ```
 
-- With no PACKAGE, `bits publish` uploads every package of the latest build manifest to the S3 store (`--manifest FILE` picks another), together with the release's NOTICE and SBOMs. To upload **one** package to the S3 store use `bits store upload PKG`.
+- With no PACKAGE, `bits publish` uploads every package of the latest build manifest to the S3 store (`--manifest FILE` picks another), together with the release's NOTICE, GPL source offer and SBOMs. To upload **one** package to the S3 store use `bits store upload PKG`.
 - On the ingest path, when a `cvmfs_packages_template` is set, the pipeline's `bits cvmfs publish` sends each package's identity path and hash (a modulefile tar sends only its path), so prepub skips a duplicate that is already queued or published; it is not sent with `--replace-on-conflict`. The same path refuses up front a tarball larger than prepub's advertised `max_tar_size`.
 - A group that sets `cvmfs_packages_template` publishes each package once per build architecture; releases are then views over those packages (`cvmfs_releases_template`, and with `cvmfs_views_template` an LCG-style merged view with a self-locating `setup.sh`). Path templates may use `{arch}` and the nightly `{day}` token.
 - The producer-side commands are now grouped: `bits cvmfs stage` / `bits cvmfs publish` (formerly `bits cvmfs-stage` / `bits cvmfs-publish`) and `bits store stats` (formerly `bits store-stats`); the old names still work and warn.
@@ -483,14 +489,14 @@ bits checksums --write                       # record new entries in checksums/ 
 bits checksums --defaults all --recipes ../lcg.bits   # also the sources its defaults-*.sh profiles override
 ```
 
-Git tags are pinned to their commit; branches are reported as moving and never pinned. The exit status is 1 on any mismatch. See [REFERENCE.md — bits checksums](REFERENCE.md#bits-checksums).
+Git tags are pinned to their commit; branches are reported as moving and never pinned. The exit status is 1 on any mismatch or failure. See [REFERENCE.md — bits checksums](REFERENCE.md#bits-checksums).
 
 ### Produce an LCG release view
 
-`bits overlay lcg` writes an lcgcmake-style LCG release (the `LCG_externals` manifest and a merged `setup.sh`) over a built closure, optionally with a merged symlink-farm view:
+`bits overlay lcg` writes an lcgcmake-style LCG release over a built closure: `LCG_<num><postfix>/LCG_externals_<platform>.txt` (plus an `LCG_generators_<platform>.txt` placeholder) under `--out`. With `--build-view DIR` it also builds a merged symlink-farm view in DIR, with a `setup.sh` that puts the view on `PATH`, `LD_LIBRARY_PATH` and friends:
 
 ```bash
-bits overlay lcg -a x86_64-el9-gcc15-opt --platform x86_64-el9-gcc15-opt \
+bits overlay lcg -a x86_64-el9-gcc15 --platform x86_64-el9-gcc15-opt \
                  --version-number 110 --out /path/to/releases --build-view /path/to/view
 ```
 

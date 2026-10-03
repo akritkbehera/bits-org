@@ -40,7 +40,7 @@ import sys
 
 from bits_helpers.view import build_view, view_env
 
-DESCRIPTION = "LCG release view: LCG_externals manifest + merged setup.sh over the built closure"
+DESCRIPTION = "LCG release view: LCG_externals manifest over the built closure (+ a merged view with setup.sh, --build-view)"
 
 # Field/line delimiters the manifest and its CMake consumer (list semantics)
 # reserve; a value carrying one would silently shift every subsequent list(GET).

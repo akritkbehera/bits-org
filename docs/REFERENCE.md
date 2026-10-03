@@ -6,6 +6,15 @@
 
 > **Note:** Sections §§1–8 (Introduction through Publishing, Trust and Release Tasks) are in [USERGUIDE.md](USERGUIDE.md). This document covers developer and technical reference material starting from §9.
 
+**Where to look:**
+
+| You are… | Start with |
+|----------|------------|
+| a user running builds | [§16 Command-Line Reference](#16-command-line-reference), [§20 Environment Variables](#20-environment-variables) |
+| a recipe author | [§12 Writing Recipes](#12-writing-recipes), [§17 Recipe Format](#17-recipe-format-reference), [§18 Defaults Profiles](#18-defaults-profiles), [§19 Shared Packages](#19-architecture-independent-shared-packages), [§13 Repository Providers](#13-repository-provider-feature) |
+| a community admin or CI operator | [Trust-tiered reuse, publishing and signing](#artifact-resolution-order-trust-tiered-reuse), [§21 Binary Stores](#21-remote-binary-store-backends), [§22 Docker](#22-docker-support), [§23 Verification](#23-bits-verify--deployment-verification), [§25 Build Manifest](#25-build-manifest) |
+| a bits developer | [§9 Architecture](#9-architecture-overview), [§10 Development Environment](#10-setting-up-a-development-environment), [§11 Source Files](#11-key-source-files), [§14 Tests](#14-writing-and-running-tests), [§15 Contributing](#15-contributing) |
+
 ### Part I — Developer Guide
 9. [Architecture Overview](#9-architecture-overview)
 10. [Setting Up a Development Environment](#10-setting-up-a-development-environment)
@@ -25,8 +34,8 @@
 20. [Environment Variables](#20-environment-variables)
 21. [Remote Binary Store Backends](#21-remote-binary-store-backends)
 22. [Docker Support](#22-docker-support)
-    - [§22.1 Recipe Sandbox](#221-recipe-sandbox)
-    - [§22.2 Cross-compilation via QEMU](#222-cross-compilation-via-qemu)
+    - [22.1 Recipe Sandbox](#221-recipe-sandbox)
+    - [22.2 Cross-compilation via QEMU](#222-cross-compilation-via-qemu)
 23. [bits verify — Deployment Verification](#23-bits-verify--deployment-verification)
 24. [Design Principles & Limitations](#24-design-principles--limitations)
 25. [Build Manifest](#25-build-manifest)
@@ -42,17 +51,20 @@ Bits is structured as a thin Bash entry point (`bits`) that delegates to a Pytho
 ```
 bits  (Bash)
   │
-  ├─ environment sub-commands (enter, load, unload, setenv, q, list)
+  ├─ environment sub-commands (enter, load, unload, printenv, setenv, q, list, avail)
   │    └─ handled directly via modulecmd calls
   │
-  └─ build sub-commands (build, clean, deps, doctor, init, version …)
+  ├─ stand-alone groups (store, cvmfs, use, overlay, preload)
+  │    └─ dispatched to bitsStore or a bits_helpers module, before any work-dir setup
+  │
+  └─ build sub-commands (build, clean, deps, doctor, init, publish, certify, sign, version …)
        └─ bitsBuild  (Python entry point)
             └─ bits_helpers/
                  ├─ args.py           argument parsing
                  ├─ build.py          main orchestration loop
                  ├─ recipe.py         recipe parsing (front-matter, includes)
-                 ├─ packages.py       dependency resolution (getPackageList)
-                 ├─ hashing.py        content-addressable hashes (storeHashes)
+                 ├─ packages.py       dependency resolution
+                 ├─ hashing.py        content-addressable package hashes
                  ├─ repo_provider.py  dynamic recipe-repository loading
                  ├─ scheduler.py      parallel build scheduler
                  ├─ sync.py           remote binary store backends
@@ -64,7 +76,7 @@ bits  (Bash)
 ### Architecture string and the `architecture:` template
 
 The architecture string (e.g. `ubuntu2510_x86-64`) names install dirs, tarballs,
-store paths and Docker images. By default it is auto-detected by `doDetectArch`
+store paths and Docker images. By default it is auto-detected
 as `%(os)s_%(machine)s`. A defaults file (typically `defaults-release.sh`) may
 override the *layout* with an `architecture:` field — either a literal string or
 a template using these `%(...)s` keys (same substitution syntax as recipe
@@ -83,56 +95,70 @@ architecture: %(os)s_%(_machine)s     # -> ubuntu2510_x86_64
 # architecture: ubuntu2510_x86-64     # literal, no substitution
 ```
 
-Precedence: an explicit `--architecture` on the command line always wins and the
-template is ignored; otherwise the template (if any) is rendered against the
-detected platform; with neither, the auto-detected default stands. Architecture
-recognition (`matchValidArch`), the Docker builder-image name and the S3 cache
-lookup all match by content — the distro and CPU tokens — independently of order
-and of the `x86-64`/`x86_64` separator, so custom layouts work without
-`--force-unknown-architecture`.
+Precedence (for `bits build` and `bits clean`): an explicit `--architecture`
+always wins and the template is ignored; otherwise a template set by any defaults
+file in the chain is rendered against the detected platform; with neither, the
+auto-detected default stands. When bits checks whether an architecture is
+supported, picks the Docker builder image, or decides whether the default public
+store applies, it looks only at the distro and CPU tokens — whatever their order
+and whether the CPU is spelled `x86-64` or `x86_64` — so custom layouts work
+without `--force-unknown-architecture`.
 
 ### CVMFS layout
 
 A defaults profile (typically `defaults-release.sh`) may declare where a build's
 packages and modulefiles live on CVMFS, so the build / publish / reuse paths are
-derived from one place instead of repeated CLI flags. Three optional, templated
-fields (templates may use `%(architecture)s`, the effective combined arch):
+derived from one place instead of repeated CLI flags. Five optional, templated
+top-level fields (templates may use `%(architecture)s`, the effective combined
+architecture):
 
 ```yaml
 cvmfs_dir:   /cvmfs/sft.cern.ch/lcg/releases   # CVMFS root
 install_dir: %(architecture)s/Packages         # relative to cvmfs_dir
 module_dir:  %(architecture)s/modules          # relative to cvmfs_dir
+shared_dir:  noarch                           # architecture-independent packages
+views_dir:   Views                            # merged release views
 ```
 
-bits resolves these to `install_path` / `module_path` and uses them to default:
+Fields left out take defaults (`install_dir`: `%(architecture)s`, `module_dir`:
+`%(architecture)s/modules`, `shared_dir`: `noarch`, `views_dir`: `Views`), so
+setting `cvmfs_dir` alone is enough. bits joins each with `cvmfs_dir` and uses
+the result for:
 
-- **docker build:** `--cvmfs-prefix` ← `<cvmfs_dir>/<install_dir>`, so packages
-  compile at their final CVMFS prefix and relocation on publish is a no-op
-  (explicit `--cvmfs-prefix` still wins);
+- **provenance:** the resolved paths are recorded in each package's `.meta.json`,
+  so publishing and the release-view tools find the target trees without
+  re-reading the defaults profile. Docker builds do *not* take `--cvmfs-prefix`
+  from the layout: they build relocatably and are relocated on publish; pass
+  `--cvmfs-prefix` explicitly to compile at the final CVMFS path;
 - **reuse:** `--reuse-from cvmfs` resolves the deployed modules tree from the
-  same layout, so already-deployed components are set up from their published
-  modulefiles (`--remote-store` stays the tarball store; it is never `cvmfs://`).
+  same layout (or, if none is declared, from the group's
+  `cvmfs_modules_template`), so already-deployed components are set up from
+  their published modulefiles. `--remote-store` stays the tarball store; a
+  `cvmfs://` store URL is rejected.
 
 Builds that don't set any of these fields are unaffected.
 
-### Build pipeline (inside `doBuild`)
+### Build pipeline
 
 ```
-fetch_repo_providers_iteratively()   ← clone any repository-provider packages,
-                                        extend BITS_PATH, repeat until stable
+load repository providers      ← clone any repository-provider packages,
+                                 extend BITS_PATH, repeat until stable
         │
-getPackageList()                     ← parse all recipes, resolve full DAG
+resolve packages               ← parse all recipes, resolve the full
+                                 dependency graph, sort it (dependencies first)
         │
-storeHashes()                        ← compute content-addressable hash per pkg
+update source mirrors          ← refresh the reference mirror of each source repo
         │
-        ├─ download pre-built tarballs from remote store (parallel)
+        ├─ prefetch in the background: source archives and pre-built tarballs
+        │  (best effort; anything missing is fetched when needed)
         │
-        └─ for each package in topological order:
-               updateReferenceRepoSpec()  ← mirror source repo
-               checkoutSource()           ← clone/checkout into build area
-               runBuildScript()           ← execute the recipe's Bash script
-               packageTarball()           ← archive the install root
-               uploadTarball()            ← push to write store (if configured)
+        └─ for each package, dependencies first:
+               compute its content hash (includes its dependencies' hashes)
+               reuse a matching existing build if there is one (see below);
+               otherwise:
+                 check out the sources into the build area
+                 run the recipe's build script, then pack the install root
+                 upload the tarball to the write store (if configured)
 ```
 
 ### Artifact resolution order (trust-tiered reuse)
@@ -156,15 +182,21 @@ wins — and each has its own root of trust:
 4. **Build from source** — the fallback; the source archive is integrity-pinned
    by the recipe's `source_checksums`. Trusted by construction.
 
-Reuse at any tier requires an exact content-hash match — the hash encodes the
-full recipe + resolved dependency closure + defaults + architecture, so a hit is
-byte-for-byte the artifact bits would otherwise have built. `--no-remote-store`
-disables the remote tiers (CVMFS reuse and the S3/HTTP archive); the local store
-and build-from-source always remain.
+By default, reuse at any tier requires an exact content-hash match. The hash
+covers the recipe, its sources and patches, and the hashes of all its
+dependencies (including the defaults package); the store keys each artifact by
+architecture *and* hash. A hit is therefore the artifact bits would otherwise
+have built. The one exception is `--reuse-policy relaxed` (CVMFS tier only, for
+local development): it also reuses a deployed package of the same version
+without a hash match, and the publish path refuses the result.
+
+`--no-remote-store` disables the S3/HTTP archive tier (a `--write-store`, if
+given, is still read from). CVMFS reuse is controlled separately, by
+`--reuse-from`. The local store and build-from-source always remain.
 
 #### Signing and verifying the archive tier
 
-The tier-3 attestation is driven by three build flags:
+Reuse from the remote archive (tier 3) is controlled by these `bits build` options:
 
 - `--sign-manifest KEY.pem` — after a successful build, sign the build manifest
   (`bits-manifest-latest.json`) with an Ed25519 private key. The detached
@@ -174,14 +206,14 @@ The tier-3 attestation is driven by three build flags:
   the authority for archive reuse. Its signature is verified against the public
   keys shipped in `bits/keys/` (plus `$BITS_TRUST_KEYS` and
   `~/.config/bits/keys`).
-- `--require-signed-reuse` — fail closed: a tarball recalled from the remote
-  store is reused only when `--trust-manifest` lists its hash **and** its sha256
-  matches. Unlisted → discard and rebuild; sha256 mismatch → fatal (tampering).
+- `--require-signed-reuse` (the default) — fail closed: a tarball fetched from
+  the remote store is reused only when a trusted signed manifest lists its hash
+  **and** its sha256 matches. Unlisted → discard and rebuild; sha256 mismatch → fatal (tampering).
   Local build-node and CVMFS artifacts are unaffected.
   Maximal reuse is the default: with no `--trust-manifest`, a build trusts
-  every signed manifest present in the store (content hashes are
-  arch-independent, so a build reuses any hash a trusted key vouched for,
-  across arch and community); signature + expiry are the only gate. Scope it
+  every signed manifest present in the store (content hashes do not include the
+  architecture, so a hash vouched for by any trusted manifest counts, whichever
+  platform or community certified it); signature and expiry are the only checks. Scope it
   with `--trust-groups`, or turn verification off with `--no-require-signed-reuse`.
 - `--trust-groups G1,G2,…` — scope reuse by group. The signed common manifest may
   tag each entry with a `group`; with `--trust-groups` a consumer trusts only
@@ -189,9 +221,9 @@ The tier-3 attestation is driven by three build flags:
   base). Omit it to trust every signed entry. Produce group tags at certification
   time with `bits sign --group GROUP`.
 - `--reuse-beacon URL` (or `$BITS_REUSE_BEACON`) — report the hashes this build
-  reused from the store to `<URL>/api/reuse` (best-effort, fire-and-forget in a
-  daemon thread; never blocks or fails the build). Only small references are
-  sent, never artifact data. Feeds usage-informed GC.
+  reused from the store to `<URL>/api/reuse` (best effort, in the background; it
+  never blocks or fails the build). Only small references are sent, never
+  artifact data. This lets the console see which stored artifacts are in use.
 
 #### Publishing and certifying a build — `bits publish`, `bits certify`
 
@@ -242,8 +274,10 @@ testbed.
 `bits sign <manifests…> --key <ed25519.pem> -o common-manifest.json` merges
 published build manifests into one signed common manifest (the trust unit), after
 validating every hash against the S3 store (`--remote-store`; `--store` is the
-deprecated spelling). Group tagging with
-`--group`, offline dry-merge with `--no-store-check`. In the manifests-repo CI,
+deprecated spelling). Instead of a local `--key`, CI can sign through a signing
+proxy (`--sign-via-proxy`) or the bits-console signing service
+(`--sign-via-service`). `--group` tags entries with a group; `--no-store-check`
+does an offline dry merge. In the manifests-repo CI,
 `--require-approval --admins ADMINS` refuses to sign unless the certifier is an
 authorised admin. The identity is established in one of three ways (in order):
 `--certifier USERNAME` (default `$GITLAB_USER_LOGIN` — the pipeline initiator
@@ -253,7 +287,7 @@ GitLab already authenticated; no API call); `--certifier-token PAT` (identify vi
 
 Offline freshness: `--valid-days N` stamps an `expires` timestamp and
 `--source-commit SHA` (default `$CI_COMMIT_SHA`) records the certified commit. A
-consumer's trust gate (`trusted_index`) rejects a signed manifest whose `expires`
+consumer rejects a signed manifest whose `expires`
 has passed — fail-closed, so a stale manifest cannot be replayed offline. A
 manifest without `expires` never expires (backward compatible). See `keys/README.md`
 for key rotation using the multi-key trust anchor.
@@ -277,8 +311,8 @@ Certifier identity and authority:
   Either way the certifier identity travels with the signature.
 - Per-key group binding: a `keys/key-policy.json` mapping `key_id -> [groups]`
   restricts which groups each signing key may certify (`"*"` = overall key).
-  Enforced at signing (producer) and in `trusted_index` (consumer); absent policy
-  = no restriction. See `keys/README.md`.
+  Enforced both when signing and when a consumer verifies a manifest; with no
+  policy file there is no restriction. See `keys/README.md`.
 
 Per-platform certification: the store is content-addressed **per
 architecture** — object identity is `(effective_architecture, hash)` — so
@@ -300,8 +334,9 @@ but an object packed by an older bits or with a different tar/compressor
 toolchain is not byte-identical, so the same content hash re-packed by a later
 build can be a different file — expected and benign. An upload that finds an object already
 at its designated path keeps it and records **its** sha256 in the build
-manifest and BOM (read cheaply from the object's `x-amz-meta-sha256`; legacy
-objects are streamed once and stamped), so every manifest converges on the
+manifest and BOM (read from the checksum stored with the object; for older
+objects without one, bits hashes the object once and records it), so every
+manifest converges on the
 one stable object that certification verifies. Store objects are never
 overwritten.
 
@@ -323,10 +358,13 @@ or cannot be checked, or when its objects are merely absent.
 `bits store gc --trust-manifest <signed-common-manifest>` sweeps unreferenced objects
 from the shared S3 store. The roots are every content hash in the *verified*
 signed common manifest; any store object whose hash is not a root and is older
-than `--grace-days` (default 7) is removed. It is deliberately conservative:
+than `--grace-days` (default 7) is removed. Each run sweeps one architecture's
+store tree (`-a`, default: the detected architecture). It is deliberately
+conservative:
 
 - **Fail-closed** — if the manifest does not verify, or verifies to zero roots,
-  nothing is swept (an unverifiable manifest never becomes "delete everything").
+  nothing is swept (an unverifiable manifest never becomes "delete everything");
+  only `--allow-empty` permits a sweep with zero roots.
 - **Bounded namespace** — only keys matching `TARS/<arch>/store/<shard>/<hash>/<file>`
   with `shard == hash[:2]` and no whitespace/control characters are eligible;
   everything else is skipped.
@@ -343,10 +381,11 @@ Reads need no credentials. Uploading to the S3 store is governed by possession o
 S3 credentials (see the `b3://` backend below and the `~/.bits/s3keys` file) — any
 user or CI job with write keys can upload artifacts and the build manifest.
 
-Certification (signing) is a separate, deliberate step performed by a **group
-admin** via bits-console (SSO-authenticated), which triggers a CI job to sign the
-manifest with the single trust anchor key. Consumers reuse only artifacts listed
-in a verified signed manifest (`--require-signed-reuse` + `--trust-manifest`).
+Certification (signing) is a separate, deliberate step: a **group admin**
+approves the build (in bits-console, or with a passkey via `bits certify`), and
+the manifests-repo CI then signs the manifest with the release signing key. By
+default, consumers reuse only artifacts listed in a verified signed manifest
+(see `--require-signed-reuse` above).
 
 #### Licence compliance and redistribution policy
 
@@ -381,8 +420,9 @@ restricted sources while still allowing *fetches* from the mirror. Restricted
 packages are still built and usable locally; they just never leave the host.
 
 Attribution and the GPL source obligation are discharged mechanically: the
-build script writes a per-package `NOTICE` into each `$INSTALLROOT` (from
-`license:`/`acknowledgment:` and the source location), and `bits publish`
+build script writes a per-package `NOTICE` into `$INSTALLROOT` when one is
+needed (the recipe declares an `acknowledgment:` or a copyleft `license:`),
+built from those fields and the source location, and `bits publish`
 generates the per-release aggregation — `NOTICE` (required attributions,
 every distributed package with its SPDX id, and the licence-excluded list)
 plus `LICENSE-SOURCE-OFFER.txt` (where the corresponding sources of every
@@ -408,15 +448,22 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Install in editable mode with development extras
-pip install -e .[test,docs]
+pip install -e '.[test,docs]'   # quotes needed in zsh
 ```
 
-Code style is enforced by `.flake8` (flake8) and `.pylintrc` (pylint). Run the linters before submitting a patch:
+CI lints with ruff in check-only mode (`ruff check .`), configured under
+`[tool.ruff]` in `pyproject.toml` and limited to real-bug rules (E9, F63, F7,
+F82). Run the same check before submitting a patch:
 
 ```bash
-flake8 bits_helpers/
-pylint bits_helpers/
+pip install ruff
+ruff check .
 ```
+
+Do not run `ruff format` or `ruff check --fix` on the tree: the hand-aligned
+2-space style is kept on purpose, and `--fix` would strip deliberate
+import-availability probes. `.flake8` and `.pylintrc` are still in the repository
+but are not enforced by CI.
 
 ---
 
@@ -428,6 +475,10 @@ pylint bits_helpers/
 | `bitsBuild` | Python entry point; dispatches all build sub-commands |
 | `bitsDeps` | Thin wrapper calling `bitsBuild deps` |
 | `bitsDoctor` | Thin wrapper calling `bitsBuild doctor` |
+| `bitsStore` | `bits store` — S3 store inspection, verification, deletion, `gc`, `stats`, `upload` |
+| `bitsModules` | Module listing on CVMFS through the serving catalog (used by `bits`) |
+| `aliBuild` | Backward-compatible wrapper: sets the ALICE defaults and execs `bits` |
+| `pb` | Thin wrapper calling `bitsBuild` |
 | `bitsenv` | Legacy environment manager |
 | `bits_helpers/args.py` | Argument parsing for all sub-commands |
 | `bits_helpers/build.py` | Core build orchestration (~4 000 lines); `doBuild` |
@@ -443,13 +494,19 @@ pylint bits_helpers/
 | `bits_helpers/cleanup.py` | `bits prune` (was `bits cleanup`) — LRU + disk-pressure eviction from persistent workDir; sentinel management |
 | `bits_helpers/publish.py` | `bits publish` — copy, relocate and hand a package to cvmfs-prepub; bulk manifest upload to the S3 store; `bits certify` |
 | `bits_helpers/certify.py` | `bits sign` — merge BOMs, validate against the store, sign the common manifest |
+| `bits_helpers/trust.py` | Manifest signing and verification, trust-key directories, key policy (`trusted_index`) |
+| `bits_helpers/manifest.py` | Build manifest (`MANIFESTS/bits-manifest-*.json`) |
+| `bits_helpers/gc.py` | `bits store gc` — reachability garbage collection of the S3 store |
+| `bits_helpers/compliance.py`, `sbom.py`, `notice.py` | `bits compliance`, `bits sbom` (CycloneDX / SPDX), NOTICE and source-offer generation |
+| `bits_helpers/verify.py` | `bits verify` — check a deployment against a build manifest |
+| `bits_helpers/cvmfs_inspect.py` | `bits cvmfs` group — `platforms`/`show`/`summary`; dispatches `stage`/`publish` |
 | `bits_helpers/cvmfs_publish.py` | `bits cvmfs publish` — place a build's packages, release view and merged view on CVMFS |
 | `bits_helpers/plan.py` | `bits build --dry-run` per-package reuse plan |
 | `bits_helpers/brew.py` | `bits brew` — macOS Brewfile from the recipes |
 | `bits_helpers/overlay/lcg.py` | `bits overlay lcg` — LCG release view over a built closure |
 | `bits_helpers/bits_use.py` | `bits use` — per-directory saved-argument profiles |
 | `bits_helpers/scheduler.py` | Multi-threaded parallel build scheduler |
-| `bits_helpers/sync.py` | Remote binary store backends (HTTP, S3, Boto3, CVMFS, rsync) |
+| `bits_helpers/sync.py` | Remote binary store backends (HTTP, S3, Boto3, rsync; `cvmfs://` is rejected) |
 | `bits_helpers/git.py` | Git SCM wrapper |
 | `bits_helpers/sl.py` | Sapling (`sl`) SCM wrapper |
 | `bits_helpers/workarea.py` | Source-checkout and reference-mirror management |
@@ -457,7 +514,7 @@ pylint bits_helpers/
 | `bits_helpers/log.py` | Logging and progress output |
 | `bits_helpers/cmd.py` | Subprocess execution helpers; `DockerRunner` |
 | `bits_helpers/resource_manager.py` | Resource-aware build scheduling |
-| `templates/` | Jinja2 templates for generated build scripts and module files |
+| `templates/` | Example Jinja2 templates for the templating plugin (`bits build … --plugin templating < template`); the generated build script itself comes from `bits_helpers/build_template.sh` |
 | `tests/` | Full test suite |
 | `docs/` | MkDocs documentation source |
 
@@ -465,7 +522,7 @@ pylint bits_helpers/
 
 ## 12. Writing Recipes
 
-A recipe is a file named `<package>.sh` placed inside a `*.bits` directory. It has two sections separated by a line containing only `---`:
+A recipe is a file named after its package in lower case (`<package>.sh`, e.g. `python.sh` for `Python`), placed in a recipe repository (by convention a `*.bits` directory). It has two sections separated by a line containing only `---`:
 
 1. A **YAML header** — package metadata, dependencies, and environment.
 2. A **Bash build script** — the actual build steps.
@@ -478,6 +535,8 @@ version: "1.2.13"
 source: https://github.com/madler/zlib.git
 tag: v1.2.13
 ---
+# The script runs in $BUILDDIR; build from a copy, never inside $SOURCEDIR
+rsync -a --delete --exclude '**/.git' "$SOURCEDIR"/ ./
 ./configure --prefix="$INSTALLROOT"
 make -j${JOBS:-1}
 make install
@@ -517,12 +576,11 @@ requires:
 build_requires:
   - Python
 env:
-  BOOST_ROOT: "$INSTALLROOT"
+  BOOST_INCLUDEDIR: "$BOOST_ROOT/include"
 prepend_path:
-  PATH:              "$INSTALLROOT/bin"
-  LD_LIBRARY_PATH:   "$INSTALLROOT/lib"
+  ROOT_INCLUDE_PATH: "$BOOST_ROOT/include"
 ---
-cd "$SOURCEDIR"
+rsync -a --delete --exclude '**/.git' "$SOURCEDIR"/ ./
 ./bootstrap.sh --prefix="$INSTALLROOT" --with-python=$(which python3)
 ./b2 -j${JOBS:-1} \
      --build-dir="$BUILDDIR" \
@@ -530,11 +588,13 @@ cd "$SOURCEDIR"
      variant=release link=shared install
 ```
 
+`env`, `prepend_path` and `append_path` values are written into the package's `etc/profile.d/init.sh` and evaluated when that file is sourced (e.g. while a dependent package builds). Refer to the install location as `$<PACKAGE>_ROOT` (here `$BOOST_ROOT`, which bits exports automatically), not `$INSTALLROOT`, which is only valid while the package itself builds. bits already prepends the package's `bin`, `lib`/`lib64` and `lib*/pkgconfig` directories to `PATH`, `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS), `LIBRARY_PATH` and `PKG_CONFIG_PATH`, so these need not be listed.
+
 For the complete list of YAML header fields and build-time environment variables see [§17 Recipe Format Reference](#17-recipe-format-reference).
 
 ### Function-based recipes with bits-recipe-tools
 
-The optional [`bits-recipe-tools`](https://github.com/bitsorg/bits-recipe-tools) package provides a higher-level authoring style using reusable shell function hooks (`CMakeRecipe`, `AutoToolsRecipe`, etc.). Instead of writing a flat Bash build script, you override only the lifecycle hooks that differ from the defaults (`Prepare`, `Configure`, `Make`, `MakeInstall`, `PostInstall`). See the [Cookbook — Using bits-recipe-tools](COOKBOOK.md#writing-recipes-with-bits-recipe-tools) for worked examples.
+The optional [`bits-recipe-tools`](https://github.com/bitsorg/bits-recipe-tools) package provides a higher-level authoring style using reusable shell function hooks (`CMakeRecipe`, `AutoToolsRecipe`, etc.). Instead of writing a flat Bash build script, you override only the lifecycle hooks that differ from the defaults (`Prepare`, `Configure`, `Make`, `MakeInstall`, `PostInstall`). See [Writing Recipes with bits-recipe-tools](COOKBOOK.md#writing-recipes-with-bits-recipe-tools) in the Cookbook for worked examples.
 
 ---
 
@@ -544,7 +604,7 @@ A **repository provider** is a recipe that, instead of describing a software pac
 
 ### Why it exists
 
-Normally the set of recipe repositories (`*.bits` directories) is fixed at startup via the `BITS_PATH` environment variable. The repository provider feature lets a recipe itself pull in an additional recipe repository from git, enabling modular recipe sets and nested providers.
+Normally the set of recipe repositories searched is fixed at startup: the config directory plus whatever `BITS_PATH` (or `--search-path`) names. The repository provider feature lets a recipe itself pull in an additional recipe repository from git, enabling modular recipe sets and nested providers.
 
 ### Defining a repository provider
 
@@ -559,11 +619,16 @@ tag: v1.0
 # Mark this recipe as a repository provider
 provides_repository: true
 
-# Where to insert the cloned directory in BITS_PATH (default: append)
-repository_position: prepend   # or: append
+# Where to insert the checkout in BITS_PATH: append (default) or prepend.
+# prepend takes effect only when granted with --provider-policy (see Provider policy).
+repository_position: append
+
+# Optional integrity pin: the build fails if `tag` no longer resolves to this commit
+# (full hash or a prefix of at least 7 characters).
+# commit: 1a2b3c4d
 ```
 
-The `source` URL must point to a git repository whose top-level directory contains `*.sh` recipe files (the same layout as any other `*.bits` directory).
+The `source` URL must point to a git repository whose top-level directory contains `*.sh` recipe files (the same layout as any other `*.bits` directory). `tag` selects the branch, tag or commit to check out (default: `version`). A provider repository is loaded once per build; a `requires` entry that asks for a different version of an already-loaded provider is ignored, with a warning.
 
 ### Always-on providers (`always_load: true`)
 
@@ -576,42 +641,42 @@ source: https://github.com/myorg/shared-recipes.git
 tag: stable
 provides_repository: true
 always_load: true
-repository_position: prepend
+repository_position: prepend   # honoured only with --provider-policy shared-recipes:prepend
 ```
 
-Any recipe file in the primary config directory (`-c / --configDir`) that has both flags set is cloned and added to `BITS_PATH` at startup, making its recipes visible to all subsequent dependency resolution without any package needing to declare an explicit dependency on it. This is the recommended way to distribute a curated set of approved recipes across a team.
+Any recipe file in the primary config directory (`-c`/`--config-dir`) that has both flags set is cloned and added to `BITS_PATH` at startup, making its recipes visible to all subsequent dependency resolution without any package needing to declare an explicit dependency on it. This is the recommended way to distribute a curated set of approved recipes across a team.
 
 ### The `bits-providers` standard repository
 
-Bits ships a **built-in default provider** pointing at the official `bitsorg/bits-providers` repository on GitHub. This repository contains vetted, community-approved recipes and is loaded automatically on every build unless overridden:
+Bits ships a **built-in default provider** pointing at the official `bitsorg/bits-providers` repository on GitHub. This repository is the provider registry: it maps each community name to its recipe repository (e.g. `alice.bits.sh`, `lhcb.bits.sh`). Native `bits` loads it automatically on every build; under the `aliBuild` wrapper it is off unless `BITS_PROVIDERS` is set:
 
 ```
 BITS_PROVIDERS=https://github.com/bitsorg/bits-providers  (default)
 ```
 
-**Overriding or disabling the default:**
+**Overriding the default** (an empty value falls back to the default; native `bits` cannot switch the registry off):
 
 ```bash
 # Use a private provider repository instead
 export BITS_PROVIDERS=https://github.com/myorg/my-recipes.git@main
 
-# Or pass it per-run
-bits build --providers https://github.com/myorg/my-recipes.git@stable ROOT
+# Or for one run only
+BITS_PROVIDERS=https://github.com/myorg/my-recipes.git@stable bits build ROOT
 
 # Pin to a specific tag
 export BITS_PROVIDERS=https://github.com/bitsorg/bits-providers@v2.0
 ```
 
-The `@tag` suffix is optional; when omitted, `main` is used.
+The `@tag` suffix is optional; when omitted, `main` is used. Everything after the first `@` is taken as the tag, so use an `https://` URL here; an SSH URL such as `git@github.com:org/repo` is not supported.
 
 ### Front-end choice: native `bits` (provider path) vs `aliBuild` (legacy path)
 
 Which path is used is chosen by the front-end:
 
-- **Native `bits`** uses the **provider path**: `bits_providers` defaults to the official `bitsorg/bits-providers` registry, so the always-on provider and the org-pointer bootstrap are active.
-- **The `aliBuild` wrapper** (it exports `BITS_BRANDING=aliBuild`) emulates **legacy aliBuild**: the providers default is *empty*, so no registry is loaded and recipes come from a local `alidist` checkout instead. `aliBuild init` clones `alisw/alidist`, `aliBuild build <PKG>` uses it directly, and the legacy build-time `init.sh` is kept (`BITS_LEGACY_INITDOTSH=1`, alidist-compatible hashes; `--legacy-initdotsh` selects it explicitly).
+- **Native `bits`** uses the **provider path**: `$BITS_PROVIDERS` defaults to the official `bitsorg/bits-providers` registry, so the registry is loaded on every build and a missing recipe directory can be bootstrapped from it (see below).
+- **The `aliBuild` wrapper** (it exports `BITS_BRANDING=aliBuild`, `BITS_ORGANISATION=ALICE` and `BITS_REPO_DIR=alidist`) emulates **legacy aliBuild**: the providers default is *empty*, so no registry is loaded and recipes come from a local `alidist` checkout instead. `aliBuild init` clones `alisw/alidist`, `aliBuild build <PKG>` uses it directly, and the legacy build-time `init.sh` is kept (`BITS_LEGACY_INITDOTSH=1`, alidist-compatible hashes; `--legacy-initdotsh` selects it explicitly).
 
-An explicit `BITS_PROVIDERS` / `--providers` overrides the default in either mode.
+An explicit `$BITS_PROVIDERS` overrides the default in either mode.
 
 ### Bootstrapping a recipe repository from the registry
 
@@ -638,16 +703,17 @@ source: <BITS_PROVIDERS URL>
 tag: <BITS_PROVIDERS tag>          # defaults to "main"
 provides_repository: true
 always_load: true
-repository_position: prepend
+repository_position: append        # prepend only with --provider-policy bits-providers:prepend
 ```
 
-This package is loaded in Phase 1 (before the iterative scan), so its recipes are visible from the very first dependency-resolution pass. Because the package name `bits-providers` is reserved, any recipe file of that name found in the config directory is skipped during the Phase 2 config-dir scan to prevent double-cloning.
+It is loaded first, before the dependency-driven scan, so its recipes are visible from the very first dependency-resolution pass. The name `bits-providers` is reserved: while `BITS_PROVIDERS` is in effect, an always-load recipe of that name in the config directory is skipped, so the registry is not cloned twice.
 
 ### Provider configuration
 
 The active provider set is configured through the environment, not a config
-file. Set `$BITS_PROVIDERS` to override or disable the built-in default, or pass
-`--providers URL` per run; an explicit `$BITS_PROVIDERS` takes precedence over
+file. Set `$BITS_PROVIDERS` to replace the built-in default (an empty value falls back
+to it; the registry is off only under the `aliBuild` wrapper). `bits init
+--providers` only points you at the variable; no command takes a per-run
 `--providers`.
 
 ```bash
@@ -658,7 +724,7 @@ export BITS_PROVIDERS=https://github.com/myorg/my-recipes.git@stable
 
 By default every repository-provider's checkout is **appended** to `BITS_PATH`, regardless of what its `repository_position` field declares.  This is the safe default: an appended provider can only add new recipes, never silently replace an existing one.
 
-A provider that needs to appear *before* other directories — for example to shadow a recipe in the default repository with a patched version — must be explicitly granted `prepend` access by the operator via the `provider_policy` setting.  Provider recipes cannot self-elevate.
+A provider that needs to appear *before* other directories — for example to shadow a recipe in the default repository with a patched version — must be explicitly granted `prepend` access by whoever runs the build, with `--provider-policy`.  Provider recipes cannot self-elevate.
 
 #### Configuration
 
@@ -674,7 +740,7 @@ bits build --provider-policy bits-providers:prepend,myorg-extras:append MyPackag
 ```
 
 Persist it for the current directory with `bits use build --provider-policy …`.
-Provider recipes cannot self-elevate.
+Only `bits build` takes this flag.
 
 #### How position is resolved
 
@@ -687,7 +753,7 @@ For each provider, bits evaluates the policy in this order:
 | 3 (default) | Recipe's `repository_position: prepend` **without policy** | Downgraded to `append`; a warning names the required `--provider-policy` entry |
 | 4 | No field in recipe | `append` |
 
-When a provider is about to be prepended (whether from policy or recipe), bits scans recipes already visible on `BITS_PATH` and warns for every name collision, listing the affected recipes and the `--provider-policy` entry that would suppress the warning.  The primary config directory (passed via `-c / --config-dir`) is always position 0 in the search order and **cannot** be shadowed by any provider.
+When a provider is about to be prepended (which needs a policy grant), bits compares its recipes with those in the directories already on `BITS_PATH` and warns, listing every recipe it will shadow. The warning is informational and is shown even when the prepend was granted.  The primary config directory (passed via `-c / --config-dir`) is always position 0 in the search order and **cannot** be shadowed by any provider.
 
 #### Example: patching a default recipe
 
@@ -695,8 +761,8 @@ Suppose `myorg-patches` contains a modified `zlib.sh` that you want to take prec
 
 ```bash
 bits build --provider-policy myorg-patches:prepend ROOT
-# Warning: Provider 'myorg-patches' will shadow 1 recipe(s) already visible
-#   from /path/to/bits-providers: zlib
+# WARNING: Provider 'myorg-patches' is being prepended and will shadow 1 recipe(s)
+#   already visible from /path/to/bits-providers: zlib
 # (expected and intended — the warning is informational)
 ```
 
@@ -704,35 +770,37 @@ bits build --provider-policy myorg-patches:prepend ROOT
 
 | Priority | Source | Example |
 |----------|--------|---------|
-| 1 (highest) | `BITS_PROVIDERS` environment variable | `export BITS_PROVIDERS=…` |
-| 2 | `--providers` command-line flag | `--providers …` |
-| 3 (default) | Built-in default | `https://github.com/bitsorg/bits-providers` |
+| 1 (highest) | `BITS_PROVIDERS` environment variable (non-empty) | `export BITS_PROVIDERS=…` |
+| 2 (default) | Built-in default (none under the `aliBuild` wrapper) | `https://github.com/bitsorg/bits-providers` |
 
 ### How providers are discovered (two-phase)
 
-`bits build` loads providers in two phases before the main `getPackageList` call:
+`bits build` loads providers in two phases before it resolves the full dependency graph:
 
-**Phase 1 — always-on providers** (`load_always_on_providers`):
+**Phase 1 — always-on providers:**
 
-1. If `BITS_PROVIDERS` is set, synthesise and clone the `bits-providers` package and prepend it to `BITS_PATH`.
-2. Glob `*.sh` files in the config directory; clone any that have both `provides_repository: true` and `always_load: true` (skipping `bits-providers` if already handled).
+1. If `BITS_PROVIDERS` is in effect, clone the registry as the `bits-providers` package and add it to `BITS_PATH` (appended unless `--provider-policy bits-providers:prepend` is given).
+2. Clone every recipe in the config directory that has both `provides_repository: true` and `always_load: true` (skipping `bits-providers` if already handled).
 
-**Phase 2 — iterative dependency-driven scan** (`fetch_repo_providers_iteratively`):
+**Phase 2 — iterative dependency-driven scan:**
 
 The scan is seeded with the union of:
 - the user-requested packages, and
-- any top-level `requires` / `build_requires` declared in the active defaults file(s).
+- any top-level `requires` / `build_requires` declared in the active defaults file(s), and
+- when the recipe directory was just bootstrapped from the registry, the `requires`/`build_requires` of its registry pointer recipe.
 
 This second seed is what allows a defaults file to trigger provider loading (see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) below).
 
 1. Walk the dependency graph from the seeded list.
 2. When a package with `provides_repository: true` is encountered for the first time, clone its source repository into the cache and add the checkout to `BITS_PATH`.
 3. Restart the walk — recipes newly visible on the extended path (including further providers) are now reachable.
-4. Repeat until stable (no new providers found) or until `MAX_PROVIDER_ITERATIONS` (20) is reached.
+4. Repeat until stable (no new providers found), for at most 20 restarts.
 
 This naturally handles **nested providers**: a provider whose own recipe repository contains a further provider recipe.
 
-**Local checkout shadowing.** In both phases, before cloning a declared provider `<pkg>`, bits checks for a local checkout at `<config_dir>/<pkg>/`. If that directory exists and contains recipes, it is used **from there** — added to `BITS_PATH` with its git `HEAD` recorded as provenance (a `-dirty` suffix when the working tree has uncommitted changes) — and the remote clone is skipped. This mirrors how a locally checked-out package shadows its `source`, so a provider you are actively editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up without re-cloning. Only an already-declared provider is ever shadowed — bits never scans for undeclared `*.bits/` directories, so the recipe/package discovery path is unchanged. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES`.
+During the walk, an `overrides:` entry for a provider in the active defaults (`source` and/or `tag`, with `%(variable)s` expansion) is applied before cloning, so a defaults profile can point a provider at a fork or branch. Because defaults files can themselves live in provider repositories, bits then re-reads the defaults with the providers on the search path and repeats the scan until the set of provider commits stops changing.
+
+**Local checkout shadowing.** Before cloning a declared provider `<pkg>` (in either phase, except the registry itself), bits looks for `<config_dir>/<pkg>/`. If that directory contains `*.sh` recipes it is used instead of a clone, with its git `HEAD` recorded as provenance (plus `-dirty` if it has uncommitted changes). So a provider you are editing (e.g. `lcg.bits/` next to `lcg.bits.sh`) is picked up as-is, just as a local package checkout shadows its `source`. Only declared providers are shadowed; bits never picks up undeclared `*.bits/` directories this way. `--force-tracked` disables this (and all local-checkout pickup), forcing the remote clone. For an *undeclared* local sub-repo, put it on `BITS_PATH` with `--search-path NAMES`.
 
 ### Triggering providers from a defaults file
 
@@ -748,9 +816,9 @@ requires:
   - myorg-recipes      # must have provides_repository: true in its .sh file
 ```
 
-The provider's recipe (`myorg-recipes.sh`) must be findable on the existing `BITS_PATH` at the time Phase 2 starts — i.e., it should live in the primary config directory or be provided by a Phase 1 always-on provider. Once cloned, its recipes are visible to all subsequent dependency resolution.
+The provider's recipe (`myorg-recipes.sh`) must be findable on the search path: in the config directory, in an always-on provider, or in a provider loaded earlier in the scan. Once cloned, its recipes are visible to all subsequent dependency resolution.
 
-> **Important — provider packages only.** The `requires` field in a defaults file is consumed exclusively by the Phase 2 provider scan. It does **not** add the listed packages as regular build dependencies. Because every non-defaults package automatically receives a `defaults-release` build dependency inside `getPackageList`, allowing defaults' own `requires` to propagate into the build graph would create an unresolvable cycle (`defaults-release → provider-pkg → defaults-release`). To prevent this, bits strips `requires` and `build_requires` from the `defaults-release` spec before the dependency-following step in `getPackageList`. The provider repositories are already loaded and their recipes are on `BITS_PATH` by this point, so nothing is lost.
+> **Important — provider packages only.** A defaults file's top-level `requires` / `build_requires` only seed the Phase 2 provider scan; they do **not** become build dependencies. Every package already depends on `defaults-release`, so letting the defaults depend on packages would create a cycle (`defaults-release → provider-pkg → defaults-release`); bits therefore drops these fields from the defaults before resolving the build graph. The provider repositories are already on `BITS_PATH` by then, so nothing is lost.
 
 This is subtly different from `always_load: true` on the provider recipe itself:
 
@@ -777,11 +845,11 @@ $BITS_WORK_DIR/
 
 A checkout is reused (cache hit) when `.bits_provider_ok` already exists for the resolved commit hash. If the recipe's `tag` resolves to a new commit, a fresh checkout is made alongside the old one; no stale data is ever overwritten.
 
-**Staleness detection:** On every run after the first, bits refreshes the provider's git mirror (even when `--no-fetch` is active) so that tag advances in the upstream repository are always detected. This ensures that a team-wide recipe update published as a new tag is picked up on the next build without any manual cache purge.
+**Staleness detection:** Once a provider has a cached checkout, bits refreshes its git mirror on every run (even without `-u`/`--fetch-repos`) so that tag advances in the upstream repository are always detected. This ensures that a team-wide recipe update published as a new tag is picked up on the next build without any manual cache purge.
 
 ### Effect on build hashes
 
-The commit hash of every provider whose recipes are used is stored in `spec["recipe_provider_hash"]` for each package sourced from that provider. `storeHashes` in `build.py` folds this value into the package's content-addressable build hash, so upgrading a provider (new commit) automatically triggers a rebuild of all packages sourced from it.
+A provider's commit does **not** enter the build hash. Each package is hashed from its own inputs (recipe text, sources, patches and its dependencies' hashes), so a new provider commit rebuilds only the packages whose recipes changed (and their dependents), not every package from that repository. The provider name and commit used for each package are still recorded in the build manifest for provenance.
 
 ---
 
@@ -804,11 +872,14 @@ If `pytest` is available:
 
 ```bash
 pytest tests/ -v
-tox          # runs the full matrix defined in tox.ini (Linux)
-tox -e darwin  # reduced matrix for macOS
+tox -e py312   # one Python version on Linux (envlist: py38–py314)
+tox -e darwin  # the macOS environment
+# tox also runs bitsBuild integration commands that clone alidist from GitHub (needs network)
 ```
 
 ### Test file overview
+
+A selection of the main test files (`tests/` holds over 100):
 
 | Test file | What it covers |
 |-----------|---------------|
@@ -826,7 +897,7 @@ tox -e darwin  # reduced matrix for macOS
 | `test_pkg_to_shell_id.py` | `pkg_to_shell_id` sanitisation (dots, dashes, `@`, `+`); `generate_initdotsh` export correctness for dot-in-package-name |
 | `test_provider_staleness.py` | Mirror always refreshed when cache exists; upstream tag advances detected; `fetch_repos=False` respected on first run |
 | `test_qualify_arch.py` | `compute_combined_arch`: legacy `qualify_arch` and new per-default `append_arch`; end-to-end through `effective_arch`, install path, and `init.sh` generation |
-| `test_repo_provider.py` | Repository provider: `getConfigPaths` absolute paths, `_add_to_bits_path`, `clone_or_update_provider` caching, iterative discovery, nested providers, hash propagation |
+| `test_repo_provider.py` | Repository provider: `getConfigPaths` absolute paths, `_add_to_bits_path`, `clone_or_update_provider` caching, iterative discovery, nested providers, provider commit recorded on specs but kept out of the build hash |
 | `test_sync.py` | Remote store backends (requires `botocore` for S3 tests) |
 
 ### Guidelines for new tests
@@ -843,7 +914,7 @@ tox -e darwin  # reduced matrix for macOS
 
 - Open an issue at `https://github.com/bitsorg/bits/issues` before starting non-trivial work so effort isn't duplicated.
 - Fork the repository, create a feature branch from `main`, and open a pull request when ready.
-- All tests must pass (`tox` on Linux, `tox -e darwin` on macOS) before a PR is merged.
+- All tests must pass (`tox -e py3XX` on Linux, `tox -e darwin` on macOS) before a PR is merged.
 - The main development branch is `main`; do not target `stable` or release branches directly.
 
 ### Code style
@@ -862,8 +933,9 @@ tox -e darwin  # reduced matrix for macOS
 | CLI flags, recipe YAML fields, environment variables, architecture/store/Docker internals | `docs/REFERENCE.md` (this file) |
 | End-to-end development-to-CVMFS workflow | `docs/WORKFLOWS.md` |
 | Planned features, design decisions, known limitations | `docs/ROADMAP.md` |
+| Architecture decision records | `docs/adr/` |
 
-When a change affects the public CLI (new flag, renamed option, changed default), also update the relevant entry in §16 Command-Line Reference and the short description in README.md.
+When a change affects the public CLI (new flag, renamed option, changed default), also update the relevant entry in [§16 Command-Line Reference](#16-command-line-reference) and the short description in README.md.
 
 ### License
 
@@ -884,7 +956,7 @@ bits [--debug|-d] [--dry-run|-n] <subcommand> [options]
 | Global option | Description |
 |---------------|-------------|
 | `-d`, `--debug` | Enable verbose debug output |
-| `-n`, `--dry-run` | Print what would happen without executing. For `bits build`: a per-package plan (installed / local tarball / from remote store / build) and a summary; the remote store is listed, never downloaded from (http(s):// and b3:// stores) |
+| `-n`, `--dry-run` | Print what would happen without executing. For `bits build`: a per-package plan (installed, local tarball, from the remote store, from the reuse overlay, or build) and a summary. Nothing is downloaded: the remote store is only listed, which is possible for `http(s)://` and `b3://` stores. |
 | `-a ARCH`, `-w DIR`, `--no-refresh` | Module commands (`enter`, `load`, `q`, …) only: architecture, work directory, and skip refreshing the modules directory. |
 
 Saved arguments from a `bits use` profile are inserted right after the sub-command, before your own (see [bits init](#bits-init)); `bits.rc` is no longer read.
@@ -903,25 +975,25 @@ bits build [options] PACKAGE [PACKAGE ...]
 |--------|-------------|
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `--flavour NAME[=VALUE]` (aliases `--flavor`, `--set`) | Set a build-wide flavour variable (repeatable, comma-separated). `NAME`→`true`, `NAME=VALUE`→`VALUE`, `!NAME`→`false`. Gates `(?NAME)` conditional requires/sources/patches and is exported into the build environment; overrides a defaults `variables:` entry of the same name. See [Flavours](#flavours). |
-| `--reuse-from PATH\|cvmfs` | Reuse deployed components via their published modulefiles at this absolute modules-tree path (distinct from `--remote-store`, which is the tarball store). The literal `cvmfs` resolves the location from the defaults `system:` layout (`module_dir`/`cvmfs_dir`) or the `cvmfs_modules_template`. A trailing `::relaxed`/`::strict` also sets the reuse policy (e.g. `cvmfs::relaxed`). See [Reusing deployed components](#relaxed-cvmfs-reuse). |
-| `--reuse-policy {strict,relaxed}` | How a reused (`--reuse-from`) component is matched. `strict` (default): reuse only on an exact content-hash match; the result is publishable. `relaxed`: reuse any version present in the one-release overlay, for fast local dev on top of e.g. an LCG release — only the top of the stack is built. Relaxed builds are *loose-provenance* and are refused by the publish path. Falls back to the defaults `reuse_policy:` value. |
+| `--reuse-from PATH\|cvmfs` | Reuse components already deployed on CVMFS, found through their published modulefiles at this absolute modules-tree path (unlike `--remote-store`, which is a tarball store). The literal `cvmfs` takes the location from the defaults `system:` layout (`module_dir` under `cvmfs_dir`) or, failing that, from `cvmfs_modules_template`. A trailing `::relaxed` or `::strict` also sets the reuse policy (e.g. `cvmfs::relaxed`); it must agree with `--reuse-policy` if both are given. See [Reusing deployed components](#relaxed-cvmfs-reuse). |
+| `--reuse-policy {strict,relaxed}` | How a `--reuse-from` component is matched. `strict` (default): only on an exact content-hash match; the result is publishable. `relaxed`: any deployed build of the **same version** (revision and hash may differ), for fast local development on top of e.g. an LCG release, so only the top of the stack is built. Relaxed builds have *loose* provenance and cannot be published: combining them with `--write-store` is refused. Falls back to the defaults `reuse_policy:` value. |
 | `--build-local PKG[,PKG…]` | Packages to always build locally even when they could be reused (e.g. one you need patched), instead of taking them from `--reuse-from`. |
-| `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [§9](#9-architecture-overview)). An explicit value here overrides the template. |
+| `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [The `architecture:` template](#architecture-string-and-the-architecture-template)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `--day DAY` | Value of the `{day}` nightly CVMFS path slot (e.g. `Fri`). Default: the UTC weekday, filled in only when a template uses `{day}`; `''` collapses the slot. Layout only — never hashed. See [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups). |
 | `-j N`, `--jobs N` | Parallel compilation jobs per package. Default: CPU count. |
-| `--no-auto-patch` | Do not apply recipe `patches:` automatically for any package in this build. The patch files are still staged in `$SOURCEDIR` and exported as `$PATCH0..$PATCH_COUNT`, but each recipe must apply its own patches (e.g. via the `bits_apply_patches` helper). Default: patches are auto-applied. A single recipe can opt out with `auto_patch: false` in its header; a defaults profile can opt out with `auto_patch: false`. See [Controlling patch application](#controlling-patch-application). |
-| `--parallel [N]` | Packages to build simultaneously using the built-in Python scheduler. Bare `--parallel` uses 4; omit it for serial (the default). With N>1, each build's `$JOBS` is divided across the builders (the CPU/load budget, see [Memory- and load-aware parallelism](#memory-aware-parallelism)) so the concurrent jobs together do not oversubscribe the machine. (`--builders` is a kept alias.) |
+| `--no-auto-patch` | Do not apply recipe `patches:` automatically for any package in this build. The patch files are still staged in `$SOURCEDIR` and exported as `$PATCH0..$PATCH_COUNT`; each recipe must then apply them itself (e.g. with the `bits_apply_patches` helper). A single recipe or a defaults profile can also opt out with `auto_patch: false`. See [Controlling patch application](#controlling-patch-application). |
+| `--parallel [N]` | Number of packages to build at the same time. Bare `--parallel` uses 4; without it the build is serial (the default). With N>1 each build's `$JOBS` is divided across the builders so that together they do not oversubscribe the machine (see [Memory- and load-aware parallelism](#memory-aware-parallelism)). `--builders` is a kept alias. |
 | `--oversubscribe FACTOR` | CPU oversubscription factor (≥ 1.0) for the per-builder `-j` share: each package gets `ceil(jobs × FACTOR ÷ parallel)`, still clamped to `-j` and to the (unscaled) memory cap. Falls back to `build_oversubscribe:` in the active defaults, then 1.0. |
-| `--unleash-final` / `--no-unleash-final` | The final (top-level) package depends on every other package, so it is always scheduled last and builds **alone**. With unleashing on (the default for `--parallel > 1`), it uses the full `-j` instead of the per-builder share, since nothing else is running; the `mem_per_job` cap still applies (now against the full free RAM). Pass `--no-unleash-final` to keep it on the per-builder share. Falls back to `build_unleash_final:` under the defaults `system:` block when unset. No effect for `--parallel 1`. |
-| `--legacy-initdotsh` / `--initdotsh-from-modules` | How each build's **dependency environment** is set up. The default (`--initdotsh-from-modules`) derives it from the dependencies' modulefiles — the single source of truth for runtime *and* development — so recipes need not hand-reconstruct `PYTHONPATH`/include dirs. `--legacy-initdotsh` uses the legacy build-time `init.sh` instead. **HASHED**: the default folds `BITS_INITDOTSH_FROM_MODULES` into every package hash (a distinct, reproducible identity); legacy folds in nothing, so its hashes are byte-identical to the pre-modules default and bits can still reuse **alidist** tarballs. Legacy is also selectable with `BITS_LEGACY_INITDOTSH=1` in the environment — the aliBuild compatibility wrapper sets it. |
-| `--critical-path-schedule` / `--no-critical-path-schedule` | Order ready `--parallel` jobs by their **critical-path weight** — the longest path, weighted by recorded build times, from each job to the final target — so the build's long pole starts as early as its dependencies allow (Ninja-style scheduling). Weights come from a previous run's `bits_build_stats.json`; with no history the weight reduces to graph depth. **On by default**; `--no-critical-path-schedule` falls back to registration-order dispatch. Falls back to `build_critical_path_schedule:` under the defaults `system:` block when unset. Affects dispatch order only — never what is built or any hash. |
-| `--build-nice` / `--no-build-nice` | Stagger the concurrent `--parallel` jobs across OS scheduling priority so CPU contention degrades gracefully: at any moment one build runs at top priority (full speed) and the others are progressively backed off, with the freed top slot taken over as builds finish. Native builds are wrapped in `nice -n N`; `--docker`/podman builds get `docker run --cpu-shares=W` (each builder is a separate container/cgroup, so the host ranks the build *containers* by cgroup CPU weight). Memory is still capped separately via `mem_per_job`. **Off by default** (opt in with `--build-nice`); only affects `--parallel > 1`. `--no-build-nice` is the default. |
+| `--unleash-final` / `--no-unleash-final` | The final (top-level) package depends on all the others, so it always builds last and alone. Unleashing (on by default) gives it the full `-j` instead of the per-builder share; the `mem_per_job` cap still applies. `--no-unleash-final` keeps it on the per-builder share. Falls back to `build_unleash_final:` in the defaults `system:` block. Only affects `--parallel` > 1. |
+| `--legacy-initdotsh` / `--initdotsh-from-modules` | How each build's **dependency environment** is set up. Default (`--initdotsh-from-modules`): derived from the dependencies' modulefiles, the same environment used at run time, so recipes need not rebuild `PYTHONPATH`, include paths etc. by hand. `--legacy-initdotsh`: the old build-time `init.sh`. The choice **changes package hashes**: legacy mode gives the same hashes as before, so bits can still reuse **alidist** tarballs. Legacy mode can also be selected with `BITS_LEGACY_INITDOTSH=1` (the aliBuild compatibility wrapper sets it). |
+| `--critical-path-schedule` / `--no-critical-path-schedule` | Start ready `--parallel` jobs in order of their **critical path**: the longest chain, weighted by recorded build times, from the job to the final target, so the slowest chain starts as early as possible. Build times come from a previous run's `bits_build_stats.json`; without history, depth in the dependency graph is used. **On by default**; `--no-critical-path-schedule` starts jobs in the order they were queued. Falls back to `build_critical_path_schedule:` in the defaults `system:` block. Changes only the order, never what is built or any hash. |
+| `--build-nice` / `--no-build-nice` | Give concurrent `--parallel` builds staggered OS priorities so CPU contention degrades gracefully: one build runs at full priority and the others are progressively lowered; when a build finishes, the next one moves up. Native builds run under `nice -n N`; `--docker`/podman builds get `docker run --cpu-shares=W`. Memory is still capped separately by `mem_per_job`. **Off by default**; only affects `--parallel` > 1. |
 | `--build-nice-step N` | Nice increment between concurrent build slots when `--build-nice` is set: slot *k* → nice `min(k×N, 19)`. `N=1` gives a gentle `0,1,2,3` ladder; larger values separate the slots more aggressively. Default: 5. |
-| `--build-nice-boost-after SECONDS` | With `--build-nice`, a watchdog boosts a long-running straggler compile — one at a time — so a single heavy Fortran/C++ translation unit does not drag out the end of the build. Native builds: the longest-running niced-down build subtree is reniced toward 0 (requires privilege — root / `CAP_SYS_NICE` — and is a logged no-op otherwise). `--docker`/podman builds: each build runs in a named container (`bits-build-<pkg>-<id>`); the watchdog peeks inside with `docker exec … ps`, finds a compiler back-end (cc1plus/f951/…) that has been running longer than this, and renices it with `docker exec --user 0 … renice` (run as root inside the container, so it can raise priority). **Requires `ps` (the `procps` package) in the build image** — see note below. `0` disables. Default: 600. |
+| `--build-nice-boost-after SECONDS` | With `--build-nice`, a watchdog raises the priority of one long-running straggler at a time, so a single heavy compile does not drag out the end of the build. Native builds: the longest-running lowered build is reniced towards 0 (needs root or `CAP_SYS_NICE`; otherwise a logged no-op). `--docker`/podman builds: a compiler process (e.g. `cc1plus`, `f951`) running longer than this is reniced as root inside the container; this **needs `ps` (package `procps`) in the build image**, see the note below. `0` disables. Default: 600. |
 | `--prefetch-workers N` | Spawn *N* background threads to fetch remote tarballs and source archives ahead of the main build loop, so downloads overlap with compilation instead of blocking the serial preparation pass. Default: `-1` (auto — scales with `--parallel`, capped at 4); `0` disables. No effect without `--remote-store`. |
 | `--parallel-downloads N` | Maximum concurrent source/tarball downloads the `--parallel` scheduler runs as standalone download tasks (so a checkout overlaps the previous package's build). Default: 2. |
-| `--auto-resources` | Opt-in measurement-driven scheduling for `--parallel > 1`: auto-load the per-package CPU/RAM stats a previous run recorded (re-stamped for this machine) and enable monitoring to refresh them, so the scheduler only admits a new build when the machine still has budget. Off by default (concurrency is then bounded purely by `--parallel`); explicit `--resources`/`--resource-monitoring` still take precedence. |
+| `--auto-resources` | Opt-in for `--parallel` > 1: load the per-package CPU and memory statistics recorded by a previous run, and turn on monitoring to refresh them, so a new build starts only while the machine still has CPU and memory to spare. Off by default (concurrency is then limited only by `--parallel`); explicit `--resources` / `--resource-monitoring` still apply. |
 | `--brew` | **macOS only.** Let a recipe that sources a system library from Homebrew run `brew install <formula>` on demand (during dependency resolution) when the formula is missing. Without it, such a recipe fails with a message naming the formula to install. Exported to recipe `prefer_system_check` scripts as `BITS_BREW=1`. See [macOS Homebrew system layer](#macos-homebrew-system-layer). |
 | `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 | `-e KEY=VALUE` | Extra environment variable binding (repeatable). |
@@ -937,8 +1009,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
 | `-c DIR`, `--config-dir DIR` | Directory containing recipe files. Default: `.`. |
 | `--search-path NAMES` | Comma-separated recipe sub-repos to search besides the config dir. A relative NAME resolves to `<config-dir>/NAME.bits`; absolute paths are used as-is. Seeds `BITS_PATH` (an explicit `$BITS_PATH` wins). |
-| `--reference-sources DIR` | Local mirror of git repositories. |
-| `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it. |
+| `--reference-sources DIR` | Directory for the local mirrors of git repositories. Default: `<work-dir>/MIRROR`. |
+| `--remote-store URL` | Binary store to fetch pre-built tarballs from. Append `::rw` to also upload to it (cannot be combined with `--write-store`). On supported architectures the public CERN store is the default; a `remote_store:` entry in the defaults `system:` block replaces that default. |
 | `--write-store URL` | Binary store to upload built tarballs to. Given alone (no `--remote-store`), it is also the read store, except where a default remote store applies (then use `--remote-store URL::rw`). |
 | `--no-remote-store` | Disable the default remote store; a `--write-store` is still read from. |
 | `--insecure` | Do not validate TLS certificates of an `https://` store. |
@@ -950,19 +1022,19 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--s3-secret-key KEY` | S3 secret access key. Overrides `$AWS_SECRET_ACCESS_KEY`. |
 | `--s3-region REGION` | S3 region. Overrides `$AWS_DEFAULT_REGION`. |
 | `--s3-addressing-style {auto,path,virtual}` | S3 addressing style for `b3://` stores. MinIO usually needs `path`. Overrides `$S3_ADDRESSING_STYLE`. |
-| `--disable PACKAGE` | Skip PACKAGE entirely (repeatable). |
+| `--disable PACKAGE` | Do not build PACKAGE nor the dependencies only it needs (repeatable or comma-separated). |
 | `--prefer-system` | Always prefer system packages where supported. (`--always-prefer-system` is a kept alias.) |
 | `--no-system [PACKAGES]` | Never use system packages for the comma-separated PACKAGES; bare, for any package. |
 | `--docker` | Build inside a Docker container. |
 | `--docker-image IMAGE` | Docker image to use. Implies `--docker`. Default: derived from the architecture and registry (see [§22](#22-docker-support)). |
 | `--docker-extra-args ARGS` | Extra arguments for `docker run`. Implies `--docker`. bits always adds `--network=host` and, unless given, `--cpuset-cpus=<host CPUs>`. |
 | `-v VOLUME` | Additional volume to mount in the container (repeatable; passed to `docker run`). |
-| `--cvmfs-prefix PATH` | Bind-mount the workDir at `PATH` inside the container so packages compile with their final CVMFS paths embedded. Requires `--docker`. See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
-| `--container-use-workdir` | Mount the workDir at the same absolute path inside the container. Mutually exclusive with `--cvmfs-prefix`. |
+| `--cvmfs-prefix PATH` | Bind-mount the work directory at `PATH` inside the container so packages compile with their final CVMFS paths embedded and need no relocation at publish time. Only used with `--docker`. See [No-relocation builds](#no-relocation-builds-with---cvmfs-prefix). |
+| `--container-use-workdir` | Mount the work directory at the same absolute path inside the container (without this flag it is mounted at `/container/bits/sw`). Ignored when `--cvmfs-prefix` is set. |
 | `--docker-platform PLATFORM` | Docker `--platform` for cross-compilation (e.g. `linux/arm64`). Inferred automatically from `--architecture`; pass `native` to suppress. Requires QEMU binfmt handlers. See [§22.2 Cross-compilation via QEMU](#222-cross-compilation-via-qemu). |
 | `--sandbox MODE` | Sandbox recipe builds: `off` (default), `auto`, `podman`, or `sandbox-exec` (macOS). See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
 | `--sandbox-image IMAGE` | Container image for `--sandbox=podman` when not using `--docker`. Implies `--sandbox=podman`. |
-| `--sandbox-network MODE` | Default build-time network inside the sandbox: `on` blocks it, `off` allows it. A recipe's `sandbox_network:` always wins; falls back to `sandbox_network:` in the active defaults, then `on`. |
+| `--sandbox-network MODE` | Default network restriction inside the sandbox: `on` blocks network access, `off` allows it. A recipe's `sandbox_network:` always wins; falls back to `sandbox_network:` in the active defaults, then `on`. No effect where sandboxing is off. |
 | `--no-auto-cleanup` | Keep the build directories after a successful build. |
 | `--aggressive-cleanup` | Delete as much build data as possible when cleaning up. |
 | `--resource-monitoring` | Enable per-package CPU/memory monitoring. **Default: on when `--parallel` > 1**, off for serial builds. |
@@ -972,13 +1044,13 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--enforce-checksums` | Abort on source/patch checksum mismatch or missing checksum. |
 | `--print-checksums` | Print checksums for all sources/patches in YAML format after the build. |
 | `--write-checksums` | Add the fetched sources', patches' and git tags' checksums to `checksums/<package>.checksum` after the build. For a whole repository, use `bits checksums`. |
-| `--store-integrity` | Record and verify SHA-256 of every recalled tarball. Persist it with `bits use build --store-integrity`. See [§21 Store integrity verification](#store-integrity-verification). |
-| `--provider-policy POLICY` | Control `BITS_PATH` insertion order for repository providers. Format: `name:prepend\|append` pairs. See [§13 Provider policy](#provider-policy). |
-| `--from-manifest FILE` | Replay a build from a manifest JSON file; verifies each tarball against `tarball_sha256`. See [§25 Build Manifest](#25-build-manifest). |
+| `--store-integrity` | Record the SHA-256 of each uploaded tarball and verify it every time the tarball is fetched again; a mismatch is fatal. Persist it with `bits use build --store-integrity`. See [§21 Store integrity verification](#store-integrity-verification). |
+| `--provider-policy POLICY` | Control where each repository provider is inserted into `BITS_PATH`. Format: comma-separated `name:prepend\|append` pairs; every provider defaults to `append`, and this flag is the only way to grant `prepend`. See [§13 Provider policy](#provider-policy). |
+| `--from-manifest FILE` | Rebuild the packages a manifest JSON file requested (`requested_packages`); versions and tarballs are resolved afresh, not pinned or checked against the manifest. `PACKAGE` is then optional: without it, the manifest's requested packages are built. See [§25 Build Manifest](#25-build-manifest). |
 
-The three `--*-checksums` flags are mutually exclusive. Precedence (highest → lowest): `--print-checksums` > `--enforce-checksums` > `--check-checksums` > `checksum_mode:` in defaults profile > per-recipe `enforce_checksums: true` > `off`. `--write-checksums` is independent and can be combined with any of the above. See [§18 — Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles).
+The three `--*-checksums` flags are mutually exclusive. Precedence (highest → lowest): the command-line flag > per-recipe `enforce_checksums: true` > `checksum_mode:` in the defaults profile > `off`. `--write-checksums` is independent, can be combined with any of them, and can also be turned on with `write_checksums: true` in the defaults profile. See [§18 — Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles).
 
-**Build-image requirement — `procps` (for `--build-nice` straggler boosting under `--docker`).** When `--build-nice` (opt-in) boosts a long-running straggler compile in a `--docker`/podman build, it locates the offending process by running `ps` *inside* the build container (`docker exec … ps`). This requires the `ps` utility — provided by the **`procps`** package (`procps-ng` on RPM distros) — to be installed in the build image. If `ps` is not present, bits prints a one-time warning and disables in-container straggler renicing for the run; the build itself is unaffected. Build images intended for `bits build --docker` should therefore include `procps`. (Native, non-`--docker` builds use `psutil` on the host instead and do not need `ps` in any image.)
+**Build-image requirement: `procps`.** With `--build-nice` under `--docker`/podman, the straggler boost finds the compiler process by running `ps` inside the build container, so build images for `bits build --docker` should include the **`procps`** package (`procps-ng` on RPM distros). Without `ps`, bits warns once and skips in-container boosting; the build itself is unaffected. Native builds use `psutil` on the host and need no `ps` in any image.
 
 #### S3 store: common CI/CD config with per-runner overrides
 
@@ -993,7 +1065,11 @@ first. Precedence for every setting (highest first):
 2. `BITS_<NAME>` — the per-host override, set in the gitlab-runner `config.toml`
    `environment`;
 3. `<NAME>` — the common value, set as a GitLab CI/CD variable;
-4. the built-in default (CERN S3, public read store on supported architectures).
+4. for the store URL only, `remote_store:` in the active defaults' `system:` block;
+5. the built-in default (CERN S3, public read store on supported architectures).
+
+S3 credentials, endpoint and region not set by 1–3 are also read from
+`~/.bits/s3keys` (see [S3-compatible via boto3](#s3-compatible-via-boto3-b3)).
 
 | Setting | CLI flag | Common var (CI/CD) | Per-runner override (config.toml) |
 |---------|----------|--------------------|-----------------------------------|
@@ -1021,8 +1097,9 @@ installed on each build (gitlab-runner) host:
   - or, respecting PEP 668: `pip3 install --break-system-packages boto3`
 - `s3://` stores need the **s3cmd** binary and an `~/.s3cfg` instead.
 
-`runner_installer.sh` installs `python3-boto3` automatically on both Ubuntu and
-AlmaLinux hosts.
+The bits-console runner installer (`runner_installer.sh`, part of bits-console,
+not of this repository) installs `python3-boto3` automatically on both Ubuntu
+and AlmaLinux hosts.
 
 ---
 
@@ -1043,7 +1120,7 @@ bits deps [options] PACKAGE
 | `--runtime-only` | With `--outmake`, follow only `requires` (runtime) dependencies plus `untracked_requires`, and skip `build_requires`, so build-only packages are left out. |
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 | `-a ARCH` | Architecture for dependency resolution. |
-| `--disable PACKAGE` | Exclude PACKAGE from the graph (repeatable). |
+| `--disable PACKAGE` | Assume PACKAGE, and the dependencies only it needs, are not built (repeatable or comma-separated). |
 | `--prefer-system` | Resolve as if system packages are used when compatible. (`--always-prefer-system` is a kept alias.) |
 | `--no-system [PACKAGES]` | Never use system packages for PACKAGES (bare: any). |
 | `--neat` | Graph with transitive reduction. |
@@ -1052,21 +1129,20 @@ bits deps [options] PACKAGE
 | `--docker`, `--docker-image IMAGE`, `--docker-extra-args ARGS` | Check for system packages inside a Docker container, as `bits build --docker` would. |
 | `-c DIR`, `--config-dir DIR`, `--search-path NAMES` | Recipe directory and extra recipe sub-repos, as for `bits build`. |
 
-Colour coding in the generated graph: **gold** = requested top-level package; **green** = runtime-only dependency; **purple** = build-only dependency; **tomato** = both runtime and build dependency.
+Colour coding in the generated graph: **gold** = requested top-level package; **green-yellow** = runtime-only dependency; **plum** = build-only dependency; **tomato** = both runtime and build dependency. Build-dependency edges are grey, runtime edges blue.
 
-**Recorded at build time.** Package `.meta.json` files also contain `dependency_graph`, a mapping from each
-package in the runtime closure (including the package itself) to its direct runtime
-dependencies. This includes `untracked_requires`, but excludes build-only dependencies
-and the virtual `defaults-release` node and its edges. Node names and dependency lists
-are alphabetically sorted, independent of build order and unrelated build targets;
-consumers can derive installation order from the edges. Recursive dependency metadata
-lists are also alphabetically sorted; direct lists keep recipe declaration order.
-Each package and dependency entry also records `pkg_family` and
-`effective_architecture` (`share` for noarch recipes, the build-type-neutral arch for
-own-hash packages such as the toolchain, otherwise the build arch); the top-level
-`architecture` stays the build arch. This metadata does not enter the package hash.
-Adding the fields changes newly built tarball bytes, so existing signed checksums do
-not describe those rebuilt tarballs.
+**Recorded at build time.** Each package's `.meta.json` also contains
+`dependency_graph`: for every package in its runtime closure (itself included),
+the list of its direct runtime dependencies, `untracked_requires` included and
+build-only dependencies and `defaults-release` left out. Names and lists are
+sorted alphabetically, so the graph does not depend on build order; installation
+order can be derived from the edges. (Other recursive dependency lists in the
+metadata are sorted too; direct lists keep the recipe's order.) Each entry also
+records `pkg_family` and `effective_architecture` (`share` for noarch recipes,
+otherwise the architecture the package was built for), while the top-level
+`architecture` stays the build architecture. None of this enters the package
+hash, but it does change the bytes of newly built tarballs, so existing signed
+checksums do not cover rebuilt tarballs.
 
 ---
 
@@ -1091,8 +1167,9 @@ bits doctor --check-store PACKAGE ...        # pre-build store availability repo
 |-----------------|---------------|
 | `git` on PATH | always |
 | C++ compiler (`c++`, `g++`, or `clang++`) | always |
-| Docker daemon reachable | `--docker` or `--runner` |
-| QEMU binfmt handler for the target architecture | when `--docker` is set |
+| Docker daemon reachable | always |
+| QEMU binfmt handler for the target architecture (`-a`) | always |
+| Xcode Command Line Tools, XQuartz, Homebrew Brewfile | macOS only |
 | podman availability and user-namespace support | always |
 | CVMFS repository path(s) accessible and non-empty | `--cvmfs-repos` / `$BITS_CVMFS_REPOS` |
 | Free disk space in `--work-dir` ≥ `--min-disk` GiB | always |
@@ -1138,15 +1215,15 @@ bits doctor --check-store  —  architecture: slc9_x86-64
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--check-store` | off | Probe the remote store for each package bits would build. Requires `--remote-store`. Always exits 0. |
+| `--check-store` | off | Probe the remote store for each package bits would build. Needs a remote store (`--remote-store` or the architecture's default). Only `http(s)://` and local-directory stores can be probed; others are reported as SKIP. Always exits 0. |
 | `--runner` | off | Validate the full build-runner environment instead of checking package recipes. |
 | `--json` | off | Emit a machine-readable JSON report (setup mode, `--runner` and `--check-store`). |
 | `--cvmfs-repos PATH` | _(none)_ | CVMFS mount path to check (repeatable, `--runner` mode only). Can also be set as `$BITS_CVMFS_REPOS=/cvmfs/a,/cvmfs/b`. |
-| `--min-disk GIB` | `10.0` | Minimum free disk in `--work-dir` (`--runner` mode). Lower triggers WARN, not FAIL. |
+| `--min-disk GIB` | `10.0` | Minimum free disk in `--work-dir` (setup and `--runner` modes). Less triggers WARN, not FAIL. |
 | `-a ARCH`, `--architecture ARCH` | auto-detected | Target architecture. |
 | `--defaults PROFILE` | `release` | Defaults profile for dependency resolution. |
-| `-w DIR`, `--work-dir DIR` | `sw` | Work directory checked for disk space (`--runner`). |
-| `--docker` | off | Run recipe checks inside a Docker container (also enables docker-daemon and QEMU checks in `--runner`). |
+| `-w DIR`, `--work-dir DIR` | `sw` | Work directory checked for disk space (setup and `--runner` modes). |
+| `--docker` | off | Run recipe checks inside a Docker container, as `bits build --docker` would. |
 | `--remote-store URL` | _(none)_ | Remote binary store URL; checked for reachability in setup and `--runner` mode and probed per-package in `--check-store` mode. |
 | `--write-store URL` | _(none)_ | Write store; checked in setup mode like `--remote-store`. |
 | `--no-remote-store` | off | Disable the default remote store. |
@@ -1270,8 +1347,8 @@ bits verify --from-manifest FILE [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--from-manifest FILE` | _(required)_ | Path to the bits build manifest JSON file. |
-| `--cvmfs-root PATH` | _(none)_ | CVMFS tarball store root to search first. |
-| `-w DIR`, `--work-dir DIR` | `sw` | Local bits work directory containing the `TARS/` store. |
+| `--cvmfs-root PATH` | _(none)_ | Root of a CVMFS tarball store to search first (e.g. `/cvmfs/alice.cern.ch`). |
+| `-w DIR`, `--work-dir DIR` | `$BITS_WORK_DIR`, else `sw` | Local bits work directory containing the `TARS/` store. |
 | `--no-providers` | off | Skip provider checkout commit verification. |
 | `--json` | off | Emit a machine-readable JSON report. |
 
@@ -1301,9 +1378,10 @@ Each built package is a component: version `<version>-<revision>`, the tarball
 SHA-256, the SPDX licence, a purl (`pkg:github/…@<commit>` for GitHub code,
 else `pkg:generic/…`), source archives with their checksums, the git origin,
 and bits properties (build hash, architecture, patches, redistributable).
-Dependencies come from the manifest (schema v4: `requires` = runtime and
-untracked, as the dependency graph / `DEPENDS_ON`; `build_requires` as a
-`bits:build_requires` property / `BUILD_DEPENDENCY_OF`). Packages taken from
+Dependencies come from the manifest (schema v4 and later): runtime and
+untracked `requires` become dependency edges (CycloneDX `dependencies`, SPDX
+`DEPENDS_ON`); `build_requires` become a `bits:build_requires` property in
+CycloneDX and `BUILD_DEPENDENCY_OF` in SPDX. Packages taken from
 the system (`system_packages`) appear as components marked
 `bits:provided_by = system`. Older (v3) manifests have no dependency edges:
 their SBOM lists components only. A recipe `license:` that is not a valid SPDX
@@ -1368,8 +1446,7 @@ build would stop there too. Exit status 1 on any `MISMATCH` or `failed`.
 
 Summarise the resource data recorded when a build ran with `--resource-monitoring`
 (on by default for `--parallel > 1`). Reads `<work-dir>/LOGS/<arch>/bits_build_stats.json`
-(per-package peaks; written per-architecture so concurrent builds of different
-platforms in one work area don't clobber each other) and the per-package traces
+(per-package peaks; one file per architecture) and the per-package traces
 under `SPECS/` (for average CPU and thread counts). When the architecture isn't
 specified, `bits stats` reads the most recent `LOGS/*/bits_build_stats.json`.
 
@@ -1425,7 +1502,7 @@ bits compliance --enforce [--dry-run] [--key PEM]     # admin
 | `PACKAGE ...` | _(none)_ | Group mode: audit exactly the resolved dependency closure of these roots (e.g. the group's meta-packages), discovering recipe repositories as `bits build` does (config dir, defaults profile, repository providers). |
 | `-c DIR`, `--search-path NAMES`, `-a ARCH`, `--defaults PROFILE`, `--disable PACKAGE` | as `bits build` | Group mode: how the closure is resolved. |
 | `--recipes DIR` | `.` | Without `PACKAGE`: recipe repository to audit (a directory of `*.sh` recipes). |
-| `--remote-store URL` | CERN test store | S3 store to audit against the recipe flags (`https`, `b3://`, `s3://`). `--store` is the deprecated spelling. |
+| `--remote-store URL` | `https://s3.cern.ch/lcgapp-bits-testing` | S3 store to audit against the recipe flags (`https`, `b3://`, `s3://`). `$BITS_S3_STORE` changes the default. `--store` is the deprecated spelling. |
 | `--no-store-check` | off | Audit the recipes only. |
 | `--enforce` | off | ADMIN: purge non-compliant packages from the store (see below). |
 | `--dry-run` | off | With `--enforce`: print every action, touch nothing. |
@@ -1434,7 +1511,7 @@ bits compliance --enforce [--dry-run] [--key PEM]     # admin
 
 The **audit** reports: recipes missing a `license:` field, unverified
 `LicenseRef-*` ids, `NOASSERTION` system shims, and the binaries-restricted /
-sources-restricted sets (`redistributable:` — see §9). The **store walk**
+sources-restricted sets (`redistributable:`, see [Licence compliance and redistribution policy](#licence-compliance-and-redistribution-policy)). The **store walk**
 probes whether the bucket answers *unauthenticated* requests (anonymous access
 working at all is a finding: a restricted object in a world-readable bucket is
 public redistribution regardless of any CVMFS gate), then checks every
@@ -1458,9 +1535,9 @@ re-derives the signed manifests from the repo. Requires S3 write credentials
 
 ### bits init
 
-`bits init` has two distinct modes selected by whether a PACKAGE name is given.
+`bits init` has two modes, selected by whether a PACKAGE name is given. (A name ending in `.bits` instead checks out that recipe repository from the provider registry — see [Bootstrapping a recipe repository from the registry](#bootstrapping-a-recipe-repository-from-the-registry).)
 
-#### Clone mode — create a writable source checkout (legacy / unchanged)
+#### Clone mode — create a writable source checkout
 
 ```bash
 bits init [options] PACKAGE[@VERSION][,PACKAGE[@VERSION]...]
@@ -1470,15 +1547,16 @@ Clones the upstream source repository for each named package into a writable loc
 
 | Option | Description |
 |--------|-------------|
-| `--dist [USER/REPO@]BRANCH` | Recipe repository to download into the config dir (`[user/repo@]branch` or `[url@]branch`). Default repo `alisw/alidist`, on its default branch. |
-| `-z PREFIX`, `--devel-prefix PREFIX` | Directory for development checkouts. |
-| `--reference-sources DIR` | Mirror directory to speed up cloning. |
-| `-a ARCH` | Architecture. |
+| `--dist [USER/REPO@]BRANCH` | Recipe repository cloned into the config dir if that does not exist yet (`[user/repo@]branch` or `[url@]branch`). Default: `alisw/alidist@master`. |
+| `-z PREFIX`, `--devel-prefix PREFIX` | Directory for development checkouts. Default: `.`. |
+| `-c DIR`, `--config-dir DIR` | Recipe directory. Default: `<devel-prefix>/alidist`. |
+| `--reference-sources DIR` | Mirror directory to speed up cloning. Default: `<work-dir>/MIRROR`. |
+| `-a ARCH`, `--architecture ARCH` | Architecture used to read the defaults. Default: detected. |
 | `--defaults PROFILE` | Defaults profile(s); use `::` to combine (e.g. `release::myproject`). Default: `release`. |
 
 #### Config mode — record persistent settings with `bits use`
 
-When **no PACKAGE** is given, `bits init` records the supplied options as a `bits use` profile (`./.bitsuse`, or a `~/.bits/use` record when the directory is not writeable) and exits, so you do not repeat them on every build. `--architecture` is saved to the `[common]` section (applied to every arch-aware command); the rest to `[build]`. Explicit CLI flags always take precedence.
+`bits use build …` (below) is the general way to record persistent settings. As a shortcut, when **no PACKAGE** is given, `bits init` saves only the options you name on its command line as a `bits use` profile (`./.bitsuse`, or a record under `~/.bits/use/` when the directory is not writeable) and exits, so you do not repeat them on every build. `--architecture` goes to the `[common]` section (used by every command that takes an architecture), the rest to `[build]`; each section written replaces its previous content, as with `bits use`. Flags you give explicitly on a later command still win. Under the `aliBuild` wrapper, `aliBuild init` with no PACKAGE instead clones the recipe repository (`--dist`) into the config dir, as classic aliBuild did.
 
 ```bash
 # Persist a remote binary store for the current project
@@ -1506,13 +1584,13 @@ bits init --dry-run --remote-store https://store.example.com/store
 
 > **`bits.rc` has been retired.** Earlier versions read a `bits.rc` / `.bitsrc` / `~/.bitsrc` file; it is no longer read. Per-directory settings now live in a `bits use` profile (above); global settings come from environment variables: `$BITS_WORK_DIR`, `$BITS_REPO_DIR` (config dir), `$BITS_ORGANISATION`, `$BITS_PROVIDERS`, `$BITS_PATH` (recipe search path — see `--search-path`), `$BITS_S3_STORE`, `$BITS_PREREQUISITES_URL`, `$BITS_CVMFS_REPOS`. Display prefix and branding (`$BITS_PKG_PREFIX`, `$BITS_BRANDING`) are set by the `aliBuild` wrapper.
 
-**Saving frequently-used CLI args (`bits use`).** `bits use` records raw command-line arguments per directory so you don't retype them. `bits use --architecture X` saves to the `[common]` section (applied to every arch-aware command); `bits use build --docker --sandbox off` saves to `[build]` (that command only). Saved args are injected right after the action and before your own args, so an explicit flag still wins. `bits use` (no args) shows the active profile and its source; `bits use --clear [SECTION]` clears it. Storage is two-tier: a local `./.bitsuse` when the directory is writeable and owned by you, otherwise a per-directory record under `~/.bits/use/` — so a choice persists even in a read-only checkout. A local `.bitsuse` is honoured only when owned by the invoking user (it is injected before parsing, so an untrusted one is ignored in favour of the home record). `.bitscmd` is the previous name, still read as a fallback.
+**Saving frequently-used CLI args (`bits use`).** `bits use` records raw command-line arguments per directory so you don't retype them. `bits use --architecture X` saves to the `[common]` section (applied to every arch-aware command); `bits use build --docker --sandbox off` saves to `[build]` (that command only). Saved args are injected right after the action and before your own args, so an explicit flag still wins. Saving a section replaces it, so give all of its args in one call. `bits use` (no args) shows the active profile and its source; `bits use --clear [SECTION]` clears it; `bits use --help` prints the forms (a `-h`/`--help` is never saved). Storage is two-tier: a local `./.bitsuse` when the directory is writeable and owned by you, otherwise a per-directory record under `~/.bits/use/` — so a choice persists even in a read-only checkout. A local `.bitsuse` is used only when you own it; otherwise it is ignored and the `~/.bits/use/` record applies. `.bitscmd`, the file's previous name, is still read as a fallback.
 
 ---
 
 ### bits clean
 
-Remove stale build artifacts from the temporary build area.
+Delete build leftovers: `TMP/`, `INSTALLROOT/`, `BUILD/` trees that no `<package>-latest` link points to, and installed package versions (for the architecture and `share/`) that no `latest` link points to.
 
 ```bash
 bits clean [options]
@@ -1521,9 +1599,9 @@ bits clean [options]
 | Option | Description |
 |--------|-------------|
 | `-w DIR`, `--work-dir DIR` | Work directory to clean. Default: `sw`. |
-| `-a ARCH`, `--architecture ARCH` | Restrict to this architecture. |
+| `-a ARCH`, `--architecture ARCH` | Architecture whose installed packages and tarballs are considered. Default: detected. |
 | `-C DIR`, `--chdir DIR` | Change to DIR first. |
-| `--aggressive-cleanup` | Also remove source mirrors and `TARS/` content. |
+| `--aggressive-cleanup` | Also delete `SOURCES/` and the tarball store (`TARS/<arch>/store`, `TARS/share/store`; by-name links are kept). Git mirrors are not touched. |
 | `-n`, `--dry-run` | Show what would be removed without deleting. |
 
 ---
@@ -1543,7 +1621,7 @@ bits prune [options]
 | `--max-age DAYS` | `7.0` | Evict packages not touched in more than `DAYS` days. Set to `0` to disable age-based eviction. |
 | `--min-free GIB` | _(none)_ | Evict LRU packages until `GIB` GiB are free on the workDir filesystem. |
 | `--disk-pressure-only` | — | Run only the disk-pressure pass; skip age-based eviction. |
-| `--retain` | off | Manifest-rooted retention sweep over **all** architectures: keep the packages of the newest `--keep-builds` local build manifests per arch and certified packages not yet published to CVMFS; evict what is safe upstream (in the store, in the verified signed manifest **and** recorded as published to CVMFS), superseded attempts, orphan store tarballs, `BUILD/` dirs and dangling links. Fail-closed per architecture: an arch whose signed manifest cannot be verified is skipped. |
+| `--retain` | off | Retention sweep over **all** architectures. Keeps the packages of the newest `--keep-builds` local build manifests per arch, and certified packages not yet on CVMFS. Evicts what is safe upstream (in the store, in the verified signed manifest **and** recorded as published to CVMFS), plus superseded attempts, orphan store tarballs, `BUILD/` dirs and dangling links. An arch whose signed manifest cannot be verified is skipped entirely. |
 | `--keep-builds N` | `2` | With `--retain`: build manifests to keep per architecture. |
 | `--remote-store URL` | _(none)_ | With `--retain`: store to derive the signed common manifests from, one per architecture on disk (`--store` is deprecated). |
 | `--trust-manifest PATH\|URL` | _(none)_ | With `--retain`: explicit signed common manifest(s), in addition to or instead of the store (repeatable). |
@@ -1569,6 +1647,8 @@ bits enter [-q] [--shellrc] [--dev] [--view] MODULE1[,MODULE2,...]
 | `--view` | Collapse `PATH`, `LD_LIBRARY_PATH`, `CMAKE_PREFIX_PATH`, `PKG_CONFIG_PATH`, `PYTHONPATH` and `ROOT_INCLUDE_PATH` onto a merged view of the loaded closure (cached under `$WORK_DIR/VIEWS/<arch>`), so the environment stays small on big stacks. `<PKG>_ROOT` and other `setenv`s are untouched. Turned on automatically when a loaded package's recipe sets `view: true`. |
 
 The shell type is auto-detected from the parent process (`bash`, `zsh`, `ksh`, `csh`/`tcsh`, `sh`). Override with the `MODULES_SHELL` environment variable. The prompt is set to `[MODULE_LIST] \w $>` (or the zsh/ksh equivalent) for the duration of the session. Nesting `bits enter` inside another bits environment is blocked.
+
+All module commands (`enter`, `load`, `unload`, `setenv`, `q`, `avail`, `modulecmd`) also accept `-w DIR` (default: `$BITS_WORK_DIR`, else `./sw` or `../sw`), `-a ARCH` (default: the installed architecture, preferring the host's when several are present) and `--no-refresh` (do not refresh the modules directory).
 
 ---
 
@@ -1601,10 +1681,10 @@ The version may be omitted; `modulecmd` will unload whichever version is current
 Load modules into the current process and `exec` a command. No new shell is spawned; the exit code of the command is preserved.
 
 ```bash
-bits setenv [-q] MODULE1[,MODULE2,...] -c COMMAND [ARGS...]
+bits setenv [-q] [--view] MODULE1[,MODULE2,...] -c COMMAND [ARGS...]
 ```
 
-Everything after `-c` is executed as-is. The modules directory is refreshed and modules are verified before execution.
+Everything after `-c` is executed as-is. The modules directory is refreshed and modules are verified before execution. `--view` works as for `bits enter` and is likewise turned on by a `view: true` package.
 
 ```bash
 bits setenv ROOT/v6-30 -c root -b
@@ -1620,17 +1700,14 @@ bits list          # show currently loaded modules
 bits avail         # raw modulecmd avail output
 ```
 
-`bits q` lists modules in the native `PKG/VERSION` form. When a display prefix is set in the environment (`BITS_PKG_PREFIX`, e.g. via the `aliBuild` wrapper) the output is reformatted to `PREFIX@PKG::VERSION` (so `aliBuild q` prints `VO_ALICE@zstd::1.5.7-local1`). The optional `REGEXP` is a case-insensitive extended regular expression. `bits q` reads the installed modulefiles straight from the work tree (reusing the fast CVMFS catalog path where applicable) — it does **not** rebuild the MODULES cache or spawn `modulecmd`, so it stays fast even with hundreds of packages. `bits avail` delegates directly to `modulecmd bash avail` (and does refresh the cache).
+`bits q` lists modules in the native `PKG/VERSION` form. When a display prefix is set in the environment (`BITS_PKG_PREFIX`, e.g. via the `aliBuild` wrapper) the output is reformatted to `PREFIX@PKG::VERSION` (so `aliBuild q` prints `VO_ALICE@zstd::1.5.7-local1`). The optional `REGEXP` is a case-insensitive extended regular expression. `bits q` lists the installed packages straight from the install tree, without refreshing the modules directory or running `modulecmd`, so it stays fast even with hundreds of packages. `bits avail` refreshes the modules directory and runs `modulecmd avail`.
 
-**Fast listing on CVMFS.** Enumerating the install tree per file is expensive on
-CVMFS (every directory test is a FUSE lookup). When the tree is served from
-`/cvmfs` the refresh first tries the `bitsModules` helper, which reads the
-serving catalog's content hash from the cvmfs `user.catalog_counters` xattr,
-fetches that one catalog object over HTTP, and lists every entry from a single
-local SQLite query — no per-file walk. It applies only when the queried path is
-served by a single dedicated catalog rooted there with no deeper nested
-catalogs; otherwise (and always off CVMFS) it falls back transparently to the
-POSIX `find` walk, so behaviour is unchanged.
+**Fast listing on CVMFS.** Walking an install tree file by file is slow on CVMFS.
+When the tree is under `/cvmfs`, the module refresh and `bits q` instead read the
+whole listing from the tree's CVMFS catalog in one HTTP fetch (the `bitsModules`
+helper). This works only when the tree is the root of its own catalog with no
+nested catalogs below it; otherwise bits falls back to the normal directory walk,
+with the same result.
 
 ---
 
@@ -1698,7 +1775,7 @@ bits publish [--manifest [FILE]] [--remote-store URL]       # bulk S3 upload
 | `--scratch-dir DIR` | Directory for the temporary CVMFS working copy (default: a system temp dir). |
 | `-w DIR`, `-a ARCH` | Work directory (default `sw`) and architecture. |
 | `--manifest [FILE]`, `--from-manifest [FILE]` | Bulk-upload every package of a build manifest to the S3 store (`latest` by default). This is the mode when no `PACKAGE` is given. |
-| `--remote-store URL` | S3 store for the bulk upload. `--store` is the deprecated spelling. |
+| `--remote-store URL` | S3 store for the bulk upload (default: `$BITS_S3_STORE`, else the built-in store). `--store` is the deprecated spelling. |
 | `--prepub-url URL` | cvmfs-prepub API base URL. Required for a CVMFS publish. |
 | `--prepub-token TOKEN` | API token (default `$PREPUB_API_TOKEN`). Each request is HMAC-signed and the secret never leaves the host; `--prepub-bearer-auth` sends it as an `Authorization: Bearer` header instead (only for a prepub running `auth_mode=bearer`). |
 | `--prepub-repo REPO`, `--prepub-path SUBPATH` | Repository and lease sub-path; derived from `--cvmfs-target` when omitted. |
@@ -1706,14 +1783,21 @@ bits publish [--manifest [FILE]] [--remote-store URL]       # bulk S3 upload
 | `--prepub-poll-interval SEC`, `--prepub-timeout SEC` | Status polling interval (default 10 s) and total wait (default 1800 s). |
 | `--prepub-no-verify-tls` | Skip TLS certificate verification (self-signed / dev only). |
 
-`bits publish` no longer opens certification merge requests — that is
-`bits certify` (see [Publishing and certifying a build](#publishing-and-certifying-a-build--bits-publish-bits-certify)).
+Certification merge requests are opened by `bits certify`, not
+`bits publish` (see [Publishing and certifying a build](#publishing-and-certifying-a-build--bits-publish-bits-certify)).
+
+---
+
+### bits certify / bits sign
+
+Make a build's binaries trusted for reuse: `bits certify` uploads what the store is missing, gets a passkey approval through bits-console and opens the merge request; `bits sign` signs a build manifest (the former `bits certify`). Both are described, with their options, under [Publishing and certifying a build](#publishing-and-certifying-a-build--bits-publish-bits-certify) and [Signing — `bits sign`](#signing--bits-sign); `bits certify --help` and `bits sign --help` list every option.
 
 ---
 
 ### bits brew
 
-macOS only. Scan the recipes (config dir and provider repositories) for
+Meant for macOS (`osx*` architectures; for any other architecture the Brewfile
+normally lists nothing). Scan the recipes (config dir and provider repositories) for
 `homebrew_formula:` and write a Brewfile listing the formulae the stack expects
 (see [macOS Homebrew system layer](#macos-homebrew-system-layer)).
 
@@ -1731,7 +1815,7 @@ bits brew [-a ARCH] [--defaults PROFILE] [-o FILE|-] [--check] [-c DIR] [-w DIR]
 | `-w DIR`, `--work-dir DIR` | `sw` | Work area: the Brewfile is written under it and the providers cloned under `<work-dir>/REPOS` are scanned. |
 | `-C DIR`, `--chdir DIR` | `.` | Change to DIR first. |
 
-`gnu-tar` is always listed: package tarballs are packed with GNU tar so that
+On macOS `gnu-tar` is always listed: package tarballs are packed with GNU tar so that
 they are byte-reproducible (see [Build lifecycle with a store](#build-lifecycle-with-a-store)).
 
 ---
@@ -1744,7 +1828,8 @@ against the bits install tree instead of an lcgcmake release. It runs after the
 build: it scans the installed packages under `<work-dir>/<arch>` (including
 package-family directories; `<pkg>/latest` links are skipped), reads each
 package's `.meta.json`, and writes `LCG_<num><postfix>/LCG_externals_<platform>.txt`
-and `LCG_generators_<platform>.txt` under `--out`. It replaces `bits lcg-view`,
+and `LCG_generators_<platform>.txt` under `--out` (all packages go into the externals
+file; the generators file is a placeholder, written because AtlasLCG requires both). It replaces `bits lcg-view`,
 which still works as a deprecated alias that warns. `bits overlay` with no format
 lists the available formats.
 
@@ -1792,8 +1877,8 @@ per-`build_id` overlay (modulefiles plus module-side `.meta.json`) that
 
 Print the absolute `/cvmfs/<repo>/<path>` a package will be published to,
 resolved from the group's path templates in the defaults `system:` block,
-without building. The publish pipeline's pre-build reserve uses it, so the
-reserved and the published path come from one source.
+without building. The publish pipeline uses it to reserve the path before the
+build, so the reserved and the published path always agree.
 
 | Option | Description |
 |--------|-------------|
@@ -1802,7 +1887,7 @@ reserved and the published path come from one source.
 | `--platform PLAT`, `--install-dir DIR` | `{platform}`, `{install_dir}`. |
 | `--kind {releases,packages,modules,shared}` | Which template to resolve (default: `packages` when the group has a `cvmfs_packages_template`, else `releases`). |
 | `--admin` / `--login USER` | The admin (group-prefix) path, or a user path under `<user_prefix>/<login>`. |
-| `--day DAY` | `{day}` value; pass the same value as the build. |
+| `--day DAY` | `{day}` value (default: the current UTC weekday); pass the same value as the build. |
 | `--set NAME=VALUE` (`--flavour`, `--flavor`) | As for `bits build` (e.g. `release=LCG_110`), so `{release}` resolves as in the build. |
 | `--prefix ROOT` | Fallback CVMFS root, used only when the defaults declare no `system.prefix`. |
 | `--defaults`, `-a`, `-c`, `--search-path`, `-C`, `--disable` | As for `bits build`, to load the defaults. |
@@ -1831,7 +1916,7 @@ bits store ls|rm --stale-boms [--manifests-dir DIR]  # BOMs the store no longer 
 ```bash
 bits cvmfs platforms|show|summary     # inspect a deployed tree (read-only)
 bits cvmfs stage   …                  # producer-side staging (was `bits cvmfs-stage`)
-bits cvmfs publish …                  # producer-side staged publish (was `bits cvmfs-publish`)
+bits cvmfs publish …                  # producer-side publish of a build manifest (was `bits cvmfs-publish`)
 ```
 
 `bits cvmfs publish` places every package of the build with the build's own CVMFS
@@ -1846,7 +1931,7 @@ already use (without ingest, only a new release directory works). Such a publish
 also adds, once per arch, a `BASE/1.0` modulefile in the modules directory that
 sets `BASEDIR` (relative to itself) to the packages directory, which is what bits
 modulefiles resolve against ($BASEDIR/<pkg>/<ver-rev>). Packages published
-elsewhere (noarch, the own_hash toolchain) get a relative symlink there. With the
+elsewhere (noarch packages, a toolchain with [`own_hash: true`](#shared-toolchains-own_hash)) get a relative symlink there. With the
 ALICE-style templates
 `{prefix}/{arch}/Packages/…` and `{prefix}/{arch}/Modules/modulefiles/{pkg}`,
 `BITS_MODULEDIR=<prefix> BITS_PLATFORM=<arch> bitsenv …` then works unchanged. Template tokens: `{pkg} {version} {revision} {tag}`
@@ -1860,14 +1945,13 @@ never part of the store path or manifest key. A reserved build (`bits cvmfs-path
 then the build) should pass the same `--day` to both, so the two agree across a
 UTC midnight.
 
-On the ingest path, when a `cvmfs_packages_template` is set, each package tar carries
-its target path and build hash (`identity_path`/`identity_hash`; a modulefile tar
-carries the path only), so cvmfs-prepub finishes a
-queued duplicate — a rerun queued behind the original — without publishing it
-twice (not sent with `--replace-on-conflict`, which republishes on purpose).
-Before uploading on that path, bits reads prepub's per-package limit (`max_tar_size` from
-`/api/v1/health`) and refuses a larger tar with a message naming both sizes,
-instead of the bare connection reset prepub's cut-off would produce.
+On the ingest path, when a `cvmfs_packages_template` is set, each package upload
+carries its target path and build hash (a modulefile upload carries the path only),
+so cvmfs-prepub completes a rerun queued behind the original without publishing it
+twice. This is not sent with `--replace-on-conflict`, which republishes on purpose.
+Before uploading on that path, bits asks prepub for its per-package size limit
+(`max_tar_size`) and refuses a larger tar with a message naming both sizes,
+instead of failing with a bare connection reset.
 
 A group that also sets `cvmfs_views_template` (e.g. `{prefix}/views/{release}/{arch}`)
 gets, with each release, a **merged view** like an LCG view: `bin lib lib64 include
@@ -1895,11 +1979,11 @@ work for one release and warn, as do `bits cleanup` (→ `bits prune`) and `bits
 
 | Pair | Acts on | Which is which |
 |---|---|---|
-| `clean` vs `prune` | local build dir vs persistent workDir | `clean` wipes the build area; `prune` evicts old packages from a kept workDir |
+| `clean` vs `prune` | build leftovers vs persistent workDir | `clean` deletes temporary build trees and installed versions no `latest` link points to; `prune` evicts packages by age, disk pressure or retention rules |
 | `prune` vs `store gc` | persistent workDir vs shared S3 store | `prune` is local disk/age eviction; `store gc` is reachability GC of the S3 store |
 | `stats` vs `store stats` | local build logs vs S3 store | `stats` reports a monitored build; `store stats` summarises store usage |
 | `publish` vs `store upload` | CVMFS vs S3 store | `publish` puts a package on CVMFS; `store upload` writes a tarball to the S3 reuse store |
-| `publish` vs `cvmfs publish` | consumer vs producer side | `bits publish` is the consumer-facing CVMFS publish; `bits cvmfs publish` is the producer-side staged publish that feeds the gateway |
+| `publish` vs `cvmfs publish` | one local package vs a whole build | `bits publish` publishes one package (or a release view) from the local work dir; `bits cvmfs publish` publishes every package of a build manifest from its store tarballs (the CI publish pipeline) |
 
 ---
 
@@ -1923,9 +2007,8 @@ sw/
 │
 ├── BUILD/                         ← temporary per-package build trees
 │   └── <pkghash>/
-│       ├── BUILD/                 ← $BUILDDIR during compilation
-│       ├── SOURCES/               ← source checkout ($SOURCEDIR)
-│       └── log                    ← build log (kept on failure; removed on success)
+│       ├── <package>/             ← $BUILDDIR during compilation
+│       └── log                    ← build log (removed with the tree after a successful build)
 │
 ├── TARS/                          ← content-addressed tarball store
 │   └── <arch>/
@@ -1933,17 +2016,23 @@ sw/
 │       ├── <package>/<tarball> -> ../../store/…   ← by-name symlinks
 │       └── dist/, dist-direct/, dist-runtime/     ← dependency-set symlinks
 │
-├── SOURCES/cache/                 ← downloaded source archives (sources: field)
-│   └── <h2>/<hash>/<filename>
+├── SOURCES/                       ← source checkouts and downloads
+│   ├── <package>/<version>/<commit>/   ← $SOURCEDIR
+│   └── cache/<h2>/<hash>/<filename>    ← downloaded source archives (sources: field)
 │
 ├── REPOS/                         ← cached repository-provider checkouts
 │   └── <provider>/<commit>/       ← recipe files live here
 │
-├── MODULES/                       ← modulefiles for bits enter / bits q
-│   └── <arch>/
+├── MODULES/                       ← modulefile cache for bits enter / load
+│   ├── <arch>/
+│   └── <build_id>/<arch>/         ← reuse overlays (bits import)
+│
+├── VIEWS/<arch>/                  ← merged views (--view)
+│
+├── MIRROR/                        ← git mirrors (--reference-sources)
 │
 ├── SPECS/                         ← generated build scripts
-│   └── <arch>/<package>/<version>/
+│   └── <arch>/[<family>/]<package>/<version>-<revision>/
 │
 ├── MANIFESTS/                     ← build manifests (see §25)
 │   ├── bits-manifest-<timestamp>.json
@@ -1953,7 +2042,7 @@ sw/
     └── TARS/<arch>/store/…/<tarball>.sha256
 ```
 
-`BUILD/` directories are removed after a successful build unless `--no-auto-cleanup` is given. Use `bits clean` to remove stale `BUILD/` and `TMP/` trees, or `bits prune` to evict old packages from `<arch>/` and `TARS/` based on age or disk pressure.
+`BUILD/` directories are removed after a successful build unless `--no-auto-cleanup` is given (development packages from `bits init` keep theirs). Use `bits clean` to remove stale `BUILD/` and `TMP/` trees, or `bits prune` to evict old packages from `<arch>/` and `TARS/` based on age or disk pressure.
 
 ---
 
@@ -1977,9 +2066,19 @@ A recipe file consists of a YAML block, a `---` separator, and a Bash script:
 ```
 
 The header ends at the first line that contains only `---` (surrounding spaces or
-tabs allowed). A `---` inside a comment or a value does not end it, and a file with
+tabs allowed). A `---` that shares its line with other text (a comment or a value)
+does not end it, but a bare `---` line inside a block scalar does. A file with
 no such line is rejected ("recipe has no '---' front-matter terminator line"). The
 same rule applies to `defaults-*.sh` files.
+
+**Includes.** In the Bash body, a line consisting only of `#!include <path.sh>`
+(resolved under the recipes repository root) or `#!include "path.sh"` (relative to
+the recipe's own directory) is replaced by that file's content before variable
+substitution and hashing, exactly as if it were written inline. Includes may nest;
+cycles, absolute paths and paths escaping their base with `..` are rejected. Ordinary
+`#include` lines (e.g. C code in a heredoc) are left alone. In the YAML header,
+`key: !include file` inserts a file's content (`.yaml`/`.yml` parsed as YAML, `.json`
+as JSON, anything else as text); the path is relative to the directory bits runs in.
 
 ### YAML header fields
 
@@ -1987,22 +2086,22 @@ same rule applies to `defaults-*.sh` files.
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `package` | Yes | Package name. Must match the filename (without `.sh`). |
-| `version` | Yes | Version string. May contain `%(year)s`, `%(month)s`, `%(day)s`, `%(hour)s` substitutions. |
-| `version_from` | No | Name of a defaults `variables:` entry whose value becomes this package's `version`. For a package with no `source:`/`sources:` it also sets `tag` and the commit hash, so a synthetic package (e.g. a release view) can be versioned by a release variable without carrying a source; a package with a source keeps its tag and only its `version` is set. Fatal if the variable is not defined in the active defaults. |
+| `package` | Yes | Package name. The file name must be this name in lower case plus `.sh` (`ROOT` → `root.sh`), and dependants must spell it exactly as written here. |
+| `version` | Yes, unless `version_from` is set | Version string (must be a YAML string). May use `%(year)s`, `%(month)s`, `%(day)s`, `%(hour)s`, `%(tag)s`, `%(commit_hash)s`, `%(short_hash)s` and the recipe's own `variables:`. |
+| `version_from` | No | Name of a defaults `variables:` entry whose value becomes this package's `version`. For a package without `source:`/`sources:` it also sets `tag` and the commit hash, so a synthetic package (e.g. a release view) can follow a release variable. Fatal if the variable is not defined in the active defaults. |
 
 #### Source
 
 | Field | Description |
 |-------|-------------|
 | `source` | Git or Sapling repository URL. The repository is cloned / updated into `$SOURCEDIR`. |
-| `tag` | Tag, branch, or commit to check out. Supports date substitutions (`%(year)s`, `%(month)s`, `%(day)s`, `%(hour)s`). |
-| `sources` | List of source archive URLs (or local `file://` paths) to download before the build. Each file is placed in `$SOURCEDIR` and exposed as `$SOURCE0`, `$SOURCE1`, … Each entry may optionally carry an inline checksum (see [Checksum verification](#checksum-verification) below). |
-| `patches` | List of patch file names to apply, relative to the `patches/` directory inside the recipe repository. Patch files are copied to `$SOURCEDIR` and exposed as `$PATCH0`, `$PATCH1`, … before the recipe body runs. Each entry may optionally carry an inline checksum and/or a conditional matcher — see [Conditional patches](#conditional-patches). |
-| `auto_patch` | Whether bits applies the `patches:` automatically. Default `true` (unchanged behaviour). Set to `false` to take over patching in the recipe body: bits still stages the patch files in `$SOURCEDIR` and exports `$PATCH0..$PATCH_COUNT`, but runs no `patch(1)` and writes no `.bits_patched` sentinel, so the recipe owns ordering, strip level and idempotency. Can also be forced off for **every** package with the global `--no-auto-patch` flag or `auto_patch: false` in the active `defaults-*` file. See [Controlling patch application](#controlling-patch-application). |
+| `tag` | Tag, branch, or commit to check out (default: `version`). May use the date substitutions (`%(year)s`, `%(month)s`, `%(day)s`, `%(hour)s`), other header fields such as `%(version)s`, and defaults or recipe `variables:`. |
+| `sources` | List of source archive URLs (or local `file://` paths) to download before the build. Each file is placed in `$SOURCEDIR` and exposed as `$SOURCE0`, `$SOURCE1`, … An entry may start with `(regex)` to apply only on matching architectures (e.g. `(?!osx)https://…`) and may carry an inline checksum (see [Checksum verification](#checksum-verification)). If a recipe declares both `source:` and `sources:`, the defaults choose which one is built: `source_mode: tar` (default) or `git`, under `system:` or `variables:`; `BITS_SOURCE_MODE` overrides it for one build. |
+| `patches` | List of patch file names, relative to the `patches/` directory of the recipe repository. They are copied to `$SOURCEDIR`, exposed as `$PATCH0`, `$PATCH1`, …, and by default applied with `patch -p1` before the recipe body runs. Each entry may carry an inline checksum, a `strip=N` level and/or a conditional matcher — see [Conditional patches](#conditional-patches). |
+| `auto_patch` | Whether bits applies the `patches:` itself. Default `true`. With `false`, bits still stages the patch files in `$SOURCEDIR` and exports `$PATCH0`, … and `$PATCH_COUNT`, but the recipe body must apply them. The global `--no-auto-patch` flag or `auto_patch: false` in the active defaults turns it off for **every** package. See [Controlling patch application](#controlling-patch-application). |
 
 Metadata / publish-policy fields — all **hash-excluded** (editing them never
-rebuilds anything; see "Licence compliance and redistribution policy" in §9):
+rebuilds anything; see [Licence compliance and redistribution policy](#licence-compliance-and-redistribution-policy)):
 
 | Field | Description |
 |-------|-------------|
@@ -2011,7 +2110,7 @@ rebuilds anything; see "Licence compliance and redistribution policy" in §9):
 | `redistributable` | Which forms may be redistributed: `all` (default), `binaries`, `sources`, `none`. Restricted binaries are never uploaded to the store nor published to CVMFS; restricted sources are never mirrored to `SOURCES/cache/`. Legacy `true`/`false` = `all`/`none`; unknown values fail closed as `none`. |
 | `description`, `url`, `homepage`, `source_url` | Free-text metadata, also hash-excluded. |
 
-**Source archives detail.** When `sources:` is specified, bits downloads each archive to `$SOURCEDIR` using the file's basename as the local filename. Archives are not automatically unpacked — the recipe is responsible for extraction. The variable `$SOURCE_COUNT` holds the total count so scripts can handle a variable-length list:
+**Source archives detail.** When `sources:` is specified, bits downloads each file to `$SOURCEDIR` under its basename. Archives (`.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.zst`, `.zip`) are then **unpacked in place**, with the top-level directory common to all their entries stripped, so `$SOURCEDIR` holds the source tree; other files are left as they are. `$SOURCE_COUNT` holds the number of entries:
 
 ```yaml
 sources:
@@ -2020,13 +2119,12 @@ sources:
 ```
 
 ```bash
-# Unpack first archive
-tar -xzf "$SOURCEDIR/$SOURCE0" -C "$BUILDDIR"
-# Optionally unpack subsequent archives
-[ "$SOURCE_COUNT" -gt 1 ] && tar -xzf "$SOURCEDIR/$SOURCE1" -C "$BUILDDIR/data"
+# Both archives are already unpacked into $SOURCEDIR; their names stay available
+echo "building from $SOURCE0 ($SOURCE_COUNT source files)"
+cmake -S "$SOURCEDIR" -B "$BUILDDIR" -DCMAKE_INSTALL_PREFIX="$INSTALLROOT"
 ```
 
-**Patches detail.** Patch file names listed in `patches:` must exist in the `patches/` subdirectory of the recipe repository. They are copied to `$SOURCEDIR` and the corresponding `$PATCHn` variables let the script apply them in order:
+**Patches detail.** Patch file names listed in `patches:` must exist in the `patches/` subdirectory of the recipe repository. They are copied to `$SOURCEDIR` and, by default, applied there in order with `patch -p1` before the recipe body runs:
 
 ```yaml
 patches:
@@ -2034,12 +2132,7 @@ patches:
   - disable-broken-test.patch,md5:d41d8cd98f00b204e9800998ecf8427e
 ```
 
-```bash
-cd "$SOURCEDIR"
-for i in $(seq 0 $(( PATCH_COUNT - 1 ))); do
-  eval pf="\$PATCH$i"; patch -p1 < "$SOURCEDIR/$pf"
-done
-```
+The `$PATCH0`, `$PATCH1`, … and `$PATCH_COUNT` variables are exported too; you only need them when you apply the patches yourself (next section).
 
 ##### Controlling patch application
 
@@ -2065,8 +2158,9 @@ patched recipe** is then responsible for applying its own patches or it will bui
 against unpatched sources.
 
 When you take over, use the `bits_apply_patches` shell helper (available in every
-recipe body) instead of hand-rolling the loop — it applies `$PATCH0..$PATCH_COUNT` in
-order and is idempotent across incremental rebuilds:
+recipe body) instead of hand-rolling the loop — it applies every staged patch in
+order with a single strip level (per-entry `strip=N` is not used) and is idempotent
+across incremental rebuilds:
 
 ```yaml
 package: mylib
@@ -2133,7 +2227,8 @@ Atoms combine with `&&` (all) and `||` (any); `||` has the lower precedence, e.g
 inside an arch regex stays ordinary alternation — only the doubled `||` combines.
 If a patch carries both a matcher and an inline checksum, write them as
 `name:matcher,algo:digest` (the checksum comes last). The same matcher grammar
-is also accepted on `requires:`/`build_requires:` entries.
+is also accepted on `requires:`/`build_requires:` entries (there `version` means the
+requiring package's own version) and on defaults `overrides:` keys.
 
 ##### Flavours
 
@@ -2171,10 +2266,11 @@ The `(?NAME)` matcher reads from three merged sources:
 - a `--flavour NAME[=VALUE]` on the command line (above);
 - a `variables:` entry in any active defaults file;
 - **predefined platform variables** derived from the architecture — on
-  `osx_arm64` these are `osx`, `arm64`, and `aarch64` (truthy). So `pkg:(?osx)`
-  is an osx-only dependency. Note `pkg:(?!osx)` is a negative-lookahead **regex**
-  matched against the architecture string (the non-osx counterpart), *not*
-  variable negation — there is no variable-negation atom.
+  `osx_arm64` these are `osx`, `arm64`, and `aarch64` (the full set is `osx`,
+  `linux`, `arm64`, `aarch64`, `x86_64`; only those that apply are set). So
+  `pkg:(?osx)` is a macOS-only dependency and `pkg:(?linux)` its counterpart. Note
+  `pkg:(?!osx)` is a negative-lookahead **regex** matched against the architecture
+  string, *not* variable negation — there is no variable-negation atom.
 
 A defaults `variables:` entry is either a plain `name: value`, or a **gated**
 form that only takes effect when its own matcher (same grammar as above) holds:
@@ -2201,9 +2297,9 @@ the name **verbatim** — none of them upper-cases it.
 |---|---|---|---|
 | Defined in | defaults / recipe `variables:` | defaults `env:` | CLI (repeatable) |
 | Surface in recipe | `%(NAME)s` (text) | `$NAME` (shell) | both `%(NAME)s` **and** `$NAME` |
-| Gates `(?NAME)` requires/sources/patches | yes | no | yes |
+| Gates `(?NAME)` in requires/patches/overrides | defaults `variables:` only | no | yes |
 | Exported into build shell | no | yes (via `defaults-release`) | yes |
-| In the package hash | only when the expanded text lands in a hashed field (`version`/`source`/`patches`, or the body when expansion is opted in) | yes — folded through the `defaults-release` `env` dict | yes (both paths) |
+| In the package hash | only through the text they expand into: recipe `variables:` in `version`/`tag`/`source`/`sources`/`patches`/body; defaults `variables:` in `tag` and the body | yes (via the `defaults-release` environment) | yes (both paths) |
 | When evaluated | build-time text substitution, **before** hashing | exported into the shell before the recipe body runs | both |
 | Name case | verbatim | verbatim | verbatim |
 
@@ -2212,8 +2308,8 @@ define it in **both** `variables:` and `env:`.
 
 > **Auto-uppercased shell variables are a separate, per-package mechanism.** For
 > every dependency, bits exports `<PKG>_ROOT`, `<PKG>_VERSION`, `<PKG>_REVISION`,
-> `<PKG>_HASH`, and `<PKG>_COMMIT`, where `<PKG>` is the package name run through
-> `pkg_to_shell_id()` (non-alphanumerics → `_`, then upper-cased): `boost` →
+> `<PKG>_HASH`, and `<PKG>_COMMIT`, where `<PKG>` is the package name with every
+> non-alphanumeric character turned into `_`, then upper-cased: `boost` →
 > `$BOOST_ROOT`, `common.bits` → `$COMMON_BITS_ROOT`, `o2.framework` →
 > `$O2_FRAMEWORK_ROOT`. The same transform backs `%(root_dir)s` (→ `${<PKG>_ROOT}`).
 > This is keyed off the **package name**, not off any `variables`/`env`/`flavour`
@@ -2225,15 +2321,15 @@ define it in **both** `variables:` and `env:`.
 |-------|-------------|
 | `requires` | Runtime + build-time dependencies. |
 | `build_requires` | Build-time-only dependencies (e.g. `cmake`, `ninja`). |
-| `runtime_requires` | Runtime-only dependencies. |
-| `untracked_requires` | Runtime-linked dependencies **excluded from this package's identity hash**. Editing one does **not** invalidate or rebuild this package or anything above it — only the dependency itself rebuilds (it is hashed normally). For iterating on a dependency you control without paying a full-stack rebuild. **You are responsible for ABI compatibility**: a reused consumer links the new dependency without recompiling, so an interface-breaking change can produce a broken build. Any build whose closure includes one is recorded `provenance: loose` in `.meta.json` (discoverable; still publishable). Give the dependency an explicit `force_revision` (`""` or a fixed label) to keep its install path stable; without one bits warns, and under `revision_policy: "hash"` it stops. |
+| `runtime_requires` | Not a recipe input: bits fills it from the resolved `requires:` list, so a value written in a recipe is ignored. |
+| `untracked_requires` | Runtime-linked dependencies **left out of this package's identity hash**: changing one rebuilds only the dependency itself (hashed normally), not this package or anything above it. Meant for iterating on a dependency you control. **You are responsible for ABI compatibility** — a reused consumer is not recompiled against the new dependency. Builds whose closure includes one are recorded as `provenance: loose` in `.meta.json` (still publishable). Give the dependency an explicit `force_revision` (`""` or a fixed label) to keep its install path stable; without one bits warns, and under `revision_policy: "hash"` it stops. |
 
 Each entry in `requires` / `build_requires` is a string in one of these forms:
 
 | Form | Meaning |
 |------|---------|
 | `name` | Plain dependency. |
-| `name:matcher` | Conditional dependency. `matcher` is an architecture regex (`re.match`-ed against the arch, e.g. `(?!osx)` for non-osx, `.*osx.*` for osx-only) or `defaults=<regex>` (matched against the active defaults). |
+| `name:matcher` | Conditional dependency. `matcher` uses the [patch matcher grammar](#conditional-patches): an architecture regex matched from the start of the architecture string (`(?!osx)` for non-macOS, `osx` for macOS only), `defaults=<regex>`, `(?VAR)`, or `version<op><value>` on the requiring package's version, combined with `&&`/`\|\|`. |
 | `name = version` | Pin the dependency to `version` (sets both its `version` and `tag`). |
 | `name = version:matcher` | Version pin that applies only when `matcher` is satisfied. |
 
@@ -2251,38 +2347,42 @@ Only one version pin per dependency is allowed across the whole graph; conflicti
 
 | Field | Description |
 |-------|-------------|
-| `prefer_system` | Bash snippet; exit 0 to use the system package instead of building. |
-| `system_requirement` | Bash snippet; exit non-0 to abort with a missing-package error. |
-| `system_requirement_missing` | Error message shown when `system_requirement` fails. |
+| `prefer_system` | Architecture regex. When it matches (or with `--always-prefer-system`), bits runs `prefer_system_check`. |
+| `prefer_system_check` | Bash snippet (sees `$REQUESTED_VERSION`). Exit 0 to use the system package instead of building it; non-zero to build it. |
+| `system_requirement` | Architecture regex. When it matches, bits runs `system_requirement_check`; a non-zero exit aborts the build with a missing-requirement error. Such a recipe must have an empty body. |
+| `system_requirement_check` | Bash snippet that checks for the required system package. |
+| `system_requirement_missing` | Message (e.g. install instructions) printed by `bits doctor` when `system_requirement_check` fails. |
 
 #### Repository provider
 
 | Field | Description |
 |-------|-------------|
 | `provides_repository` | Set to `true` to mark this recipe as a repository provider. |
-| `tag` | The git ref of the provider repository to clone — a branch, tag, or commit hash. Selects which snapshot of the recipe repository is pulled (falls back to `version`, then the repo's default branch). The resolved commit hash is folded into every dependent's build hash. |
+| `tag` | The git ref of the provider repository to clone — a branch, tag, or commit hash. Selects which snapshot of the recipe repository is pulled (falls back to `version`, then the repo's default branch). The resolved commit is recorded in the build manifest; it does not enter package build hashes (a package's hash depends only on its own recipe, sources and dependencies). |
 | `always_load` | Set to `true` (alongside `provides_repository: true`) to clone this provider unconditionally at startup, before any dependency-graph traversal. Recipes in the provider's repository are then visible to all packages without requiring an explicit dependency. |
-| `repository_position` | `append` (default) or `prepend` — where to insert the cloned directory in `BITS_PATH`. |
+| `repository_position` | `append` (default) or `prepend` — where to insert the cloned directory in `BITS_PATH`. A provider cannot grant itself `prepend`: it is honoured only when the operator allows it with `--provider-policy NAME:prepend` (see [Provider policy](#provider-policy)); otherwise bits appends. |
 
-The bits-providers repository URL itself accepts an `@<tag>` suffix (`BITS_PROVIDERS` / `--providers`, default branch otherwise), e.g. `https://github.com/bitsorg/bits-providers@LCG_106`. Because providers are cloned before defaults `overrides:` are applied, an `overrides:` entry cannot change which provider snapshot is fetched — use the provider recipe's `tag:` field or the `@<tag>` URL suffix.
+The bits-providers repository URL itself accepts an `@<tag>` suffix (`$BITS_PROVIDERS`; without it, `main`), e.g. `https://github.com/bitsorg/bits-providers@LCG_106`. A defaults `overrides:` entry for a provider package (`source:` and/or `tag:`, which may use `%(var)s` from `variables:`) does change which repository and snapshot is cloned; the bits-providers registry itself is chosen only by `$BITS_PROVIDERS` and its `@<tag>` suffix.
+
+When `provides_repository: true` is set, the package's `source` URL must point to a git repository containing recipe files. It is cloned before the main build and its directory added to `BITS_PATH`. With `always_load: true` the clone happens unconditionally at startup, before dependency resolution, rather than only when the package appears in the dependency graph. See [§13](#13-repository-provider-feature) for full details.
 
 #### Memory-aware parallelism
 
-`$JOBS` for each package build is computed by `effective_jobs(requested, spec, builders)` and bounds two axes so that concurrent `--parallel` jobs never oversubscribe the machine:
+bits sets `$JOBS` for each package build so that concurrent `--parallel` builds do not oversubscribe the machine. Two limits apply:
 
-- **CPU / load (all packages).** `$JOBS` is capped at `requested ÷ builders`, so the collective `-j` of all builders stays within the single-builder budget. This applies whether or not the recipe sets `mem_per_job`.
-- **Memory (packages that set `mem_per_job`).** The available memory is split across the concurrent builders and divided by the per-job footprint.
+- **CPU / load (all packages).** `$JOBS` is capped at `ceil(requested × oversubscribe ÷ builders)`, so the combined `-j` of all builders stays near the single-builder budget (`oversubscribe` comes from `--oversubscribe`, default 1.0).
+- **Memory (all packages).** The available memory is split across the concurrent builders and divided by the per-job footprint: the recipe's `mem_per_job`, or else `mem_per_job_default` under the defaults `system:` block (2 GiB when unset; `0`/`off` removes the cap for recipes without `mem_per_job`).
 
-The result is `min(requested, requested ÷ builders, floor((available ÷ builders) × utilisation ÷ mem_per_job))`, floored at 1. With `--parallel 1` the CPU cap is a no-op and behaviour is unchanged.
+The result is `min(requested, ceil(requested × oversubscribe ÷ builders), floor((available ÷ builders) × utilisation ÷ mem_per_job))`, and at least 1. With `--parallel 1` only the memory cap can lower `$JOBS`.
 
-The **final (top-level) package** is exempt from the `÷ builders` CPU split: it depends on every other package, so it builds alone once they finish, and dividing its `-j` would needlessly starve the largest compile of the run. It is computed as if `builders = 1` — i.e. the full `-j`, bounded only by the (now full-RAM) `mem_per_job` cap. Controlled by [`--unleash-final` / `--no-unleash-final`](#) and `build_unleash_final:` (default on for `--parallel > 1`). `$JOBS` never enters a package hash, so this is wall-time-only build-host policy.
+The **final (top-level) package** is exempt from the `÷ builders` CPU split: it depends on every other package, so it builds alone once they finish, and dividing its `-j` would needlessly starve the largest compile of the run. It is computed as if `builders = 1` — i.e. the full `-j`, bounded only by the (now full-RAM) `mem_per_job` cap. Controlled by [`--unleash-final` / `--no-unleash-final`](#bits-build) and `build_unleash_final:` under the defaults `system:` block (default on for `--parallel > 1`). `$JOBS` never enters a package hash, so this is wall-time-only build-host policy.
 
 | Field | Description |
 |-------|-------------|
-| `mem_per_job` | Expected peak RSS per parallel compilation process. Accepts a plain integer (MiB) or a string with a unit suffix: `512`, `"1500"`, `"1.5 GiB"`, `"2 GB"`. When set, bits samples available system memory at the start of the package's build and applies the memory term above. Omitting the field leaves only the CPU/`builders` cap in effect. |
-| `mem_utilisation` | Fraction of available memory bits may commit, in the range `0.0`–`1.0`. Default: `0.9`. Only used when `mem_per_job` is also set. |
+| `mem_per_job` | Expected peak RSS per parallel compilation process. Accepts a plain integer (MiB) or a string with a unit suffix: `512`, `"1500"`, `"1.5 GiB"`, `"2 GB"`. When set, bits samples available system memory at the start of the package's build and applies the memory term above. Without it, `mem_per_job_default` (2 GiB unless the defaults change it) is assumed. |
+| `mem_utilisation` | Fraction of available memory bits may commit, in the range `0.0`–`1.0`. Default: `0.9`. Applies to the memory cap, whether the footprint comes from `mem_per_job` or the host default. |
 
-See also `--build-nice` ([§5 build options](#bits-build)) for staggering the *priority* of concurrent builders on top of these caps.
+See also `--build-nice` ([bits build options](#bits-build)) for staggering the *priority* of concurrent builders on top of these caps.
 
 Examples:
 
@@ -2295,13 +2395,11 @@ mem_per_job: 1500
 mem_utilisation: 0.80
 ```
 
-When `provides_repository: true` is set, the package's `source` URL must point to a git repository containing recipe files. It will be cloned before the main build and its directory added to `BITS_PATH`. Adding `always_load: true` causes the clone to happen unconditionally at startup (Phase 1) rather than only when the package appears in the dependency graph (Phase 2). See [§13](#13-repository-provider-feature) for full details.
-
 #### Build sandbox
 
 | Field | Description |
 |-------|-------------|
-| `sandbox_network` | Controls outgoing network access when the build script runs inside a sandbox. `on` (default) — network is **blocked**. `off` — network is **allowed** (useful for recipes that `pip install` or `gem install` at build time). May also be given under the recipe's `system:` block (the defaults-file form); the top-level field wins. Ignored when `--sandbox=off`. See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
+| `sandbox_network` | Outgoing network access for the build script when it runs in a sandbox. `on` — network is **blocked**; `off` — network is **allowed** (for recipes that `pip install` or `gem install` at build time). Without the field, `--sandbox-network` or `sandbox_network:` under the defaults `system:` block decides, else `on`. May also be given under the recipe's `system:` block; the top-level field wins. Ignored when `--sandbox=off`. See [§22.1 Recipe Sandbox](#221-recipe-sandbox). |
 
 Example:
 
@@ -2348,16 +2446,16 @@ The enforcement behaviour is controlled by the `--check-checksums`, `--enforce-c
 
 | Field | Description |
 |-------|-------------|
-| `enforce_checksums` | Set to `true` to make this recipe always verify checksums in `enforce` mode, regardless of the global CLI flag. Equivalent to passing `--enforce-checksums` for this package only. |
+| `enforce_checksums` | Set to `true` to verify this package's checksums in `enforce` mode even when the defaults profile asks for less. A `--print-checksums`, `--enforce-checksums` or `--check-checksums` flag still takes precedence. |
 
-Mode precedence (highest wins): `--print-checksums` > `--enforce-checksums` > `enforce_checksums: true` > `--check-checksums` > default (`off`).
+Mode precedence (highest wins): `--print-checksums` > `--enforce-checksums` > `--check-checksums` > recipe `enforce_checksums: true` > defaults `checksum_mode:` > `off`.
 
 | Mode | Behaviour |
 |------|-----------|
 | `off` (default) | Checksums in the recipe are stored but never evaluated. |
 | `warn` | A declared checksum is verified; a mismatch emits a warning and the build continues. |
-| `enforce` | A declared checksum is verified and must match; the build aborts on mismatch. If `--enforce-checksums` is active globally, a **missing** checksum also aborts the build. |
-| `print` | The actual checksum of every downloaded file is printed to stdout; no verification is performed. Use this to populate recipes with correct checksums for the first time. |
+| `enforce` | A declared checksum is verified and must match; the build aborts on mismatch. A **missing** checksum also aborts the build, however `enforce` was selected. |
+| `print` | No verification. After the build, bits prints the SHA-256 of every source (from `SOURCES/cache/`) and patch, including packages taken from cache. Use this to populate recipes with correct checksums for the first time. |
 
 #### External checksum files
 
@@ -2402,8 +2500,8 @@ All sections are optional. `commits` maps a git `tag:` to the **pinned commit SH
 | `valid_defaults` | List of defaults profiles this recipe is compatible with. |
 | `incremental_recipe` | Bash snippet for fast incremental (development) rebuilds. |
 | `relocate_paths` | Paths to rewrite when relocating an installation. |
-| `variables` | Custom key-value pairs for `%(variable)s` substitution in other fields. |
-| `from` | Parent recipe name for recipe inheritance. |
+| `variables` | Custom key-value pairs for `%(name)s` substitution in `version`, `tag`, `source`, `sources`, `patches` and the recipe body. Setting it (or `expand_recipe: true`) makes an unknown `%(name)s` in the body an error; otherwise only known variables are replaced there. |
+| `from` | Recipe inheritance: names a recipe directory (relative to the recipes root) whose recipe with the same file name is the parent. The child's header keys replace the parent's and its body is placed before the parent's; `merge_policy:` (`remove`, `inherit`, `merge` key lists) adjusts this. |
 | `architecture` | Set to `share` to mark a package as architecture-independent (see [§19](#19-architecture-independent-shared-packages)). The older spelling `shared` is no longer recognised. |
 | `own_hash` | Set to `true` for a package whose output does not depend on the community/build-type defaults — the compiler toolchain — so one build is reused across them. See [Shared toolchains](#shared-toolchains-own_hash) below. |
 | `view` | How the package appears in a release's merged view (see [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups)): `false` keeps it out; a mapping with `exclude:` / `include:` path lists shapes it. `true` also makes `bits enter` / `bits setenv` turn on `--view` automatically when the package is loaded. Hash-excluded (presentation only). |
@@ -2441,7 +2539,7 @@ A **defaults profile** is a special recipe file named `defaults-<name>.sh` that 
 
 ### Selecting a profile
 
-The active profile is selected with `--defaults PROFILE`. If the flag is omitted, bits falls back to `release`, loading `defaults-release.sh`.
+The active profile is selected with `--defaults PROFILE`. If the flag is omitted, bits uses `release`, loading `defaults-release.sh`. Any other selection is layered on top of `release`: `--defaults dev` behaves like `release::dev` (a missing `defaults-release.sh` is skipped).
 
 `defaults-release.sh` occupies a privileged position: every package in the build graph automatically depends on a pseudo-package named `defaults-release`, which is fulfilled by whatever profile(s) are loaded. This is the mechanism that injects the global `env:` block into every package's `init.sh`.
 
@@ -2456,9 +2554,9 @@ Two or more profiles can be combined in a single `--defaults` value using `::` a
 bits build --defaults dev::gcc13 MyPackage
 ```
 
-This loads `defaults-dev.sh` and `defaults-gcc13.sh` (in that order) and deep-merges their YAML headers into a single configuration. The merge follows the same left-to-right rules as specifying separate profiles: scalars from the later file win, lists are concatenated, dicts are recursively merged.
+This loads `defaults-release.sh`, `defaults-dev.sh` and `defaults-gcc13.sh` (in that order) and deep-merges their YAML headers left to right into a single configuration: scalars from the later file win, lists are concatenated, dicts are recursively merged.
 
-> **Note:** `defaults-release.sh` is **not** automatically prepended when you use `::`. If you want the release baseline plus a project overlay, write `--defaults release::myproject` explicitly.
+> **Note:** `release` is prepended automatically unless it already appears in the chain, so `--defaults myproject` and `--defaults release::myproject` are equivalent. Name `release` explicitly only to place it somewhere other than first.
 
 
 ---
@@ -2468,7 +2566,7 @@ This loads `defaults-dev.sh` and `defaults-gcc13.sh` (in that order) and deep-me
 A defaults file is a standard bits recipe file. The YAML header supports a superset of ordinary recipe fields:
 
 ```yaml
-package: defaults-release          # must match filename (without defaults- prefix)
+package: defaults-release          # must match the file name (without .sh)
 version: v1                        # required; used in the spec but not for building
 
 # ── Global environment ────────────────────────────────────────────────────────
@@ -2514,8 +2612,7 @@ package_family:
     - data-*
     - coral
 ---
-# Bash body is allowed but its output is appended to every package's build
-# environment script. In practice this section is almost always empty.
+# Any Bash body is ignored (bits warns if it contains more than comments).
 ```
 
 
@@ -2527,32 +2624,36 @@ package_family:
 |-------|-------------|
 | `env` | Key-value pairs exported into every package's `init.sh` (via `defaults-release` auto-dependency). Equivalent to setting the same `env:` in every recipe. |
 | `disable` | List of package names to exclude from the dependency graph. |
-| `overrides` | Dict keyed by package name or regex. Each value is a YAML fragment merged into that package's spec after it is parsed. Keys are matched case-insensitively as `re.fullmatch` patterns, so regex metacharacters work. |
-| `valid_defaults` | Restricts which profiles this recipe is compatible with. Each component of the `::` list is checked independently; bits aborts if any component is absent from the list. |
+| `overrides` | Map keyed by package name or regex, matched against the whole name case-insensitively. Each field in an entry **replaces** that field of the recipe (lists and maps are not merged with the recipe's). A key may carry a `:matcher` suffix to apply only when it holds (e.g. `ROOT:osx`), or an `@ref` suffix to read the recipe from that git ref of the recipe repository. A list item `name = version` is shorthand for setting `version` and `tag`. |
+| `valid_defaults` | Restricts which profiles may be used. Each component of the `::` chain is checked, except `release` and profiles marked `valid_defaults_exempt: true`; bits aborts if one is not listed. |
 | `package_family` | Optional install grouping; see [Package families](#package-families) below. |
 | `qualify_arch` | Set to `true` to append **all** non-`release` default names to the install architecture string; see [Qualifying the install architecture](#qualifying-the-install-architecture) below. |
-| `append_arch` | String value appended to the install architecture string **only for this defaults file**. Unlike `qualify_arch`, which qualifies with every default name in the chain, `append_arch` lets each file opt in independently and choose the exact string to append; see [Selective qualification with append_arch](#selective-qualification-with-append_arch) below. |
+| `append_arch` | String appended **verbatim** to the install architecture string, **only for this defaults file** (include the separator, e.g. `-gcc13`). Unlike `qualify_arch`, which qualifies with every default name in the chain, each file opts in independently and chooses the exact string; see [Selective qualification with append_arch](#selective-qualification-with-append_arch) below. |
 | `own_hash_neutral` | Set to `true` next to an `append_arch` (typically a build type such as `opt`/`dbg`) to leave that qualifier out of the architecture of `own_hash` packages, so one toolchain build serves every build type. See [Shared toolchains](#shared-toolchains-own_hash). |
 | `docker_registry` | (in `defaults-release`) Registry the default `--docker` builder image is taken from; `$BITS_DOCKER_REGISTRY` wins. See [§22](#22-docker-support). |
 | `checksum_mode` | Base checksum verification policy for every build using this profile. Accepted values: `off` (default), `warn`, `enforce`, `print`. Equivalent to passing the corresponding `--*-checksums` flag on every invocation. CLI flags override this setting; see [Checksum policy in defaults profiles](#checksum-policy-in-defaults-profiles) below. |
 | `write_checksums` | Set to `true` to automatically write/update `checksums/<pkg>.checksum` files after every build. Equivalent to passing `--write-checksums` on every invocation. The CLI flag overrides this setting. |
+| `variables` | Values for `(?NAME)` matchers and `%(NAME)s` substitution; see [Defaults `variables:` and predefined platform variables](#defaults-variables-and-predefined-platform-variables). |
+| `auto_patch` | `false` turns off automatic patch application for every package; see [Controlling patch application](#controlling-patch-application). |
+| `force_revision`, `revision_policy` | Revision labels for installed packages; see [Forcing or dropping the revision suffix](#forcing-or-dropping-the-revision-suffix-force_revision). |
+| `system` | Build-host and publishing settings, e.g. `remote_store`, `sandbox_network`, `mem_per_job_default`, `build_oversubscribe`, `build_unleash_final`, `source_mode` and the CVMFS path templates (see [CVMFS layout](#cvmfs-layout)). |
 
 
 ---
 
 ### Role in the build pipeline
 
-Defaults processing happens in two phases:
+Defaults are applied in two steps:
 
-**Phase 1 — `readDefaults()` + `parseDefaults()`** runs before package resolution. Bits loads each named profile file, merges their YAML headers into a single `defaultsMeta` dict, optionally overlays an architecture-specific file (e.g. `defaults-slc9_x86-64.sh`), then extracts:
+**1. Before package resolution**, bits loads each profile in the chain, merges their YAML headers into one configuration, overlays an architecture-specific file if one exists (e.g. `defaults-slc9_x86-64.sh`), then extracts:
 
 - `disable` — packages to exclude from the build graph entirely.
 - `env` — environment variables propagated to every package's `init.sh` (injected via the `defaults-release` pseudo-dependency).
 - `overrides` — per-package YAML patches applied after the recipe is parsed (see below).
 - `package_family` — optional install grouping (see [Package families](#package-families) below).
-- `requires` / `build_requires` — repository providers (packages with `provides_repository: true`) to clone and add to `BITS_PATH` for builds using this profile. These are consumed by the Phase 2 provider scan and are **not** added as regular build dependencies (to avoid a dependency cycle — see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) in §13).
+- `requires` / `build_requires` — repository providers (packages with `provides_repository: true`) to clone and add to `BITS_PATH` for builds using this profile. They are used only to find and clone providers and are **not** added as regular build dependencies (to avoid a dependency cycle — see [Triggering providers from a defaults file](#triggering-providers-from-a-defaults-file) in §13).
 
-**Phase 2 — per-package application** happens inside `getPackageList()` as each recipe is parsed. The merged `overrides` dict is checked against the package name (case-insensitive regex match); matching entries are merged into the spec with `spec.update(override)`. This means a defaults file can change any recipe field — version, `requires`, `env`, `prefer_system`, etc. — for targeted packages.
+**2. As each recipe is parsed**, every `overrides` entry whose key matches the package name (a case-insensitive regex over the whole name) is applied: each field it sets replaces the recipe's value. This means a defaults file can change any recipe field — version, `requires`, `env`, `prefer_system`, etc. — for targeted packages.
 
 
 ---
@@ -2622,7 +2723,7 @@ package_family:
 
 #### Matching rules
 
-- Patterns are matched with `fnmatch.fnmatch` — case-sensitive; `*` matches any sequence of characters, `?` matches a single character.
+- Patterns are shell-style globs, matched case-sensitively: `*` matches any sequence of characters, `?` a single character.
 - Families are tried in definition order; the **first match wins**.
 - The `default` key is a fallback, not a pattern list, so it is never tried as a family name during matching.
 - A package may only belong to one family.
@@ -2664,11 +2765,8 @@ This means every package in a mixed-family build is correctly self-describing in
 
 `package_family` is entirely opt-in. When the key is absent from all defaults files:
 
-- `resolve_pkg_family()` returns `""` for every package.
-- `PKGFAMILY` is exported as an empty string.
-- `build_template.sh` falls back to the legacy two-segment `PKGPATH`.
-- `init.sh` path templates omit the family segment.
-- `SPECS/`, `latest` symlinks, and `hashPath` all use the original layout.
+- every package has an empty family, and `$PKGFAMILY` is exported as an empty string;
+- `$PKGPATH`, the `init.sh` paths, `SPECS/` and the `latest` symlinks use the original `<arch>/<package>/…` layout.
 
 An existing recipe repository with no `package_family` key will produce bit-for-bit identical install trees, tarballs, and hashes compared to a build that predates the feature.
 
@@ -2678,7 +2776,7 @@ An existing recipe repository with no `package_family` key will produce bit-for-
 
 By default all packages built with any set of defaults land under the same architecture directory (e.g. `sw/slc7_x86-64/`). If you maintain two profiles that are **incompatible with each other** — for example `gcc12` and `gcc13` — builds from one profile will silently overwrite the install tree of the other.
 
-Bits provides two complementary mechanisms to add a qualifying suffix to the architecture string. Both produce a combined string of the form `<raw_arch>-<suffix>`, which is then used for the install tree, tarballs, and `init.sh` generation.
+Bits provides two complementary mechanisms to add a qualifying suffix to the architecture string (e.g. `slc7_x86-64-gcc13`). The combined string is then used for the install tree, tarballs, and `init.sh` generation.
 
 #### How the combined architecture is used
 
@@ -2745,7 +2843,7 @@ The trade-off is that **every** default in the chain contributes to the suffix. 
 # defaults-gcc13.sh
 package: defaults-gcc13
 version: v1
-append_arch: gcc13            # ← only this file contributes "gcc13"
+append_arch: -gcc13           # ← only this file contributes "-gcc13"
 env:
   CC: gcc-13
   CXX: g++-13
@@ -2764,15 +2862,15 @@ With `--defaults release::gcc13`, the effective architecture is:
 sw/slc7_x86-64-gcc13/
 ```
 
-`release` adds nothing because it has no `append_arch`. If `defaults-cuda.sh` also declares `append_arch: cuda`, then `--defaults release::gcc13::cuda` produces `slc7_x86-64-gcc13-cuda` — only the two files that opted in contribute, in chain order.
+`release` adds nothing because it has no `append_arch`. If `defaults-cuda.sh` also declares `append_arch: -cuda`, then `--defaults release::gcc13::cuda` produces `slc7_x86-64-gcc13-cuda` — only the two files that opted in contribute, in chain order.
 
-The value of `append_arch` is used **verbatim** and need not match the filename. This lets you decouple the defaults filename from the suffix token:
+The value of `append_arch` is used **verbatim** and need not match the filename. No separator is added, so include it in the value (`-gcc13`; `_gcc13` or no separator also work). This lets you decouple the defaults filename from the suffix token:
 
 ```yaml
 # defaults-gcc13-lto.sh
 package: defaults-gcc13-lto
 version: v1
-append_arch: gcc13-lto        # ← custom suffix, not derived from the filename
+append_arch: -gcc13-lto       # ← custom suffix, not derived from the filename
 ```
 
 **Precedence:** when any defaults file in the chain uses `append_arch`, the `append_arch` mechanism takes full control — `qualify_arch` is ignored. This keeps the behaviour predictable when both fields appear in a mixed chain.
@@ -2803,7 +2901,7 @@ bits clean -a slc7_x86-64-gcc13
 
 ### Architecture-specific overlay
 
-If a file named `defaults-<architecture>.sh` exists in the recipe repository (e.g. `defaults-osx_arm64.sh`), bits silently loads it and merges its header on top of the already-merged profile, skipping the `package` key to avoid a name clash. This is the mechanism for per-platform tweaks such as disabling packages that do not build on a particular OS.
+If a file named `defaults-<architecture>.sh` exists in the recipe repository (e.g. `defaults-osx_arm64.sh`), bits also loads it (and says so in the log) and merges its header on top of the already-merged profile, skipping the `package` key to avoid a name clash. This is the mechanism for per-platform tweaks such as disabling packages that do not build on a particular OS.
 
 
 ---
@@ -2851,13 +2949,13 @@ regenerate it whenever a recipe's `homebrew_formula` changes, and use
 
 ### Merge semantics
 
-When the `::` list contains more than one name (e.g. `--defaults release::alice`), `readDefaults()` processes them left to right and merges their YAML headers using `merge_dicts()`, which performs a deep merge:
+When the `::` list contains more than one name (e.g. `--defaults release::alice`), bits merges their YAML headers left to right (a deep merge):
 
 - Scalar values: later profile wins.
 - Lists: concatenated.
 - Dicts: recursively merged.
 
-This lets a project-level profile (`alice`) layer on top of a base profile (`release`) without duplicating common settings. Bits also validates that each component in the `::` list is present in any `valid_defaults` list found in the loaded recipes; it aborts with a clear error message if any component is incompatible.
+This lets a project-level profile (`alice`) layer on top of a base profile (`release`) without duplicating common settings. Bits also checks each component of the `::` list (except `release` and profiles marked `valid_defaults_exempt: true`) against the `valid_defaults` lists of the packages being built, and aborts with an error if one is not accepted.
 
 ---
 
@@ -2865,7 +2963,7 @@ This lets a project-level profile (`alice`) layer on top of a base profile (`rel
 
 By default every installed package path and tarball filename includes a **revision counter** assigned by bits, e.g. `slc9_amd64/gcc/15.2.1-1`. The trailing `-1` is the revision. For some packages — notably CMS software releases where the version string `CMSSW_13_0_0` is the authoritative label used by downstream infrastructure — this suffix is undesirable. The `force_revision` field lets you pin the revision to a specific value or drop it entirely, **without touching the recipe file**.
 
-`force_revision` is set in a `defaults-*.sh` file, never in a recipe, so different groups can reuse the same recipes while opting in or out independently.
+`force_revision` is normally set in a `defaults-*.sh` file, so different groups can reuse the same recipes while opting in or out independently; a recipe may also set it directly.
 
 #### Per-package override
 
@@ -2877,7 +2975,7 @@ overrides:
     force_revision: "rc1"       # pin to a literal string
 ```
 
-When the regex matches a package name (case-insensitive), `spec["revision"]` is set to the given value before any counter logic runs.
+When the regex matches a package name (case-insensitive), the package's revision is set to that value instead of a counter.
 
 #### Global fallback
 
@@ -2899,8 +2997,8 @@ full build hash:
 revision_policy: "hash"
 ```
 
-After computing each package's hash, bits injects
-`force_revision: "<remote_revision_hash>"` when `force_revision` is absent.
+Once a package's build hash is known, bits uses it as the revision when no
+`force_revision` is set.
 Explicit recipe values, per-package overrides, and the global `force_revision`
 fallback retain precedence, including `force_revision: ""`.
 An untracked dependency must have an explicit `force_revision`; the hash policy
@@ -2989,14 +3087,14 @@ Every build script receives two architecture variables:
 Use `$EFFECTIVE_ARCHITECTURE` wherever a path should end up in the shared tree. The existing `$ARCHITECTURE` variable is still available for platform-specific logic such as selecting compiler flags.
 
 ```bash
-# Example: a recipe that installs under the effective arch tree
-install -m 644 mydata.db "$INSTALLROOT/share/"
-echo "Installing to $EFFECTIVE_ARCHITECTURE tree"
+# $INSTALLROOT already points into the share/ tree for a shared package
+install -m 644 mydata.db "$INSTALLROOT/"
+echo "Installing into the $EFFECTIVE_ARCHITECTURE tree (built on $ARCHITECTURE)"
 ```
 
 ### Environment initialisation (`init.sh`)
 
-When a package depends on a shared package, bits generates the corresponding `init.sh` source line with a **literal** path prefix instead of the runtime variable `$BITS_ARCH_PREFIX`. This is intentional: shared packages are never relocated (they contain no compiled binaries), so the literal `share/` segment is always correct, including in CVMFS deployments.
+When a package depends on a shared package, bits generates the corresponding `init.sh` source line with a **literal** path prefix instead of the runtime variable `$BITS_ARCH_PREFIX`. The `share/` tree has the same name on every platform, so the literal path is correct for every consumer architecture, including in CVMFS deployments.
 
 ```bash
 # Dependency on an arch-specific package — uses runtime variable:
@@ -3010,7 +3108,7 @@ When a package depends on a shared package, bits generates the corresponding `in
 
 ### Hashing and reproducibility
 
-The build hash of a shared package is computed from the same inputs as any other package (recipe text, dependency hashes). Because `architecture` is not directly hashed (it enters only through the dependency tree), a shared package with no compiled dependencies will produce the **same hash on every platform**. This means:
+The build hash of a shared package is computed from the same inputs as any other package (recipe text, dependency hashes). Because `architecture` is not hashed directly (it enters only through the dependency tree), a shared package whose dependencies are all shared (apart from `defaults-release`) has the **same hash on every platform**. On macOS, relocation paths are also left out of a shared package's hash. This means:
 
 - A shared package built on `slc7_x86-64` can be fetched and reused on `osx_x86-64` or `ubuntu2204_x86-64` without rebuilding.
 - Once uploaded to the remote store, it is a single artifact shared by all build platforms.
@@ -3028,7 +3126,7 @@ This is not an error — bits will still build the package — but the hash will
 
 ### Relocation
 
-Relocation (path-rewriting for CVMFS deployment) is **disabled** for shared packages. Shared packages should contain only data, scripts, or pure-Python code; if a shared package were relocated the `share/` prefix would still be constant anyway. If your package genuinely requires relocation, it should not be marked `architecture: share`.
+Shared packages go through the normal relocation step, but their relocation paths never enter the hash, so one tarball serves every platform. Keep them to data, scripts and pure-Python code: a package with compiled binaries that need per-platform path rewriting should not be marked `architecture: share`. When published to CVMFS, shared packages go to the layout's `cvmfs_shared_path_template` (default `{prefix}/noarch/{pkg}/{tag}`) instead of the per-architecture packages tree.
 
 ### Backward compatibility
 
@@ -3040,7 +3138,7 @@ The feature is entirely opt-in. A recipe without `architecture: share` behaves e
 
 ### Recipe build-time variables
 
-These variables are set automatically inside each package's Bash build script by `build_template.sh` before the recipe body is sourced. They cannot be overridden by the recipe.
+bits sets these variables in each package's build script before the recipe body runs. Treat them as read-only.
 
 #### Core build paths
 
@@ -3051,6 +3149,9 @@ These variables are set automatically inside each package's Bash build script by
 | `$SOURCEDIR` | Checked-out source directory (git) or the directory where archives are downloaded (`sources:`). |
 | `$BUILDROOT` | Parent of `$BUILDDIR`; corresponds to `BUILD/<pkghash>/` in the work tree. |
 | `$PKGPATH` | Relative path from the work directory to the install root: `<arch>[/<family>]/<pkg>/<version>-<revision>`. |
+| `$WORK_DIR` | Absolute path of the work directory (`sw/` by default). |
+| `$PKGDIR` | Directory containing the package's recipe file (its `patches/` live here). |
+| `$BITS_CONFIG_DIR` | Absolute path of the recipe directory (`-c`/`--config-dir`). |
 
 #### Package identity
 
@@ -3058,14 +3159,14 @@ These variables are set automatically inside each package's Bash build script by
 |----------|---------|
 | `$PKGNAME` | Package name as declared in the recipe. |
 | `$PKGVERSION` | Package version string. |
-| `$PKGREVISION` | Build revision (integer, incremented on each local rebuild). |
+| `$PKGREVISION` | Build revision: `1`, `2`, … (or `local1`, `local2`, … when there is no write store); empty when `force_revision` is `""`. |
 | `$PKGHASH` | Unique content-addressable build hash (hex string). |
 | `$PKGFAMILY` | Install family (empty string if no family is assigned). |
 | `$BUILD_FAMILY` | Full `build_family` string, which may include the defaults combination used. |
 | `$ARCHITECTURE` | Real build-host architecture string (e.g. `ubuntu2204_x86-64`). |
 | `$EFFECTIVE_ARCHITECTURE` | `share` for shared packages; the build-type-neutral arch for `own_hash` packages; equal to `$ARCHITECTURE` otherwise. |
 | `$JOBS` | Parallel compilation jobs. Pass to `make -j$JOBS`, `cmake --build --parallel $JOBS`, etc. Already divided across `--parallel` and reduced by `mem_per_job` when memory is tight (see [Memory- and load-aware parallelism](#memory-aware-parallelism)). |
-| `$COMMIT_HASH` | Git commit SHA checked out for the `source:` field. |
+| `$COMMIT_HASH` | Commit checked out for the `source:` field, shortened to 10 characters (the ref as written if it could not be resolved to a commit). |
 | `$BITS_SCRIPT_DIR` | Absolute path to the bits installation directory. |
 | `$INCREMENTAL_BUILD_HASH` | Non-zero when an incremental recipe is in use (development mode). |
 | `$DEVEL_PREFIX` | Non-empty for development packages (directory name of the devel source tree). |
@@ -3095,10 +3196,9 @@ tar -xzf "$SOURCEDIR/$SOURCE0" -C "$BUILDDIR"
 | `$PATCH_COUNT` | Total number of patch files (`0` if no `patches:` field). |
 
 ```bash
-cd "$SOURCEDIR"
-for i in $(seq 0 $(( PATCH_COUNT - 1 ))); do
-  eval patch_file="\$PATCH$i"; patch -p1 < "$SOURCEDIR/$patch_file"
-done
+# bits applies patches itself unless auto_patch is false (or --no-auto-patch);
+# only then does the recipe apply them, with the built-in helper:
+bits_apply_patches        # patch -p1 in declaration order; bits_apply_patches 0 for -p0
 ```
 
 #### Dependency variables
@@ -3116,7 +3216,7 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 
 | Variable | Purpose |
 |----------|---------|
-| `$BITS_PROVIDERS` | URL(s) identifying the active provider repository set. |
+| `$BITS_PROVIDERS` | URL of the active repository-provider set, inherited from the environment (see below). |
 
 ### Build and configuration variables
 
@@ -3126,22 +3226,27 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | `BITS_ORGANISATION` | _(empty)_ | Organisation whose registry entry (`<org>.bits.sh`) the bootstrap clones when `-c` names a missing recipe directory. Empty by default; the `aliBuild` wrapper sets `ALICE`. (`bits init --organisation` does not persist it; set the variable.) |
 | `BITS_PKG_PREFIX` | _(empty)_ | Display prefix for `bits q`. Empty prints native `PKG/VERSION`; when set (e.g. `VO_ALICE` via `aliBuild`) output becomes `PREFIX@PKG::VERSION`. |
 | `BITS_REPO_DIR` | `.` (`alidist` under the `aliBuild` wrapper) | Recipe directory (`-c`/`--config-dir` default): normally the community repository you run bits in. |
-| `BITS_WORK_DIR` | `sw` | Output and work directory. |
-| `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; relative names have `.bits` appended and are resolved under `BITS_REPO_DIR`. |
+| `BITS_WORK_DIR` | `sw` | Output and work directory (`ALICE_WORK_DIR` is accepted as a fallback). |
+| `BITS_PATH` | _(empty)_ | Comma-separated list of additional recipe search directories. Absolute paths are used directly; a relative name resolves to `<recipe dir>/<name>.bits`. `--search-path` seeds it; an explicit `BITS_PATH` wins. |
 | `BITS_CHDIR` | _(unset)_ | Directory to change to before building (same as `-C`). |
 | `BITS_TAR_COMPRESSOR` | `gzip -n` | Compressor for package tarballs. Must be deterministic (e.g. `pigz -n -p4` on a farm with a uniform pigz, never plain `pigz`). |
-| `BITS_DOCKER_REGISTRY` | _(built-in)_ | Registry of the default `--docker` builder image (wins over `docker_registry:` in `defaults-release`). |
+| `BITS_DOCKER_REGISTRY` | `gitlab-registry.cern.ch/bits/containers` | Registry of the default `--docker` builder image (wins over `docker_registry:` in `defaults-release`). |
 | `BITS_DOCKER_TAG` | `latest` | Tag of the default builder image. |
 | `BITS_LEGACY_REGISTRY` | _(unset)_ | `1` selects the legacy `alisw/<distro>-builder` images (the `aliBuild` wrapper sets it). |
-| `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` | URL(s) of the repository provider set to use. Set it in the environment (there is no build flag; an `@<tag>` suffix pins a snapshot). The built-in default points to the official bits-providers repository. |
+| `BITS_LEGACY_INITDOTSH` | _(unset)_ | `1` selects the legacy build-time `init.sh` (same as `--legacy-initdotsh`); the `aliBuild` wrapper sets it. |
+| `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` (empty under the `aliBuild` wrapper) | URL of the repository-provider set; an `@<tag>` suffix pins a snapshot. Environment only (no build flag). |
+| `REMOTE_STORE`, `WRITE_STORE` | _(unset)_ | Read and write store URLs when no flag is given; `BITS_REMOTE_STORE`/`BITS_WRITE_STORE` override them (see [§21](#21-remote-binary-store-backends)). |
+| `BITS_S3_STORE` | `https://s3.cern.ch/lcgapp-bits-testing` | Default store for `bits publish`, `certify`, `sign`, `bits store` and `compliance`. |
+| `BITS_AWS_KEYS_FILE` | `~/.bits/s3keys` | Private file with S3 credentials, used when they are not in the environment. |
+| `BITS_STRICT_STORE_INTEGRITY` | _(unset)_ | `1` makes a recalled tarball with no integrity-ledger entry fatal (with `--store-integrity`). |
 
 ### Environment module variables
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MODULES_SHELL` | _(auto-detected)_ | Shell type passed to `modulecmd` and used when spawning a new sub-shell via `bits enter`. Auto-detected from the parent process. Accepted values: `bash`, `zsh`, `ksh`, `csh`, `tcsh`, `sh`. |
-| `MODULEPATH` | _(set by bits)_ | Colon-separated list of directories searched by `modulecmd` for modulefiles. Bits prepends `<WORK_DIR>/MODULES/<ARCH>` and preserves any pre-existing entries. |
-| `BITSLVL` | `0` | Nesting depth counter incremented each time `bits enter` is called. `bits enter` refuses to proceed if this is already greater than 1, preventing double-nesting. |
+| `MODULEPATH` | _(set by bits)_ | Colon-separated list of directories searched by `modulecmd` for modulefiles. Bits prepends `<WORK_DIR>/MODULES/<ARCH>` (plus any reused-release module trees) and keeps existing entries. |
+| `BITSLVL` | `0` | Nesting counter, incremented by every `bits` invocation. `bits enter` refuses to run inside an environment it already opened (`BITSLVL` already set to 1 or more). |
 | `BITS_ENV` | _(optional)_ | Absolute path to the `bits` executable, used by `shell-helper` to locate bits without relying on `$PATH`. If unset, `shell-helper` resolves `bits` via `type -p bits`. |
 | `BITSBUILD_CHDIR` | _(unset)_ | If set, `<value>/sw` is added to the list of default work directories tried when `--work-dir` is not specified. |
 
@@ -3167,20 +3272,21 @@ A **remote binary store** is an external storage location where bits uploads com
 |--------|-------------|
 | `--remote-store URL` | Fetch pre-built tarballs from this store before deciding whether to build. |
 | `--write-store URL` | Upload each newly-built tarball to this store after a successful build. May be the same URL as `--remote-store`. |
-| `--remote-store URL::rw` | Shorthand: sets both `--remote-store` and `--write-store` to `URL` in a single flag. |
-| `--no-remote-store` | Disable the remote store even on architectures where one is enabled by default. |
+| `--remote-store URL::rw` | Shorthand: sets both `--remote-store` and `--write-store` to `URL` in a single flag. Cannot be combined with `--write-store`. |
+| `--no-remote-store` | Disable the remote store even on architectures where one is enabled by default (a `--write-store` is still read from). |
 | `--insecure` | Skip TLS certificate verification for `https://` stores. |
+| `--trust-manifest SRC`, `--no-require-signed-reuse` | Signed reuse is on by default: a remote tarball is reused only if a verified signed manifest lists it. `--trust-manifest` names the manifest (otherwise derived from an `http(s)`/`s3`/`b3` store); `--no-require-signed-reuse` disables the check (insecure, warns). See [Signing and verifying the archive tier](#signing-and-verifying-the-archive-tier). |
 
-A `--write-store` given on its own is also used as the read store, unless the architecture enables a default read store (slc7/8/9, ubuntu x86-64, slc9_aarch64): that one stays the read store, so use `--remote-store URL::rw` to read from and write to one store. Unlike aliBuild, configuring a store does **not** force `--no-system` (reuse is content-hash addressed); pass `--no-system` for a self-contained build. Store URLs may also come from the environment (`REMOTE_STORE`/`WRITE_STORE`, overridden by `BITS_`-prefixed names; see [S3 store: common CI/CD config](#s3-store-common-cicd-config-with-per-runner-overrides)) or from `remote_store:` under the defaults `system:` block. CERN S3 path-style URLs (`https://s3.cern.ch/<bucket>`) are accepted and rewritten to the listable form.
+A `--write-store` given on its own is also used as the read store, unless the architecture has a default read store (`https://s3.cern.ch/swift/v1/alibuild-repo` on slc7/slc8/slc9 and ubuntu2004/2204/2404 x86-64 and on slc9_aarch64, unless `--always-prefer-system` is given): that one stays the read store, so use `--remote-store URL::rw` to read from and write to one store. Unlike aliBuild, configuring a store does **not** force `--no-system` (reuse is content-hash addressed); pass `--no-system` for a self-contained build. Store URLs may also come from the environment (`REMOTE_STORE`/`WRITE_STORE`, overridden by `BITS_`-prefixed names; see [S3 store: common CI/CD config](#s3-store-common-cicd-config-with-per-runner-overrides)) or from `remote_store:` under the defaults `system:` block. CERN S3 path-style URLs (`https://s3.cern.ch/<bucket>`) are accepted and rewritten to the listable form.
 
 ### Supported backends
 
 | URL scheme | Backend | Read | Write | Authentication |
 |------------|---------|:----:|:-----:|----------------|
 | `http://` or `https://` | HTTP/HTTPS | ✓ | — | None (public) or TLS; use `--insecure` to skip cert check |
-| `s3://BUCKET/PATH` | Amazon S3 via `s3cmd` | ✓ | ✓ | `~/.s3cfg` config file |
-| `b3://BUCKET/PATH` | S3-compatible via `boto3` | ✓ | ✓ | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` env vars |
-| `rsync://HOST/PATH` or `/local/path` | rsync | ✓ | ✓ | SSH keys (`~/.ssh/`) or filesystem permissions |
+| `s3://BUCKET/PATH` | CERN S3 via `s3cmd` | ✓ | ✓ | `~/.s3cfg` config file |
+| `b3://BUCKET/PATH` | Any S3-compatible service via `boto3` | ✓ | ✓ | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (environment, `--s3-*` flags or `~/.bits/s3keys`) |
+| `HOST:/PATH` (or `ssh://HOST:/PATH`), `rsync://HOST/MODULE`, `/local/path` | rsync | ✓ | ✓ | SSH keys, rsync-daemon access, or filesystem permissions |
 
 > `cvmfs://` is **not** a `--remote-store` backend. `--remote-store` is the
 > tarball store; to reuse components already deployed on CVMFS use
@@ -3205,11 +3311,11 @@ The HTTP backend is the simplest and most portable. It is read-only: bits fetche
 bits build --remote-store https://artifacts.example.com/bits ROOT
 ```
 
-Pair it with a writable backend (rsync or boto3) for the write side if needed.
+Pair it with a writable `--write-store` (rsync, `s3://` or `b3://`) if needed.
 
 #### S3 via `s3cmd` (`s3://`)
 
-Uses the [`s3cmd`](https://s3tools.org/s3cmd) command-line tool. Credentials are read from `~/.s3cfg`. Supports both AWS and S3-compatible services (Ceph, MinIO, etc.) when the endpoint is configured in `~/.s3cfg`.
+Uses the [`s3cmd`](https://s3tools.org/s3cmd) command-line tool. Credentials are read from `~/.s3cfg`. bits pins the host to CERN S3 (`s3.cern.ch`), so for AWS, MinIO, Ceph or any other endpoint use `b3://` instead.
 
 ```bash
 bits build --remote-store s3://mybucket/bits-cache \
@@ -3218,7 +3324,7 @@ bits build --remote-store s3://mybucket/bits-cache \
 
 #### S3-compatible via `boto3` (`b3://`)
 
-The preferred S3 backend. Uses the `boto3` Python library for efficient parallel uploads (up to 32 concurrent connections). Authentication is via environment variables:
+The preferred S3 backend. Uses the `boto3` Python library over one reused connection and works with any S3-compatible endpoint (CERN S3 by default; set `--s3-endpoint` otherwise). Credentials come from environment variables:
 
 ```bash
 export AWS_ACCESS_KEY_ID=your-key-id
@@ -3245,14 +3351,14 @@ forms are all accepted. Precedence is: `--s3-*` flags > environment (CI) > this
 file > built-in default — so CI-injected credentials are never overridden by the
 file.
 
-Upload order is designed to avoid partial-artifact races: the main package symlink is written first (reserving the revision number), then all dependency-set symlinks are uploaded in parallel, and the final tarball is written last. A downloader that finds the symlink but not yet the tarball simply waits for the next build cycle.
+The `b3://` store holds only the content-addressed tarballs, plus a small revision marker per build under `MANIFESTS/rev-index/`; no package or dist symlink objects are written. A tarball already present in the store is kept, never overwritten, and its stored sha256 is what the build manifest records.
 
 #### Publishing an existing local build to S3 (`bits publish`)
 
 Building with `--write-store` uploads each package **as it is built**. To push a
 store you already built (nothing re-uploads on a cached rebuild), use
-`bits publish` — it reads the build manifest and uploads the content tarballs
-plus their named symlink objects.
+`bits publish` — it reads the build manifest and uploads each package's content
+tarball.
 
 ```bash
 # credentials from the environment or ~/.bits/s3keys (see above)
@@ -3273,7 +3379,7 @@ bits publish --dry-run
 Modes: bare `bits publish` (or `--from-manifest`) bulk-uploads a build manifest to the
 S3 store — the community push shown above. `bits publish PACKAGE --cvmfs-target … --prepub-url …`
 publishes one package to CVMFS. The single-package S3-store write is now `bits store upload`
-(the old `bits publish --to s3`, which is removed along with `--to`/`--write-store`).
+(it replaces the removed `bits publish --to s3`).
 
 `--dry-run` (`-n`) lists exactly what would be uploaded and to which store,
 without contacting S3 — handy to check the package set and target before pushing.
@@ -3281,36 +3387,37 @@ without contacting S3 — handy to check the package set and target before pushi
 `--remote-store` accepts an `https://<host>/<bucket>` URL (from which the boto3
 endpoint and path-style addressing are derived), or `b3://<bucket>` / `s3://<bucket>`.
 It is the canonical store flag across `publish`, `certify`, `sign`, `prune --retain`,
-`bits store` (`gc`/`stats`/`upload`) and `compliance`; the old `--store` spelling still works but is deprecated and warns.
+`bits store` (`gc`/`stats`/`upload`) and `compliance`; the old `--store` spelling still works but is deprecated.
 The default is `$BITS_S3_STORE` if set, else `https://s3.cern.ch/lcgapp-bits-testing`.
-`--from-manifest` also uploads the manifest itself under `MANIFESTS/`, so a CI job
-can fetch and sign it.
+A bulk publish also uploads a trimmed copy of the manifest (one per architecture)
+under `MANIFESTS/`, but only if every package uploaded; `bits certify` and
+`bits sign` turn it into the signed manifest that consumers trust. Packages whose
+`redistributable:` forbids binary redistribution are skipped.
 
-Under the current posture uploading requires only valid S3 keys, and unsigned
-manifests are trusted (reuse works without signatures). Signing becomes relevant
-only when consumers build with `--require-signed-reuse` (see *Artifact resolution
-order*).
+Uploading needs only valid S3 keys, but reuse is **signed by default**: other
+builds reuse an uploaded tarball only once a signature-verified manifest lists
+it, so until the build is certified and signed they rebuild those packages.
+`--no-require-signed-reuse` turns the check off (insecure; bits warns). See
+[Artifact resolution order](#artifact-resolution-order-trust-tiered-reuse).
 
 #### Signing a manifest on a GitLab runner (no private server)
 
 A GitLab CI runner **dials out** to fetch jobs, so signing needs no
-inbound-reachable service. Keep the Ed25519 **private** key in a Protected +
-Masked CI/CD variable, restrict the job to **protected** refs (so fork/MR
-pipelines can never see it), and have it fetch the uploaded manifest, sign it
-with `trust.sign_manifest`, and push the `.sig` back next to it. Consumers verify
-with the **public** keys shipped in `bits/keys/`. This works on CERN's shared
-runners; if the key must never touch shared infrastructure, register one
-dedicated protected runner (it only dials out — no standing server). A ready
-template lives in `bits-console/.gitlab/sign-manifest.yml`.
+inbound-reachable service. The manifests project's CI runs `bits sign` after
+`bits certify` opens the merge request. Either it signs through the signing
+service (`--sign-via-service`, no key stored in CI), or it uses `--key` with the
+Ed25519 **private** key in a Protected + Masked CI/CD variable and the job limited
+to **protected** refs, so fork/MR pipelines never see it. Consumers verify with
+the **public** keys in `bits/keys/`; `keys/key-policy.json` says which key may sign
+for which group. See [Signing — `bits sign`](#signing--bits-sign).
 
 #### rsync / local filesystem
 
-Supports both remote hosts (via SSH) and local paths. Useful for shared NFS or a build server accessible over SSH:
+Supports remote hosts (over SSH or an rsync daemon) and local paths. Useful for shared NFS or a build server reachable over SSH. bits cannot find a signed manifest in such a store, so pass `--trust-manifest`, or `--no-require-signed-reuse` for a store you control; otherwise nothing is reused from it:
 
 ```bash
 # Remote via SSH
-bits build --remote-store rsync://buildserver.example.com/bits-cache \
-           --write-store  rsync://buildserver.example.com/bits-cache ROOT
+bits build --remote-store buildserver.example.com:/srv/bits-cache::rw ROOT
 
 # Local filesystem path (useful for cross-project caching on the same machine)
 bits build --remote-store /shared/bits-cache \
@@ -3319,7 +3426,7 @@ bits build --remote-store /shared/bits-cache \
 
 ### Content-addressable tarball layout
 
-Every tarball is named and stored by its build hash. The layout is the same locally (in the `TARS/` work directory) and in the remote store:
+Every tarball is named and stored by its build hash. The local layout (in the `TARS/` work directory) is below. A `b3://` store holds only the `store/` part; `rsync` and `s3://` stores also receive the package symlinks and dist trees:
 
 ```
 TARS/
@@ -3328,9 +3435,9 @@ TARS/
     │   └── <hash[0:2]>/          ← two-character prefix for directory sharding
     │       └── <hash>/
     │           └── <pkg>-<version>-<revision>.<architecture>.tar.gz
-    └── <package>/                 ← convenience symlinks by package name
-        ├── <pkg>-<version>-<revision>.<architecture>.tar.gz -> ../../store/…
-        └── <pkg>-<version>-<revision>.<architecture>.tar.gz.manifest
+    ├── <package>/                 ← convenience symlinks by package name
+    │   └── <pkg>-<version>-<revision>.<architecture>.tar.gz -> ../../<architecture>/store/…
+    └── dist/ dist-direct/ dist-runtime/   ← dependency-set symlink trees (see below)
 ```
 
 For packages marked `architecture: share` (see [§19](#19-architecture-independent-shared-packages)) the architecture segment is replaced with `share`:
@@ -3341,19 +3448,19 @@ TARS/share/store/<hash[0:2]>/<hash>/<pkg>-<version>-<revision>.share.tar.gz
 
 `own_hash` packages use their build-type-neutral architecture here (see [Shared toolchains](#shared-toolchains-own_hash)).
 
-The hash is a 40-character SHA-1 computed from the recipe text, package name and version, checked-out source commit, all transitive dependency hashes, relocation paths, and hooks. Changing anything in this set produces a different hash and therefore a different cache entry.
+The hash is a 40-character SHA-1 of the recipe text (comments stripped), package name, version and family, the source commit, `sources:` and patches, `env`/path settings, hooks, and the hashes of its dependencies (which cover theirs in turn); on macOS also the relocation paths. Changing anything in this set produces a different hash and therefore a different cache entry.
 
 ### Dependency-set symlink trees
 
-After each successful build, bits creates three symlink trees under `TARS/<arch>/dist/` that group together everything needed to reproduce or run the package:
+After each successful build, bits creates three symlink trees under `TARS/<arch>/` that group together everything needed to reproduce or run the package:
 
 | Directory | Contents |
 |-----------|----------|
-| `dist/<pkg>-<ver>-<rev>/` | Full transitive closure — all build and runtime dependencies. |
-| `dist-direct/<pkg>-<ver>-<rev>/` | Direct dependencies only (`requires` + `build_requires`). |
-| `dist-runtime/<pkg>-<ver>-<rev>/` | Runtime transitive closure (`runtime_requires`). |
+| `dist/<pkg>/<pkg>-<ver>-<rev>/` | Full transitive closure — all build and runtime dependencies. |
+| `dist-direct/<pkg>/<pkg>-<ver>-<rev>/` | Direct dependencies only (`requires` + `build_requires`). |
+| `dist-runtime/<pkg>/<pkg>-<ver>-<rev>/` | Runtime transitive closure (`runtime_requires`). |
 
-Each entry in these trees is a symlink to the corresponding tarball in `store/`. The trees are uploaded to the remote store alongside the tarball so that a downstream consumer can fetch an entire coherent set with a single rsync or S3 prefix listing.
+Each entry in these trees is a symlink to the corresponding tarball in `store/`. The `rsync` and `s3://` backends also upload the trees; the `b3://` backend does not, and bits rebuilds them locally from the dependency graph.
 
 ### Build lifecycle with a store
 
@@ -3364,14 +3471,14 @@ bits build --remote-store URL --write-store URL PACKAGE
 For each package in topological order:
 
 1. **Hash** — Compute the content-addressable hash from recipe, source commit, and dependency hashes.
-2. **Fetch** — Ask the remote store for `TARS/<arch>/store/<h2>/<hash>/*.tar.gz`. If found, download it.
+2. **Fetch** — Ask the remote store for `TARS/<arch>/store/<h2>/<hash>/*.tar.gz`. If found, download it. With signed reuse (the default) it is kept only if a verified signed manifest lists that hash with a matching sha256; otherwise it is discarded and the package is built.
 3. **Unpack or build** — If a cached tarball was downloaded, unpack it into `$INSTALLROOT` and skip compilation. Otherwise run the full Bash build script.
-4. **Pack** — After a successful from-source build (and after any `POST_INSTALL` hooks), bits rewrites the package's pkg-config (`.pc`), CMake config (`.cmake`) and `bin/*-config` files to self-relative paths (`relativize-configs.sh`), records the files to relocate (`etc/profile.d/.bits-relocate`) and the merged-view file list (`.bits-view.json`), then packs `$INSTALLROOT` into `TARS/<arch>/store/<h2>/<hash>/<pkg>-<ver>-<rev>.<arch>.tar.gz`. Packing is **deterministic** so that two nodes building the same hash produce the same bytes: sorted members, zeroed numeric owner/group, a fixed mtime, and a pinned compressor (`gzip -n`, or `$BITS_TAR_COMPRESSOR`). This needs **GNU tar** (`gtar` or a GNU `tar`); without it (e.g. macOS without `brew install gnu-tar`) bits warns and the tarball may not be byte-reproducible.
-5. **Upload** — Bits uploads the tarball and the dist symlink trees to the write store. Development builds (revisions starting with `local`) are never uploaded.
+4. **Pack** — After a successful from-source build (and any `POST_INSTALL` hooks), bits makes the package's pkg-config, CMake and `bin/*-config` files use relative paths, records which files need relocating and the file list for merged views, then packs `$INSTALLROOT` into `TARS/<arch>/store/<h2>/<hash>/<pkg>-<ver>-<rev>.<arch>.tar.gz`. Packing is **deterministic** (sorted members, owner/group 0, fixed mtime, pinned compressor `gzip -n` or `$BITS_TAR_COMPRESSOR`) so that two nodes building the same hash produce the same bytes. This needs **GNU tar** (`gtar` or a GNU `tar`); without it (e.g. macOS without `brew install gnu-tar`) bits warns and the tarball may not be byte-reproducible.
+5. **Upload** — Bits uploads the tarball to the write store (the `rsync` and `s3://` backends also upload the package symlink and dist trees). Packages recalled from a store, `local` revisions, and packages whose `redistributable:` forbids binary redistribution are not uploaded.
 
 ### Revision numbering
 
-Within a given hash, bits assigns monotonically increasing integer revisions (`1`, `2`, …). A rebuild of the same recipe and inputs (same hash) gets the next available integer. Development-mode builds (created by `bits init`) use a `local` prefix (`local1`, `local2`, …) and are excluded from upload to prevent polluting the shared cache with unreviewed in-progress builds.
+Revisions count builds of the same package version: a build whose hash matches an existing revision reuses it, and a new hash gets the next free integer (`1`, `2`, …). Builds without a write store, and development packages (`bits init`), get `local` revisions (`local1`, `local2`, …), which are never uploaded so in-progress work cannot reach the shared cache.
 
 ### CI/CD patterns
 
@@ -3386,6 +3493,10 @@ bits build --remote-store b3://mybucket/bits-cache::rw MyStack
 # Developer workstation: fetch from CI cache, never upload
 bits build --remote-store b3://mybucket/bits-cache MyStack
 ```
+
+Developers reuse the CI tarballs once that build is certified and signed (see
+[Signing — `bits sign`](#signing--bits-sign)); for a private bucket you trust,
+add `--no-require-signed-reuse` instead.
 
 #### Layered stores: fast read from HTTP, write to S3
 
@@ -3402,11 +3513,11 @@ Bits tries to download from the HTTP mirror first; if a tarball is missing it bu
 bits build --remote-store /nfs/shared/bits-cache::rw MyStack
 ```
 
-All team members building on machines with access to the shared NFS path reuse each other's artifacts automatically.
+All team members building on machines with access to the shared NFS path reuse each other's artifacts, once reuse is trusted with `--no-require-signed-reuse` or a `--trust-manifest` (see [rsync / local filesystem](#rsync--local-filesystem)).
 
 ### Source archive caching
 
-Packages that use the `sources:` key in their recipe (downloadable URL tarballs, distinct from the primary `source:` git repository) are now archived in the remote store in addition to being cached locally. This means bits can rebuild a package even if the upstream server has removed or moved the tarball.
+Packages that use the `sources:` key in their recipe (downloadable URL tarballs, distinct from the primary `source:` git repository) are also archived in the remote store, besides being cached locally. This means bits can rebuild a package even if the upstream server has removed or moved the tarball.
 
 #### How it works
 
@@ -3414,7 +3525,7 @@ When bits encounters a `sources:` entry it proceeds in three steps:
 
 1. **Local cache hit** — if `SOURCES/cache/<h2>/<hash>/<filename>` already exists on disk, it is used immediately and the remote store is not contacted at all.
 2. **Remote store hit** — if the local cache is empty, bits asks the configured backend for the archived copy before contacting the upstream URL. On success the file is placed in the local cache and no upload is required (it is already in the store).
-3. **Upstream download + archive** — only when both the local cache and the remote store miss does bits download from the original URL. The freshly downloaded file is then uploaded to the write store so that future builds (and other machines) can benefit from step 2.
+3. **Upstream download + archive** — only when both the local cache and the remote store miss does bits download from the original URL. The freshly downloaded file is then uploaded to the write store so that future builds (and other machines) can benefit from step 2, unless the recipe's `redistributable:` forbids redistributing sources.
 
 #### Remote namespace
 
@@ -3424,7 +3535,7 @@ Source archives occupy a dedicated namespace inside the same store used for buil
 SOURCES/cache/<hash[0:2]>/<hash>/<filename>
 ```
 
-This mirrors the local `SOURCES/cache/` layout exactly, so the remote path can be derived mechanically from the URL's MD5 checksum (`hash`) and the bare filename. For example:
+This mirrors the local `SOURCES/cache/` layout exactly, so the remote path follows from the MD5 of the source URL (`hash`) and the bare filename. For example:
 
 ```
 SOURCES/cache/a1/a1b2c3d4.../libfoo-1.2.tar.gz
@@ -3432,13 +3543,13 @@ SOURCES/cache/a1/a1b2c3d4.../libfoo-1.2.tar.gz
 
 #### Backend support matrix
 
-| Backend | `fetch_source` | `upload_source` | Notes |
-|---------|---------------|-----------------|-------|
-| `NoRemoteSync` | — | — | No store configured; local cache only. |
-| `HttpRemoteSync` | ✓ | — | Read-only; HTTP stores do not support upload. |
-| `RsyncRemoteSync` | ✓ | ✓ | Uses `rsync -vW`; skipped if `--write-store` is absent. |
-| `S3RemoteSync` | ✓ | ✓ | Uses `s3cmd get/put`; skipped if `--write-store` is absent. |
-| `Boto3RemoteSync` | ✓ | ✓ | Native boto3 API; skips upload if the key already exists. |
+| Store | Fetch sources | Upload sources | Notes |
+|-------|:-------------:|:--------------:|-------|
+| none | — | — | Local cache only. |
+| `http(s)://` | ✓ | — | Read-only; add a `--write-store` to archive sources. |
+| rsync / local path | ✓ | ✓ | Upload needs a write store; existing files are kept. |
+| `s3://` (s3cmd) | ✓ | ✓ | Upload needs a write store; existing objects are kept. |
+| `b3://` (boto3) | ✓ | ✓ | Upload needs a write store; existing objects are kept. |
 
 #### Enabling source archive caching
 
@@ -3449,7 +3560,7 @@ No extra flags are needed. Source caching is activated automatically whenever a 
 bits build --remote-store b3://mybucket/bits-cache::rw ROOT
 ```
 
-If `--remote-store` is set but `--write-store` is not (or the backend is HTTP/CVMFS), bits will still try to fetch source archives from the store but will silently skip uploading — the same behaviour as for build tarballs.
+Without a write store (an `http(s)://` store alone is read-only), bits still fetches source archives from the store but does not upload them — the same as for build tarballs.
 
 ### Store integrity verification
 
@@ -3596,9 +3707,13 @@ bits build --docker --docker-image alisw/slc9-builder:latest ROOT
 bits build --docker --docker-extra-args "--memory=8g --cpus=4" ROOT
 ```
 
-Without `--docker-image`, the image is derived from the architecture as `<registry>/<machine>-<distro>[-cuda]:latest`, the registry being `$BITS_DOCKER_REGISTRY`, else `docker_registry:` in `defaults-release`, else the built-in default (`$BITS_DOCKER_TAG` overrides the tag; `BITS_LEGACY_REGISTRY=1` selects the legacy `alisw/<distro>-builder` images). Images are pulled when missing.
+Without `--docker-image`, the image is derived from the architecture as `<registry>/<machine>-<distro>[-cuda]:<tag>`, for example `gitlab-registry.cern.ch/bits/containers/x86_64-slc9:latest` for `slc9_x86-64`. Only the OS, the CPU and a `cuda` part of the architecture select the image; compiler and build-type parts do not. The registry is `$BITS_DOCKER_REGISTRY`, else `docker_registry:` in `defaults-release` (top level or under `system:`), else `gitlab-registry.cern.ch/bits/containers`. The tag is `$BITS_DOCKER_TAG`, else `latest`. With `BITS_LEGACY_REGISTRY=1` (set by default by the `aliBuild` wrapper), or when the architecture cannot be split into OS and CPU, the legacy `registry.cern.ch/alisw/<distro>-builder` image is used instead. Images are pulled when missing.
 
-Bits automatically mounts the work directory, the recipe directories, and `~/.ssh` (for authenticated git operations) into the container. The `DockerRunner` class in `bits_helpers/cmd.py` manages container lifecycle and cleanup.
+Bits mounts into the container the work directory (read-write, except `SOURCES/`, which is read-only so a recipe cannot modify shared sources in place; `BITS_READONLY_SOURCES=0` turns this off), the recipe directory (read-only), the bits installation, and any `-v` volumes. `~/.ssh` is **not** mounted. When components deployed on CVMFS are reused (`--reuse-from`), `/cvmfs` is also mounted read-only.
+
+The build runs under your own user ID, with `HOME=/tmp` and `SHELL=/bin/bash`. Bits adds `--network=host` to `docker run` and, unless you pass them yourself in `--docker-extra-args`, `--cpuset-cpus=<all online host CPUs>` and a memory cap of host memory minus max(4 GiB, 10 %) (`BITS_DOCKER_MEMORY=<size>` sets the cap, `BITS_DOCKER_MEMORY=off` removes it).
+
+**Rootless podman.** When `docker` is podman run by a non-root user (for example via `podman-docker`), bits runs the container with `--userns=keep-id` instead of `--user`, disables SELinux labelling (`--security-opt=label=disable`) unless you pass a `--security-opt` yourself, and drops any CPU or memory limit whose cgroup controller is not delegated to your user, with a warning explaining how to delegate it. `bits doctor` checks this setup.
 
 ### workDir mount point inside the container
 
@@ -3613,7 +3728,7 @@ By default the workDir is bind-mounted at `/container/bits/sw` inside the contai
 
 In a conventional CVMFS publishing workflow the package is first compiled with the bits workDir as its install prefix (e.g. `/data/alice/sw/slc9_x86-64/ROOT/6.32.0-1`), and then `relocate-me.sh` rewrites every embedded path to the final CVMFS location (e.g. `/cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0`). Relocation is a post-build transformation that can be expensive for packages with many compiled files.
 
-`--cvmfs-prefix` eliminates this step entirely: by mounting the workDir at the final CVMFS prefix inside the container, the compiler sees that path as `$INSTALLROOT` and embeds it directly. The package is already at its deployment-ready paths when the build finishes.
+`--cvmfs-prefix` (with `--docker`) removes this step: the workDir is mounted at the final CVMFS prefix inside the container, so install paths embedded at build time already point under that prefix. The package is installed at `<prefix>/<arch>[/<family>]/<package>/<version>-<revision>`, and that must be the `--cvmfs-target` passed to `bits publish --no-relocate`, since no paths are rewritten.
 
 > **Note.** In the normal bits-console workflow these commands are run by the CI pipeline on a registered build runner — not typed by the user. bits-console passes `cvmfs_prefix` from the community's `ui-config.yaml` to the pipeline, which then calls `bits build --docker --cvmfs-prefix …` and `bits publish --no-relocate` automatically. The flags are documented here for CI pipeline authors and runner administrators.
 
@@ -3626,7 +3741,7 @@ bits build --docker \
 
 # Pipeline stage 1 (continued) — hand to cvmfs-prepub; no relocation needed:
 bits publish ROOT \
-           --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/ROOT/6.32.0 \
+           --cvmfs-target /cvmfs/sft.cern.ch/lcg/releases/slc9_x86-64/ROOT/6.32.0-1 \
            --prepub-url https://prepub.example.org:8080 \
            --no-relocate
 ```
@@ -3635,11 +3750,11 @@ bits publish ROOT \
 
 ---
 
-## §22.1 Recipe Sandbox
+### 22.1 Recipe Sandbox
 
 Bits can run each recipe build script inside an isolated sandbox to limit the damage a malicious or buggy recipe can do. The sandbox wraps the actual `bash build.sh` execution — it does not affect source downloads, tarball extraction, or publishing.
 
-### How it works
+#### How it works
 
 Sandboxing is **off by default** (`--sandbox=off`); opt in with `--sandbox=auto` (or a specific mode), or persist it with `bits use build --sandbox auto`. With `auto`:
 
@@ -3647,20 +3762,20 @@ Sandboxing is **off by default** (`--sandbox=off`); opt in with `--sandbox=auto`
 |----------|-----------------|-----------|
 | Linux (local build, no `--docker`) | `off` | podman is **not** used (or even probed) for plain local builds |
 | macOS (local build) | `sandbox-exec` if available, otherwise `off` | Built-in SBPL sandbox profile; no VM, no overhead |
-| Any platform, `--docker` active | Nested podman inside the container, if available | `podman run` launched from inside the Docker build container |
+| Any platform, `--docker` active | Nested podman inside the container if the builder image contains `podman`; otherwise `off`, with a warning | `podman run` launched from inside the Docker build container |
 
 > **Note.** On a local Linux build without `--docker`, `--sandbox=auto` resolves to `off` and bits never invokes `podman` (not even `podman info`). podman-based recipe isolation on Linux is only engaged when the build runs inside `--docker`, or when it is requested explicitly with `--sandbox=podman` / `--sandbox-image`.
 
 The workDir is bind-mounted at the same absolute path inside the podman container so that all paths embedded in the build environment (`$WORK_DIR`, `$INSTALLROOT`, `$SOURCEDIR`, etc.) resolve correctly.
 
-### Sandbox modes
+#### Sandbox modes
 
 Pass `--sandbox MODE` to `bits build`:
 
 | Mode | Behaviour |
 |------|-----------|
-| `auto` | Pick the best available option: `sandbox-exec` on macOS, nested podman when `--docker` is active, and `off` on a local Linux build (no `--docker`). On local Linux, podman is neither used nor probed — request it explicitly with `--sandbox=podman` if you want it. |
-| `podman` | Always use podman. Requires the podman binary to be reachable and `podman info` to succeed. When used without `--docker`, also requires `--sandbox-image` to name the container image. |
+| `auto` | Pick the best available option: `sandbox-exec` on macOS, nested podman when `--docker` is active and the builder image contains `podman`, and `off` on a local Linux build (no `--docker`). On local Linux, podman is neither used nor probed — request it explicitly with `--sandbox=podman` if you want it. |
+| `podman` | Always use podman; fails with an error if it is not available. With `--docker`, `podman` must exist in the builder image. Without `--docker`, `podman info` must succeed on the host and `--sandbox-image` must name the image (otherwise sandboxing is disabled with a warning). |
 | `sandbox-exec` | macOS only. Fails with an error on Linux. |
 | `off` | (default) No sandboxing. Recipe runs directly on the host. |
 
@@ -3675,14 +3790,14 @@ bits build --sandbox=podman --sandbox-image alisw/slc9-builder:latest ROOT
 bits build ROOT
 ```
 
-When `--docker` is used, `--sandbox-image` defaults to the same image as `--docker-image`, so no extra flag is needed:
+Giving `--sandbox-image` alone selects `--sandbox=podman`. When `--docker` is used, `--sandbox-image` defaults to the same image as `--docker-image`, so no extra flag is needed:
 
 ```bash
 # Docker build with nested podman sandbox — same image used for both layers
 bits build --docker --sandbox=auto --docker-image alisw/slc9-builder:latest ROOT
 ```
 
-### Per-recipe network control
+#### Per-recipe network control
 
 By default the sandbox blocks all outgoing network access from the recipe script. Some recipes need to reach the internet during their build (for example, to run `pip install` or `gem install`). Use the `sandbox_network` recipe field to opt in:
 
@@ -3702,7 +3817,7 @@ make install
 
 The field is silently ignored when `--sandbox=off`. The build-wide default comes from `bits build --sandbox-network on|off`, then `sandbox_network:` in the active defaults, then `on`; a recipe's own field always wins.
 
-### Docker-in-Docker (DinD)
+#### Docker-in-Docker (DinD)
 
 If `bits --docker` is invoked from inside an existing Docker container (for example, a GitLab CI job that itself runs inside Docker), adding a nested podman layer is still possible but requires the outer Docker container to have been started with:
 
@@ -3712,11 +3827,11 @@ If `bits --docker` is invoked from inside an existing Docker container (for exam
 
 or an equivalent unprivileged user-namespace configuration. Without this, the kernel will reject the `clone(CLONE_NEWUSER)` call that podman uses for rootless containers.
 
-Bits detects this situation automatically (by checking for `/.dockerenv` and `/proc/1/cgroup`) and emits a warning at build time. If the outer container cannot be reconfigured, disable sandboxing for that job with `--sandbox=off`.
+Bits detects that it is itself running inside a container and prints a warning when it adds the nested podman layer. If the outer container cannot be reconfigured, disable sandboxing for that job with `--sandbox=off`.
 
 ---
 
-## §22.2 Cross-compilation via QEMU
+### 22.2 Cross-compilation via QEMU
 
 Bits supports cross-compilation on any Docker-capable host by combining Docker's
 `--platform` flag with QEMU user-mode emulation.  When the target architecture
@@ -3724,7 +3839,7 @@ differs from the host, Docker pulls the matching image variant (e.g. `arm64`)
 and uses QEMU to transparently execute the foreign ELF binaries — the build script
 sees a native `aarch64` environment without any changes to the recipe.
 
-### One-time host setup
+#### One-time host setup
 
 Register QEMU binfmt handlers on the Docker host (persists until reboot):
 
@@ -3744,7 +3859,7 @@ docker run --rm --platform linux/ppc64le alpine uname -m # should print: ppc64le
 This is a one-time privileged operation on the runner host.  Subsequent containers
 do not need elevated privileges; the kernel handles the QEMU dispatch transparently.
 
-### Supported target platforms
+#### Supported target platforms
 
 | bits `--architecture` substring | Docker `--platform` |
 |----------------------------------|---------------------|
@@ -3754,7 +3869,7 @@ do not need elevated privileges; the kernel handles the QEMU dispatch transparen
 | `s390x` | `linux/s390x` |
 | `riscv64` | `linux/riscv64` |
 
-### Automatic platform injection
+#### Automatic platform injection
 
 When `--docker` is active, bits derives the required `--platform` string from
 `--architecture` automatically and compares it to the detected host architecture.
@@ -3774,24 +3889,23 @@ Pass `--docker-platform native` to suppress automatic injection and always use t
 daemon-default image variant (useful on a native ARM runner running an x86-64 bits
 client, or for testing without QEMU overhead).
 
-### Builder image availability
+#### Builder image availability
 
-The target architecture must have a corresponding builder image variant published
-as a multi-arch manifest or a separate tag.  For the CERN experiment ecosystem, the
-relevant images are the `alisw/*-builder` series.  Confirm availability before
-scheduling cross-compilation CI jobs:
+A builder image must exist for the target CPU. The default images carry the CPU in
+their name (for example `aarch64-slc9` for `slc9_aarch64`); the legacy
+`alisw/<distro>-builder` images need an arm64 variant in their multi-arch manifest.
+Confirm availability before scheduling cross-compilation CI jobs:
 
 ```bash
-# Check whether the arm64 variant exists for the slc9 builder
-docker manifest inspect registry.cern.ch/alisw/slc9-builder:latest | \
-  grep -A2 '"platform"'
+# Check that the default slc9 builder image for aarch64 exists
+docker manifest inspect gitlab-registry.cern.ch/bits/containers/aarch64-slc9:latest
 ```
 
-If only the `x86-64` variant exists, an ARM-native runner (available on CERN's
+If no image exists for the target CPU, an ARM-native runner (available on CERN's
 infrastructure and cheaply on cloud spot markets) is the practical alternative for
 full-stack cross-compilation.
 
-### Architecture matching for batch jobs
+#### Architecture matching for batch jobs
 
 Tarballs built for one architecture will not run on another.  When using the
 S3-overlay workflow (personal analysis packages pushed to an S3 bucket and fetched
@@ -3806,10 +3920,11 @@ Requirements = (TARGET.OpSysAndVer == "CentOS9") && (TARGET.Arch == "X86_64")
 SystemConfig = x86_64-slc9-gcc13-opt
 ```
 
-`bits fetch` verifies the manifest's `architecture` field against the executing
-node before unpacking anything and aborts with a clear diagnostic on mismatch.
+bits does not check the worker node's architecture for you. Run
+[`bits verify`](#23-bits-verify--deployment-verification) on a node to compare the
+manifest's `architecture` with the node's.
 
-### Performance expectations
+#### Performance expectations
 
 QEMU user-mode emulation runs at roughly 20–50 % of native execution speed for
 compute-heavy C++ compilation.  This is acceptable for small analysis packages
@@ -3817,14 +3932,14 @@ compute-heavy C++ compilation.  This is acceptable for small analysis packages
 Geant4 (builds would take 10–20 hours).  The recommended scope for QEMU
 cross-compilation is:
 
-- Personal analysis overlays (M6 workflow): a few packages, tens of MB of output.
+- Personal analysis overlays (the S3-overlay workflow above): a few packages, tens of MB of output.
 - Validation builds: confirming that a recipe compiles clean on a target
   architecture before scheduling a native-runner CI job for the full stack.
 
 For full experiment stacks on non-x86-64 architectures, use a native runner of
 the target architecture.
 
-### Sandbox interaction
+#### Sandbox interaction
 
 Nested QEMU + rootless podman (the DinD sandbox scenario) requires
 `--security-opt seccomp=unconfined` on the outer `docker run` and may still fail
@@ -3856,25 +3971,26 @@ bits verify --from-manifest bits-manifest-2026-01-15.json \
 
 **Packages** — for each entry in `manifest.packages[]`:
 
-1. The tarball is located in the content-addressed store under `TARS/<arch>/store/<hash[:2]>/<hash>/<tarball>`.
+1. The tarball is located in the content-addressed store under `TARS/<arch>/store/<hash[:2]>/<hash>/<tarball>`, where `<arch>` is the manifest's top-level `architecture`.
 2. Its SHA-256 is recomputed and compared to `tarball_sha256` in the manifest.
-3. Packages with `outcome: already_installed` and no recorded tarball are silently marked **SKIP** — no output tarball is expected for them.
+3. Packages with no tarball or checksum recorded in the manifest (for example `outcome: already_installed`) are marked **SKIP**.
 
 **Providers** — for each entry in `manifest.providers[]`:
 
 1. If the `checkout_dir` does not exist on the current machine, the entry is **SKIP** (provider checkouts are usually only present on build hosts).
-2. Otherwise, `git rev-parse HEAD` is run in the checkout and the result is compared to the manifest's `commit` field.
+2. Otherwise, the checkout's current `HEAD` commit is compared to the manifest's `commit` field. If `HEAD` cannot be read, the entry is **MISS**.
 
-**Architecture** — the `architecture` field in the manifest is compared to the
-current host architecture (via `detectArch()`).  A mismatch is a **FAIL** and
-counts toward the exit code.
+**Architecture** — the manifest's `architecture` is compared, as an exact string,
+with the architecture bits detects on the current host. A mismatch is a **FAIL** and
+counts toward the exit code. A manifest whose architecture carries a defaults suffix
+(for example `slc9_x86-64-gcc13`) therefore reports FAIL even on a matching host.
 
 ### Search order
 
 Tarballs are searched in this order:
 
 1. `--cvmfs-root PATH` (if given) — typically the CVMFS mount point.
-2. `--work-dir DIR` (default: `sw`) — the local bits work directory.
+2. `--work-dir DIR` (default: `$BITS_WORK_DIR`, else `sw`) — the local bits work directory.
 
 The first root where the content-addressed tarball file exists is used.  This
 allows verifying a deployment that spans both CVMFS (for the common stack) and
@@ -3888,9 +4004,9 @@ a local overlay (for personal analysis packages).
 ━━━ bits verify  —  bits-manifest-2026-01-15.json ━━━━━━━━━━━━━━━━━━━
 
   File:       /builds/bits-manifest-2026-01-15.json
-  Schema:     v2
+  Schema:     v4
   Created:    2026-01-15T08:42:11Z
-  Build:      success
+  Build:      complete
 
   Architecture: PASS  slc9_x86-64
 
@@ -3919,8 +4035,8 @@ yellow for MISS, dark grey for SKIP.
 ```json
 {
   "manifest_created_at": "2026-01-15T08:42:11Z",
-  "manifest_status": "success",
-  "schema_version": 2,
+  "manifest_status": "complete",
+  "schema_version": 4,
   "architecture": { "manifest": "slc9_x86-64", "host": "slc9_x86-64", "status": "PASS" },
   "packages": [
     { "package": "ROOT", "version": "6.32.02", "revision": "1", "status": "PASS", "detail": "sha256 OK" },
@@ -3939,7 +4055,7 @@ yellow for MISS, dark grey for SKIP.
 | 0 | All verifiable entries match — deployment is consistent with the manifest. |
 | 1 | One or more entries are **FAIL** (hash mismatch or provider commit mismatch). |
 | 2 | One or more entries are **MISS** (tarball not found; consistency unknown). If there are also FAILs, exit code 1 takes precedence. |
-| 3 | The manifest file cannot be read or is malformed. |
+| 3 | The manifest file is missing, cannot be read, or is not valid JSON. |
 
 ### Status values
 
@@ -3947,18 +4063,12 @@ yellow for MISS, dark grey for SKIP.
 |--------|---------|
 | **PASS** | Entry verified successfully. |
 | **FAIL** | Checksum or commit mismatch — the deployed artifact differs from the build record. |
-| **MISS** | Tarball not found in any search root — cannot confirm consistency. |
+| **MISS** | Tarball not found in any search root, or a provider checkout's `HEAD` cannot be read — cannot confirm consistency. |
 | **SKIP** | Entry not verifiable on this machine (already-installed packages, absent provider checkouts). |
 
-### CLI reference {#cli-reference-verify}
+### Options
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--from-manifest FILE` | _(required)_ | Path to the bits build manifest JSON file. |
-| `--cvmfs-root PATH` | _(none)_ | Root of a CVMFS tarball store to search first (e.g. `/cvmfs/alice.cern.ch`). |
-| `-w / --work-dir DIR` | `sw` | Local bits work directory containing the `TARS/` store. |
-| `--no-providers` | off | Skip verification of provider checkout commits. |
-| `--json` | off | Emit a machine-readable JSON report instead of the human-readable table. |
+See the [`bits verify`](#bits-verify) entry of the command-line reference.
 
 ---
 
@@ -3969,16 +4079,15 @@ yellow for MISS, dark grey for SKIP.
 1. **Reproducibility** — Stripping the shell environment and pinning exact git commits ensures the same inputs always produce the same build.
 2. **Incrementalism** — The content-addressable hash scheme rebuilds only what has changed, keeping iteration fast even on large stacks.
 3. **Isolation** — Each package builds in its own directory with a sanitised environment (locale forced to `C`, `BASH_ENV` unset, only declared dependencies visible).
-4. **Parallelism** — Both inter-package (via the `Scheduler`) and intra-package (via `$JOBS`) parallelism are supported.
+4. **Parallelism** — Independent packages can build at the same time (`--builders N`), and each build script can run parallel jobs (`$JOBS`).
 5. **Simplicity** — Build scripts are plain Bash, not a new DSL; the YAML header is metadata only.
 6. **Portability** — Runs on any modern Linux distribution and on macOS (Intel and Apple Silicon).
 7. **Extensibility** — The repository provider mechanism allows recipe sets to be composed dynamically from versioned git repositories without modifying the main configuration.
 
 ### Current limitations
 
-- **No Windows support** — Windows is not supported.
-- **Git and Sapling only** — No Subversion, Mercurial, or plain-tarball sources (except via `sources:` with `file://` URLs).
-- **Linux and macOS only** — Bits runs on Linux and macOS (Intel and Apple Silicon).
+- **Linux and macOS only** — Bits runs on Linux and macOS (Intel and Apple Silicon); Windows is not supported.
+- **Git and Sapling only** — Version-controlled sources must come from Git or Sapling; Subversion and Mercurial are not supported. Plain archives can be downloaded through a recipe's `sources:` list (HTTP(S), FTP(S) or local `file:` URLs).
 - **Environment Modules required** for `bits enter / load / unload` — the `modulecmd` binary must be installed separately.
 - **Active development** — The recipe format and Python APIs may change between versions. Evaluate thoroughly before adopting in production pipelines.
 
@@ -3987,10 +4096,10 @@ yellow for MISS, dark grey for SKIP.
 ## 25. Build Manifest
 
 Every `bits build` run writes a self-contained JSON manifest to the work
-directory.  The manifest captures everything bits needs to reproduce the
-build at a later date: the requested packages, architecture, defaults
-profile, provider checkouts, and the identity (hash + tarball checksum) of
-every package that was built or retrieved from the remote store.
+directory. It records the inputs and outputs of the build: the requested
+packages, architecture, defaults profile, recipe and provider commits, and the
+identity (hash and tarball checksum) of every package that was built, taken from
+the store, or already installed.
 
 ```bash
 # Build normally — manifest is always written
@@ -3998,7 +4107,7 @@ bits build ROOT
 
 # The manifest file is printed in the success banner, e.g.:
 #   Build manifest written to:
-#     $WORK_DIR/MANIFESTS/bits-manifest-20260411T143000Z.json
+#     $WORK_DIR/MANIFESTS/bits-manifest-ROOT-20260411T143000Z.json
 #
 # A convenience symlink is kept current after every write:
 ls -la $WORK_DIR/MANIFESTS/bits-manifest-latest.json
@@ -4013,7 +4122,7 @@ The manifest records every input and output that could affect reproducibility:
 | Field | Description |
 |---|---|
 | `bits_version` | Version string of the bits tool itself |
-| `bits_dist_hash` | Git commit of the bits distribution (= `BITS_DIST_HASH`) |
+| `bits_dist_hash` | Commit of the recipe repository checkout (`$BITS_DIST_HASH`; same value as `config_commit`) |
 | `requested_packages` | Packages passed on the command line |
 | `architecture` | Combined architecture string (may include defaults suffix) |
 | `defaults` | Active defaults profile(s) |
@@ -4043,7 +4152,7 @@ The manifest records every input and output that could affect reproducibility:
 | `commit_hash` | Source commit hash (or `"0"` for untracked sources) |
 | `outcome` | `"already_installed"`, `"from_store"`, or `"built_from_source"` |
 | `tarball` | Tarball filename (or `null`) |
-| `tarball_sha256` | `sha256:<hex>` digest of the tarball, if present |
+| `tarball_sha256` | `sha256:<hex>` digest of the tarball, if present; when the package is in the remote store, the digest of the store copy |
 | `source_checksums` | List of `{url, checksum}` entries from the recipe's `sources:` list; `checksum` is `null` when none was declared |
 | `built_by` | `user@host` that compiled this hash; `null` unless `outcome` is `"built_from_source"` (recalled artifacts carry their builder in another build's manifest) |
 | `completed_at` | ISO-8601 UTC timestamp of package completion |
@@ -4052,6 +4161,7 @@ The manifest records every input and output that could affect reproducibility:
 | `patches`, `variables` | Recipe patches with their checksums, and the resolved recipe variables (schema v3) |
 | `requires`, `build_requires` | Direct runtime (+ untracked) and build-only dependencies, including system-provided ones (schema v4; the SBOM dependency graph) |
 | `source`, `tag` | Git repository URL and tag/branch built (empty if none; schema v4) |
+| `provides_repository`, `redistributable`, `license`, `view` | Recipe metadata used when publishing: repository-provider packages are skipped; `redistributable` (`all`, `binaries`, `sources` or `none`) limits what may be uploaded or published; `license` feeds the release NOTICE file; `view` (only when the recipe sets it) holds the recipe's merged-view rules |
 
 ### Manifest location and naming
 
@@ -4060,7 +4170,7 @@ Manifests are written to a dedicated subdirectory of the bits work directory (`-
 ```
 $WORK_DIR/
   MANIFESTS/
-    bits-manifest-20260411T143000Z.json   ← one file per build run (UTC timestamp)
+    bits-manifest-ROOT-20260411T143000Z.json   ← one file per build run (top-level package + UTC timestamp)
     bits-manifest-latest.json             ← symlink to the most recent manifest
 ```
 
@@ -4070,9 +4180,8 @@ The manifest is written **incrementally**: after each package completes (or
 is confirmed already installed), so a failed build still produces a partial
 manifest recording what succeeded.
 
-The `bits-manifest-latest.json` symlink is updated atomically after every
-incremental write using `os.replace()` on a temporary symlink, so readers
-always see a consistent view.
+The `bits-manifest-latest.json` symlink is replaced atomically after every
+write, so readers always see a complete manifest.
 
 ### Manifest schema reference
 
@@ -4080,7 +4189,7 @@ always see a consistent view.
 {
   "schema_version": 4,
   "bits_version": "1.0.0",
-  "bits_dist_hash": "a1b2c3d4e5...",
+  "bits_dist_hash": "abc123def456...",
   "created_at": "2026-04-11T14:30:00Z",
   "updated_at": "2026-04-11T14:45:12Z",
   "status": "complete",
@@ -4153,26 +4262,24 @@ used automatically:
 # Replay from the latest manifest (no package name needed):
 bits build --from-manifest $WORK_DIR/MANIFESTS/bits-manifest-latest.json
 
-# Override a specific package while replaying the rest:
-bits build --from-manifest bits-manifest-20260411T143000Z.json ROOT
+# Build the named package instead of the manifest's package list:
+bits build --from-manifest bits-manifest-ROOT-20260411T143000Z.json ROOT
 
-# Pin to a specific manifest from the archive:
-bits build --from-manifest bits-manifest-20260101T090000Z.json
+# Replay an older manifest:
+bits build --from-manifest bits-manifest-ROOT-20260101T090000Z.json
 ```
 
-During a replay run bits will:
+During a replay run bits takes only the package list (`requested_packages`)
+from the manifest. Everything else comes from the current invocation, as for a
+normal build: the architecture, `--defaults`, and the recipe repository as it is
+checked out now. Versions and hashes are not pinned to the manifest, and recalled
+tarballs are not checked against its `tarball_sha256` values.
 
-1. Read `requested_packages`, `architecture`, `defaults`, and `config_commit`
-   from the manifest and use them as the effective build parameters.
-2. Build the dependency graph as usual, but with versions and hashes pinned
-   to the values recorded in the manifest.
-3. Verify each recalled tarball's `sha256` against the manifest entry,
-   providing end-to-end integrity even for a replay run.
-
-> **Note on `config_commit` pinning:** The replay currently uses the
-> `config_commit` field for informational purposes.  To guarantee an exact
-> replay you should check out the same commit of the recipe repository before
-> invoking `bits build --from-manifest`.
+> **Exact replay.** Check out the manifest's `config_commit` in the recipe
+> repository (and the recorded provider commits), and pass the recorded
+> `architecture` and `defaults` on the command line. Use
+> [`bits verify`](#23-bits-verify--deployment-verification) to check tarballs
+> against the manifest's checksums.
 
 ### Manifest and store integrity
 
@@ -4184,15 +4291,17 @@ are complementary:
 - The **manifest** records the complete provenance of a build run and
   enables future replays and audits.
 
-When both `--store-integrity` and a manifest are active, the manifest's
-`tarball_sha256` fields provide a second, portable copy of the digest that
-survives even if the local ledger directory is deleted.
+With `--store-integrity` on, the manifest's `tarball_sha256` fields are a
+second, portable copy of each digest, which survives even if the local ledger
+directory is deleted.
 
 ---
 
 ## 26. CVMFS Publishing Pipeline
 
-The CVMFS publishing pipeline — including the `cvmfs-prepub` delivery path (the legacy spool path has been removed), the `cvmfs-ingest` Go daemon, and the bits-console web interface — is maintained in the **[bits-console](https://gitlab.cern.ch/bitsorg/bits-console)** repository. That repository contains the GitLab SPA for triggering and monitoring builds, the community `ui-config.yaml` reference, role-based access configuration (production vs personal-area builds), and the pipeline variable reference.
+The publishing commands are part of bits: [`bits publish`](#bits-publish) sends one package (or a release view) to CVMFS through the cvmfs-prepub service, and `bits cvmfs publish` publishes every package of a build from its manifest (see [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups)).
+
+The bits-console web interface, which triggers and monitors these CI builds, is maintained in the **[bits-console](https://gitlab.cern.ch/bitsorg/bits-console)** repository, together with the community `ui-config.yaml` reference, role-based access configuration (production vs personal-area builds) and the pipeline variable reference. Its backend service (manifest signing) lives in this repository under `console-backend/`.
 
 ---
 

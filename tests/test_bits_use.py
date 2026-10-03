@@ -75,6 +75,27 @@ class BitsUseTest(unittest.TestCase):
         self.assertEqual(U.merged_argv("q", ["ROOT"], self.p),
                          ["--architecture", "A", "--defaults", "D", "ROOT"])
 
+    def test_rewrite_prune_gets_profile(self):
+        self._profile()
+        self.assertEqual(U.rewrite_argv(["prune"], self.p)[:3],
+                         ["prune", "--architecture", "A"])
+        # cleanup is prune's old name: one section serves both spellings
+        U.write_section("cleanup", ["--retain", "2"], self.p)
+        self.assertEqual(U.read_all(self.p)["prune"], ["--retain", "2"])
+        for action in ("prune", "cleanup"):
+            self.assertEqual(U.rewrite_argv([action], self.p),
+                             [action, "--architecture", "A", "--defaults", "D", "--retain", "2"])
+
+    def test_help_prints_usage_and_saves_nothing(self):
+        import io, contextlib
+        os.chdir(self.tmp)
+        for argv in (["--help"], ["-h"], ["help"], ["build", "--help"]):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(U.main(argv), 0)
+            self.assertIn("usage: bits use", out.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".bitsuse")))
+
     def test_rewrite_injects_after_action(self):
         self._profile()
         self.assertEqual(
