@@ -1,7 +1,17 @@
 Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[Feature]**, **[Fix]**, **[Improvement]**.
 
 ---
-# Unreleased — `consolidation` (vs `main`)
+# 0.6 — 2026-10-04
+
+Merged into `main` as one squashed commit, `2f15ed8` (#122). The commit ids below are from the `consolidation` branch history.
+
+## Since #122
+- **[Feature]** `bits cvmfs publish --object-list --prewarm` (ingest with `--direct-s3`): prepub announces the stored objects so Stratum 1s pull them right after each commit.
+- **[Improvement]** `38b02da` require Python 3.8.
+- **[Fix]** `730574a` resource stats lookup is case-insensitive; overrides from always-on providers are applied.
+- **[Fix]** `703fe79` `cvmfs-publish` skips non-redistributable binaries; `--dist BRANCH` honoured; `verify` uses each package's architecture; store upload accepts https stores.
+- **[Fix]** `78689b6` console-backend: PyJWT 2.15.1 (security fixes).
+- **[Improvement]** `d2b7497`, `004deb2` USERGUIDE and COOKBOOK checked against the code; `bits use` fixes; `cbd95e0` bits-console links point to GitLab.
 
 ## Relocation-independent packages
 - **[Feature]** `9828005` / `c3e1cd5` emit relocation-independent pkg-config and CMake config files (`${pcfiledir}` / `${CMAKE_CURRENT_LIST_DIR}` anchors).
@@ -75,7 +85,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 - **[Improvement]** `64537bb` aliBuild minimal-wrapper compat harness.
 - **[Fix]** `1a7d73c` stub the S3 probe in the enforce re-certification test (it failed without boto3).
 
-# Previous changes (already on `main`)
+# Earlier changes
 	
 ## init.sh from-modules — build env derived from dependency modulefiles (now the default)
 - **[Feature]** `34a672c` `--initdotsh-from-modules` as a **hashed** build input (foundation; off-state byte-identical).
