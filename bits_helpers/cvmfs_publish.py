@@ -259,13 +259,17 @@ def _prepub_max_tar(session, prepub_url):
 
 def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
                   direct_s3=False, bearer_auth=False, no_verify_tls=False,
-                  identity_path="", identity_hash=""):
+                  identity_path="", identity_hash="", object_list=False,
+                  prewarm=False):
     """POST /api/v1/jobs for the INGEST path: the raw tar IS the payload (prepub's
     gateway does the chunk/compress/upload). Mirrors the CI's `_post_tar` ingest
     branch — sends the tar plus its sha256, and SIGNS tar_sha256 so prepub can
     reject a corrupted upload. direct_s3=True adds the direct_s3 field so
-    cvmfs_server writes objects straight to S3 (bypassing the gateway). Signed by
-    default; bearer puts the token on the request instead. Returns the job id."""
+    cvmfs_server writes objects straight to S3 (bypassing the gateway).
+    object_list=True (needs direct_s3) has the publisher report the objects it
+    stored; prewarm=True (needs object_list) lets prepub announce them to the
+    Stratum 1s. Signed by default; bearer puts the token on the request instead.
+    Returns the job id."""
     import requests
     from bits_helpers import prepub as _pp
     url = "%s/api/v1/jobs" % prepub_url.rstrip("/")
@@ -288,6 +292,10 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         signed_fields["build_id"] = build_id
     if direct_s3:
         signed_fields["direct_s3"] = "true"
+    if object_list:
+        signed_fields["object_list"] = "true"
+    if prewarm:
+        signed_fields["prewarm"] = "true"
     # identity_path: prepub re-checks it just before committing and finishes a
     # job whose content appeared meanwhile (a rerun queued behind the original).
     if identity_path:
@@ -311,6 +319,10 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         fields["build_id"] = (None, build_id)
     if direct_s3:
         fields["direct_s3"] = (None, "true")
+    if object_list:
+        fields["object_list"] = (None, "true")
+    if prewarm:
+        fields["prewarm"] = (None, "true")
     if identity_path:
         fields["identity_path"] = (None, identity_path)
         if identity_hash:
@@ -423,6 +435,8 @@ def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash=""):
             jid = (submit_ingest(ctx["prepub_url"], ctx["token"], ctx["repo"], path,
                                  tar, build_id=ctx.get("build_id", ""),
                                  direct_s3=ctx.get("direct_s3", False),
+                                 object_list=ctx.get("object_list", False),
+                                 prewarm=ctx.get("prewarm", False),
                                  bearer_auth=ctx.get("bearer_auth", False),
                                  no_verify_tls=ctx.get("no_verify_tls", False),
                                  identity_path=identity,
@@ -1150,6 +1164,13 @@ def main(argv=None):
                     help="ingest only: add direct_s3 so cvmfs_server writes data "
                          "objects straight to S3, bypassing the gateway. No effect "
                          "on the staged path.")
+    ap.add_argument("--object-list", action="store_true",
+                    help="ingest with --direct-s3 only: the publisher reports each "
+                         "data object it stored to prepub")
+    ap.add_argument("--prewarm", action="store_true",
+                    help="ingest with --object-list only: prepub announces the "
+                         "stored objects so the Stratum 1s pull them right after "
+                         "the commit")
     ap.add_argument("--publish-path", choices=("staged", "ingest"), default="ingest",
                     help="ingest (default): POST the tar itself and let prepub's "
                          "gateway chunk it (the tar IS the payload). staged: "
@@ -1179,6 +1200,11 @@ def main(argv=None):
                     help="stage but do NOT submit — prints DRYRUN(prefix|hashC), "
                          "so the catalog hash can be checked without a graft")
     a = ap.parse_args(argv)
+    # prepub refuses these combinations with a 400; say so before any upload.
+    if a.object_list and not (a.publish_path == "ingest" and a.direct_s3):
+        ap.error("--object-list requires --publish-path ingest and --direct-s3")
+    if a.prewarm and not a.object_list:
+        ap.error("--prewarm requires --object-list")
 
     if a.fingerprint:
         print(tree_fingerprint(a.fingerprint))
@@ -1194,6 +1220,7 @@ def main(argv=None):
                "no_prepare_lock": a.no_prepare_lock,
                "replace_on_conflict": a.replace_on_conflict,
                "publish_path": a.publish_path, "direct_s3": a.direct_s3,
+               "object_list": a.object_list, "prewarm": a.prewarm,
                "submit": not a.dry_run,
                "tmp_dir": os.path.join(os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
         os.makedirs(ctx["tmp_dir"], exist_ok=True)
@@ -1232,7 +1259,8 @@ def main(argv=None):
            "base_root": a.base_root or None,
            "no_stats_db": a.no_stats_db, "no_prepare_lock": a.no_prepare_lock,
            "replace_on_conflict": a.replace_on_conflict, "publish_path": a.publish_path,
-           "direct_s3": a.direct_s3,
+           "direct_s3": a.direct_s3, "object_list": a.object_list,
+           "prewarm": a.prewarm,
            "submit": not a.dry_run, "tmp_dir": os.path.join(
                os.environ.get("BITS_WORK_DIR", "/tmp"), "tmp")}
     os.makedirs(ctx["tmp_dir"], exist_ok=True)
