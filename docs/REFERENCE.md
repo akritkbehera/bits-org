@@ -4300,7 +4300,7 @@ directory is deleted.
 
 The publishing commands are part of bits: [`bits publish`](#bits-publish) sends one package (or a release view) to CVMFS through the cvmfs-prepub service, and `bits cvmfs publish` publishes every package of a build from its manifest (see [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups)).
 
-The bits-console web interface, which triggers and monitors these CI builds, is maintained in the **[bits-console](https://gitlab.cern.ch/bitsorg/bits-console)** repository, together with the community `ui-config.yaml` reference, role-based access configuration (production vs personal-area builds) and the pipeline variable reference. Its backend service (manifest signing) lives in this repository under `console-backend/`.
+The bits-console web interface, which triggers and monitors these CI builds, is maintained in the **[bits-console](https://gitlab.cern.ch/buncic/bits-console)** repository, together with the community `ui-config.yaml` reference, role-based access configuration (production vs personal-area builds) and the pipeline variable reference. Its backend service (manifest signing) lives in this repository under `console-backend/`.
 
 ---
 

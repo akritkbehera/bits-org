@@ -158,7 +158,7 @@ The distinction between a group-wide production build and a personal-area build 
 
 ### Step 1 — Connect to bits-console
 
-Navigate to **[bits-console.web.cern.ch](https://bits-console.web.cern.ch)**, select your community, and sign in with your GitLab personal access token. See the [bits-console documentation](https://gitlab.cern.ch/bitsorg/bits-console) for required token scopes and role setup.
+Navigate to **[bits-console.web.cern.ch](https://bits-console.web.cern.ch)**, select your community, and sign in with your GitLab personal access token. See the [bits-console documentation](https://gitlab.cern.ch/buncic/bits-console) for required token scopes and role setup.
 
 ### Step 2 — Browse and trigger a build
 
@@ -186,7 +186,7 @@ Clicking **Build → Production** queues a GitLab CI pipeline that runs `bits bu
 - **cvmfs-prepub path** (`publish_pipeline: .gitlab/cvmfs-prepub-publish.yml`): the build host POSTs a tar directly to the `cvmfs-prepub` REST API, which handles CAS ingestion and the CVMFS gateway transaction. No dedicated ingest runners are required.
 - **Legacy spool path** (`publish_pipeline: .gitlab/cvmfs-publish.yml`): tarballs are spooled to a staging area, a CVMFS transaction is opened on the stratum-0, and `cvmfs_server publish` is run on a dedicated publisher runner. This path is retained for communities that have not yet migrated to cvmfs-prepub.
 
-See the [bits-console repository](https://gitlab.cern.ch/bitsorg/bits-console) for the full `ui-config.yaml` reference, runner registration guide, and scheduled build configuration.
+See the [bits-console repository](https://gitlab.cern.ch/buncic/bits-console) for the full `ui-config.yaml` reference, runner registration guide, and scheduled build configuration.
 
 ---
 
@@ -244,4 +244,4 @@ bits verify --from-manifest …                                            ← c
 | Build manifest and `--from-manifest` replay | [REFERENCE.md §25](REFERENCE.md#25-build-manifest) |
 | Deployment verification (`bits verify`) | [REFERENCE.md §23](REFERENCE.md#23-bits-verify--deployment-verification) |
 | Writing recipes | [REFERENCE.md §17](REFERENCE.md#17-recipe-format-reference) |
-| bits-console web interface | [bits-console repository](https://gitlab.cern.ch/bitsorg/bits-console) |
+| bits-console web interface | [bits-console repository](https://gitlab.cern.ch/buncic/bits-console) |
