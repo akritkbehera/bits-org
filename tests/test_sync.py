@@ -423,14 +423,16 @@ class Boto3TestCase(unittest.TestCase):
         b3sync.s3.head_object = lambda Bucket, Key: {}
         b3sync.s3.get_object = lambda Bucket, Key: {
             "Body": MagicMock(read=lambda n=None: chunks.pop(0))}
-        b3sync.s3.copy_object = MagicMock()
+        b3sync.s3.copy = MagicMock()
         b3sync.s3.upload_file.reset_mock()
         b3sync.upload_symlinks_and_tarball(good_spec)
         b3sync.s3.upload_file.assert_not_called()
         self.assertEqual(good_spec["store_tarball_sha256"], legacy_sha)
-        self.assertEqual(
-            b3sync.s3.copy_object.call_args.kwargs["Metadata"]["sha256"],
-            legacy_sha)
+        # The managed copy, so an object over 5 GB is stamped too (multipart).
+        src, bucket, key = b3sync.s3.copy.call_args.args
+        extra = b3sync.s3.copy.call_args.kwargs["ExtraArgs"]
+        self.assertEqual((src["Key"], extra["Metadata"]["sha256"], extra["MetadataDirective"]),
+                         (key, legacy_sha, "REPLACE"))
 
     @patch("os.listdir", new=lambda path: (
         [] if path.endswith("-" + MISSING_SPEC["revision"]) else NotImplemented))

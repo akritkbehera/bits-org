@@ -1589,6 +1589,10 @@ def doFinalSync(spec, specs, args, syncHelper):
                         "{}-{}.{}.tar.gz".format(spec["package"], ver_rev(spec), _arch))
     try:
       os.remove(_tar)
+      # Its checksum sidecar goes with it: left behind, it could describe a
+      # later tarball of the same name.
+      if os.path.exists(_tar + ".sha256"):
+        os.remove(_tar + ".sha256")
     except OSError as err:
       # Best-effort cleanup: inability to remove this tarball must not fail the build.
       debug("Skipping aggressive cleanup for %s: %s", _tar, err)

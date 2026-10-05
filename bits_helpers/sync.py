@@ -1172,10 +1172,11 @@ class Boto3RemoteSync(RemoteSync):
       body.close()              # release the pooled connection on error too
     sha = "sha256:" + digest.hexdigest()
     try:
-      self.s3.copy_object(Bucket=self.writeStore, Key=key,
-                          CopySource={"Bucket": self.writeStore, "Key": key},
-                          Metadata={_SHA256_META: sha},
-                          MetadataDirective="REPLACE")
+      # The managed copy, server-side: CopyObject is refused above 5 GB, and an
+      # object that cannot be stamped is re-hashed on every publish.
+      self.s3.copy({"Bucket": self.writeStore, "Key": key}, self.writeStore, key,
+                   ExtraArgs={"Metadata": {_SHA256_META: sha},
+                              "MetadataDirective": "REPLACE"})
     except Exception as exc:  # pylint: disable=broad-except
       debug("could not stamp sha256 metadata on %s: %s", key, exc)
     return sha
@@ -1398,8 +1399,8 @@ class Boto3RemoteSync(RemoteSync):
 
     debug("Uploading content tarball for %s %s-%s (%s) to S3",
           spec["package"], spec["version"], spec["revision"], spec["hash"])
-    from bits_helpers.checksum import checksum_file
-    sha = checksum_file(local_file)
+    from bits_helpers.checksum import tarball_checksum
+    sha = tarball_checksum(local_file)
     self.s3.upload_file(Bucket=self.writeStore, Key=tar_path,
                         Filename=local_file,
                         ExtraArgs={"Metadata": {_SHA256_META: sha}})

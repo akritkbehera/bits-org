@@ -407,6 +407,24 @@ class TestAddPackage(unittest.TestCase):
         self.assertIsNone(data["packages"][0]["tarball_sha256"])
 
 
+    def test_sidecar_trusted_only_for_a_tarball_built_here(self):
+        """The packing sidecar spares re-reading a tarball this build packed;
+        one taken from a store is hashed from its own bytes."""
+        import hashlib
+        tar = os.path.join(self.tmp, "p.tar.gz")
+        with open(tar, "wb") as f:
+            f.write(b"bytes")
+        real = "sha256:" + hashlib.sha256(b"bytes").hexdigest()
+        side = "sha256:" + "ab" * 32
+        with open(tar + ".sha256", "w") as f:
+            f.write("%s 5\n" % side)
+        m = _make_manifest(self.tmp)
+        m.add_package(_make_spec(pkg="Built"), "built_from_source", tar)
+        m.add_package(_make_spec(pkg="Reused"), "from_store", tar)
+        got = [p["tarball_sha256"] for p in self._load(m)["packages"]]
+        self.assertEqual(got, [side, real])
+
+
 # ── complete / fail ───────────────────────────────────────────────────────────
 
 class TestLifecycle(unittest.TestCase):

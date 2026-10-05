@@ -200,13 +200,18 @@ def _git_remote_url(directory: str):
         return None
 
 
-def _tarball_sha256(tarball_path: str):
-    """Return the SHA-256 digest of *tarball_path* (``sha256:<hex>``), or ``None``."""
+def _tarball_sha256(tarball_path: str, packed_here: bool = True):
+    """Return the SHA-256 digest of *tarball_path* (``sha256:<hex>``), or ``None``.
+
+    A tarball this build packed may be read from its checksum sidecar; one taken
+    from a store is always hashed, its own bytes being what matters."""
     if not tarball_path or not os.path.isfile(tarball_path):
         return None
     try:
-        from bits_helpers.checksum import checksum_file
-        return checksum_file(tarball_path)
+        from bits_helpers.checksum import checksum_file, tarball_checksum
+        if not packed_here:
+            return checksum_file(tarball_path)
+        return tarball_checksum(tarball_path)
     except Exception as exc:
         warning("manifest: could not checksum %s: %s", tarball_path, exc)
         return None
@@ -493,7 +498,8 @@ class BuildManifest:
             # store's sha256 keeps every manifest consistent with the one stable
             # object that `bits sign` validates.
             "tarball_sha256":         spec.get("store_tarball_sha256")
-                                      or _tarball_sha256(tarball_path),
+                                      or _tarball_sha256(tarball_path,
+                                                         packed_here=outcome != "from_store"),
             "source_checksums":       _source_entries(spec),
             # v3: patch provenance (names + recorded checksums) and the resolved
             # recipe variables that shaped this build.

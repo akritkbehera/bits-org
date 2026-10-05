@@ -1,6 +1,13 @@
 Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[Feature]**, **[Fix]**, **[Improvement]**.
 
 ---
+# Unreleased
+
+- **[Fix]** `bits cvmfs publish`: the release view adds only the links that are not published yet, instead of resending all of them (a shared root fails on existing ones).
+- **[Feature]** `bits cvmfs publish --replace-on-conflict` replaces only content another build published: a package whose published hash differs, or a merged view whose fingerprint (now in its `.meta.json`) differs, is sent with `replace` and prepub deletes the old subtree first. Needs cvmfs-prepub with `replace_on_conflict`, checked before uploading. Modulefiles, release views and aliases are never replaced, and the package identity is now always sent (no more UNIQUE failures on existing modulefiles).
+- **[Improvement]** The tarball's sha256 is computed while it is packed (a `<tarball>.sha256` sidecar), so the build manifest and the store upload no longer read the tarball again; a legacy store object over 5 GB is now stamped with its sha256 (multipart copy) instead of being re-hashed on every publish.
+- **[Improvement]** Faster build manifests (SBOMs): the tarball's sha256 is computed while it is packed (a `<tarball>.sha256` sidecar), so the manifest and the store upload do not read it again; a store object stamped with its sha256 by a server-side managed copy, which also works above 5 GB, so large legacy objects are no longer re-hashed on every publish.
+
 # 0.6 — 2026-10-04
 
 Merged into `main` as one squashed commit, `2f15ed8` (#122). The commit ids below are from the `consolidation` branch history.
