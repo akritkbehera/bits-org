@@ -1096,6 +1096,26 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertIn("lib/python3.12/site-packages", setup)
         self.assertIn("lib/pkgconfig", setup)
 
+    def test_merged_view_keeps_share_man_for_manpath(self):
+        # One package with man pages: share/man stays a real directory (not
+        # folded into a link), so setup.sh finds it and adds it to MANPATH.
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        self._tarball(ctx, self.SPEC, ["bin/root", "share/man/man1/root.1"])
+        staging = os.path.join(ctx["tmp_dir"], "stage")
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        cp.merged_view(ctx, [self.SPEC], staging, vp)
+        self.assertFalse(os.path.islink(os.path.join(staging, "share", "man")))
+        cp.write_view_setup(staging, "/cvmfs/r/" + vp)
+        self.assertIn('/share/man:$MANPATH"', open(os.path.join(staging, "setup.sh")).read())
+        csh = open(os.path.join(staging, "setup.csh")).read()
+        self.assertIn('if ($?MANPATH) then\n  setenv MANPATH', csh)
+        if shutil.which("tcsh"):    # unset MANPATH must not break sourcing it
+            import subprocess
+            r = subprocess.run(["tcsh", "-f", "-c", 'unsetenv MANPATH; source "%s/setup.csh"; '
+                                'echo ok' % staging], capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip(), "ok", r.stderr)
+
     def test_merged_view_folding_respects_roots_and_leaves(self):
         import bits_helpers.cvmfs_publish as cp
         ctx = self._ctx()
@@ -1194,6 +1214,23 @@ class TestPackagesAndReleaseView(unittest.TestCase):
             out = subprocess.run(["tcsh", "-f", "-c", 'source "%s/setup.csh"; echo $BITS_VIEW' % d],
                                  capture_output=True, text=True).stdout.strip()
             self.assertEqual(out, "/cvmfs/r/g/views/X/a")
+
+    def test_view_setup_adds_man_pages_only_to_a_set_manpath(self):
+        import subprocess
+        import bits_helpers.cvmfs_publish as cp
+        d = os.path.realpath(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, d, True)
+        for sub in ("bin", "share/man/man1"):
+            os.makedirs(os.path.join(d, sub))
+        cp.write_view_setup(d, "/cvmfs/r/g/views/X/a")
+        # Unset, it stays unset: man then finds share/man from PATH and keeps
+        # the system's own pages. Set, the view's pages go in front.
+        for before, want in (("unset MANPATH", "<unset>"),
+                             ("export MANPATH=/usr/share/man", "%s/share/man:/usr/share/man" % d)):
+            out = subprocess.run(["bash", "-c", 'set -eu; %s; source "%s/setup.sh"; '
+                                  'echo "${MANPATH-<unset>}"' % (before, d)],
+                                 capture_output=True, text=True).stdout.strip()
+            self.assertEqual(out, want)
+        self.assertIn("if ($?MANPATH)", open(os.path.join(d, "setup.csh")).read())
 
     def test_merged_view_published_once(self):
         import tarfile

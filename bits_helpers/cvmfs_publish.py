@@ -817,7 +817,8 @@ def _excluded(path, patterns):
 
 # Directories setup.sh looks for in the view (see view.view_env): never folded,
 # so they stay real directories it can find.
-_VIEW_KEEP = ("lib*/pkgconfig", "lib*/python*", "lib*/python*/site-packages")
+_VIEW_KEEP = ("lib*/pkgconfig", "lib*/python*", "lib*/python*/site-packages",
+              "share/man")
 
 
 def merged_view(ctx, specs, staging, view_path):
@@ -921,6 +922,13 @@ def write_view_setup(staging, published_at):
         sh.append('export %s="%s${%s:+:$%s}"' % (var, val.replace("@V@", "$_v"), var, var))
         csh.append('if ($?%s) then\n  setenv %s "%s:${%s}"\nelse\n  setenv %s "%s"\nendif'
                    % (var, var, val.replace("@V@", "$_v"), var, var, val.replace("@V@", "$_v")))
+    # Man pages only while MANPATH is set: unset, man derives its search path
+    # from PATH (the view's bin -> share/man), and setting it would hide the
+    # system's own pages.
+    if os.path.isdir(os.path.join(staging, "share", "man")):
+        sh.append('if [ -n "${MANPATH:-}" ]; then export MANPATH="$_v/share/man:$MANPATH"; fi')
+        # Multi-line: csh expands ${MANPATH} on a one-line if even when unset.
+        csh.append('if ($?MANPATH) then\n  setenv MANPATH "$_v/share/man:${MANPATH}"\nendif')
     sh.append("unset _s _v")
     csh.append("unset _v")
     for name, body in (("setup.sh", sh), ("setup.csh", csh)):
