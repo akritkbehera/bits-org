@@ -1944,11 +1944,17 @@ never part of the store path or manifest key. A reserved build (`bits cvmfs-path
 then the build) should pass the same `--day` to both, so the two agree across a
 UTC midnight.
 
-On the ingest path, when a `cvmfs_packages_template` is set, each package upload
-carries its target path and build hash (a modulefile upload carries the path only),
-so cvmfs-prepub completes a rerun queued behind the original without publishing it
-twice. This is not sent with `--replace-on-conflict`, which republishes on purpose.
-Before uploading on that path, bits asks prepub for its per-package size limit
+When a `cvmfs_packages_template` is set, each package upload carries its target
+path and build hash (a modulefile upload carries the path only), so cvmfs-prepub
+completes a rerun queued behind the original without publishing it twice, and
+refuses a path another build published. With `--replace-on-conflict` a package
+whose published hash differs is sent with `replace`: prepub deletes the old
+subtree and commits this build's. That needs prepub with `replace_on_conflict`
+(its `/api/v1/health` says `replace_allowed`), which bits checks before uploading;
+a package published without a hash is never replaced. Modulefiles, release views
+and aliases are never replaced. On the staged path, replacing also needs the
+ingest path on the prepub node, which does the delete.
+Before uploading on the ingest path, bits asks prepub for its per-package size limit
 (`max_tar_size`) and refuses a larger tar with a message naming both sizes,
 instead of failing with a bare connection reset.
 
@@ -1966,9 +1972,10 @@ built before that, from the tarball itself. A recipe shapes its own part of the
 view with `view:`: `false` keeps the package out, `exclude: [share/doc, lib/*.a]`
 drops paths, `include: [etc/root]` adds paths beyond the default directories.
 `view:` is presentation only: it is not hashed (no rebuild), and the rules of the
-build that creates the view (recorded in its manifest) apply. A view
-already published is kept unless `--replace-on-conflict` (on the staged path that
-replaces it; the ingest path merges, keeping links of packages since removed).
+build that creates the view (recorded in its manifest) apply. The view's
+`.meta.json` holds a fingerprint of its links and setup scripts. A view already
+published is kept; with `--replace-on-conflict` it is replaced when its
+fingerprint differs (a view published without one is kept).
 
 The deprecated hyphenated names (`store-stats`, `cvmfs-stage`, `cvmfs-publish`) still
 work for one release and warn, as do `bits cleanup` (→ `bits prune`) and `bits lcg-view`

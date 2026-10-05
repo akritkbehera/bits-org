@@ -205,7 +205,8 @@ def resolve_pkg_path(pkgroot, repo, pkg, vdir, ver, rev, platform, install_dir,
 # ── staged submit (the CI does this with raw curl; not in prepub.submit_job) ──
 
 def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
-                  build_id="", bearer_auth=False, no_verify_tls=False):
+                  build_id="", bearer_auth=False, no_verify_tls=False,
+                  identity_path="", identity_hash="", replace=False):
     """POST /api/v1/jobs for the STAGED path: no tar, just staging_prefix +
     catalog_hash (what the CI does). Returns the job id. Reuses prepub.py's
     session/auth helpers; mirrors the CI staged submit — including build_id in
@@ -226,6 +227,9 @@ def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
     if build_id:
         fields["build_id"] = (None, build_id)
         signed_fields["build_id"] = build_id
+    for k, v in _identity_fields(identity_path, identity_hash, replace).items():
+        fields[k] = (None, v)
+        signed_fields[k] = v
     headers = _pp._auth_headers(token, "POST", _pp._signed_uri(url),
                                 fields=signed_fields, bearer_auth=bearer_auth,
                                 no_verify_tls=no_verify_tls)
@@ -240,27 +244,58 @@ def submit_staged(prepub_url, token, repo, path, staging_prefix, catalog_hash,
     return jid
 
 
-_MAX_TAR = {}   # prepub URL -> its advertised per-tar limit (None: not said)
+_HEALTH = {}   # prepub URL -> its /api/v1/health answer, once it has answered
+
+
+def _prepub_health(session, prepub_url):
+    """prepub's /api/v1/health, cached per URL once the node has answered; {}
+    when it cannot be asked right now (the next call asks again)."""
+    if prepub_url not in _HEALTH:
+        try:
+            r = session.get("%s/api/v1/health" % prepub_url.rstrip("/"), timeout=30)
+            body = r.json() if getattr(r, "status_code", 200) == 200 else None
+        except Exception:                   # best-effort: never blocks a publish
+            return {}
+        if not isinstance(body, dict):      # e.g. a node restarting: ask again later
+            return {}
+        _HEALTH[prepub_url] = body
+    return _HEALTH[prepub_url]
 
 
 def _prepub_max_tar(session, prepub_url):
-    """prepub's per-package tar limit from /api/v1/health, cached per URL once
-    the node has answered. None when it does not advertise one (older prepub)
-    or cannot be asked right now: the upload then goes ahead and prepub itself
-    decides, and the next package asks again."""
-    if prepub_url not in _MAX_TAR:
-        try:
-            r = session.get("%s/api/v1/health" % prepub_url.rstrip("/"), timeout=30)
-            _MAX_TAR[prepub_url] = int(r.json().get("max_tar_size") or 0) or None
-        except Exception:                   # best-effort: never blocks a publish
-            return None
-    return _MAX_TAR[prepub_url]
+    """prepub's per-package tar limit. None when it does not advertise one
+    (older prepub) or cannot be asked: the upload then goes ahead and prepub
+    itself decides."""
+    return int(_prepub_health(session, prepub_url).get("max_tar_size") or 0) or None
+
+
+def prepub_replace_allowed(ctx):
+    """Whether prepub replaces what another build published (its health says
+    replace_allowed). False for an older prepub, or one that cannot be asked."""
+    from bits_helpers import prepub as _pp
+    session = _pp._make_session(ctx.get("no_verify_tls", False),
+                                signed=not ctx.get("bearer_auth", False))
+    return bool(_prepub_health(session, ctx["prepub_url"]).get("replace_allowed"))
+
+
+def _identity_fields(identity_path, identity_hash, replace):
+    """The identity fields of a submission: the path whose presence means the
+    content is published, the hash it must carry, and whether to replace
+    another build's content there. Every one is signed."""
+    out = {}
+    if identity_path:
+        out["identity_path"] = identity_path
+        if identity_hash:   # the .meta.json hash that makes it this build's
+            out["identity_hash"] = identity_hash
+            if replace:
+                out["replace"] = "true"
+    return out
 
 
 def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
                   direct_s3=False, bearer_auth=False, no_verify_tls=False,
                   identity_path="", identity_hash="", object_list=False,
-                  prewarm=False):
+                  prewarm=False, replace=False):
     """POST /api/v1/jobs for the INGEST path: the raw tar IS the payload (prepub's
     gateway does the chunk/compress/upload). Mirrors the CI's `_post_tar` ingest
     branch — sends the tar plus its sha256, and SIGNS tar_sha256 so prepub can
@@ -268,8 +303,9 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
     cvmfs_server writes objects straight to S3 (bypassing the gateway).
     object_list=True (needs direct_s3) has the publisher report the objects it
     stored; prewarm=True (needs object_list) lets prepub announce them to the
-    Stratum 1s. Signed by default; bearer puts the token on the request instead.
-    Returns the job id."""
+    Stratum 1s. replace=True (needs identity_path == path and identity_hash)
+    asks prepub to replace content another build published at path. Signed by
+    default; bearer puts the token on the request instead. Returns the job id."""
     import requests
     from bits_helpers import prepub as _pp
     url = "%s/api/v1/jobs" % prepub_url.rstrip("/")
@@ -298,10 +334,8 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         signed_fields["prewarm"] = "true"
     # identity_path: prepub re-checks it just before committing and finishes a
     # job whose content appeared meanwhile (a rerun queued behind the original).
-    if identity_path:
-        signed_fields["identity_path"] = identity_path
-        if identity_hash:   # the .meta.json hash that makes it this build's
-            signed_fields["identity_hash"] = identity_hash
+    identity = _identity_fields(identity_path, identity_hash, replace)
+    signed_fields.update(identity)
     # body_hash BINDS the tar to the signature: prepub re-hashes the uploaded
     # tar and the MAC only matches if the same digest was signed. Signing
     # tar_sha256 as a field is NOT enough — the httpsig body-hash component is
@@ -323,10 +357,8 @@ def submit_ingest(prepub_url, token, repo, path, tar_file, build_id="",
         fields["object_list"] = (None, "true")
     if prewarm:
         fields["prewarm"] = (None, "true")
-    if identity_path:
-        fields["identity_path"] = (None, identity_path)
-        if identity_hash:
-            fields["identity_hash"] = (None, identity_hash)
+    for k, v in identity.items():
+        fields[k] = (None, v)
     with open(tar_file, "rb") as tfh:
         fields["tar"] = ("pkg.tar", tfh, "application/octet-stream")
         try:
@@ -418,17 +450,17 @@ def _writes_outside_pkgroot(before, after, pkgroot):
                   if p != root and not p.startswith(root + os.sep))
 
 
-def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash=""):
+def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash="",
+                 replace=False):
     """Publish ONE prepared tar via the configured path; return its job id and
     remove the tar. INGEST (default): POST the tar itself with submit_ingest — the
     gateway chunks it. STAGED: cvmfs-stage the tar to an S3 prefix (always, so
     --dry-run still yields the catalog hash) then submit_staged. --dry-run submits
     nothing. A non-None fp prints the mtime-independent FINGERPRINT (verify hook).
-    identity, on the ingest path, is the path whose presence means this content
-    is published; not sent when replacing, which publishes over it on purpose."""
+    identity is the path whose presence means this content is published, and
+    identity_hash the hash it carries there; replace asks prepub to replace
+    another build's content at that path (it then needs both)."""
     ingest = ctx.get("publish_path") == "ingest"
-    if ctx.get("replace_on_conflict"):
-        identity = ""
     submit = ctx.get("submit", True)
     try:
         if ingest:
@@ -440,7 +472,7 @@ def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash=""):
                                  bearer_auth=ctx.get("bearer_auth", False),
                                  no_verify_tls=ctx.get("no_verify_tls", False),
                                  identity_path=identity,
-                                 identity_hash=identity_hash if identity else "")
+                                 identity_hash=identity_hash, replace=replace)
                    if submit else (fp or ""))
         else:
             prefix, catalog = stage_tar(
@@ -449,11 +481,13 @@ def _publish_tar(ctx, path, tar, label, fp=None, identity="", identity_hash=""):
                 no_stats_db=ctx.get("no_stats_db", False),
                 no_prepare_lock=ctx.get("no_prepare_lock", False),
                 swissknife=ctx.get("swissknife"), base_root=ctx.get("base_root"),
-                replace_on_conflict=ctx.get("replace_on_conflict", False))
+                replace_on_conflict=replace)
             jid = (submit_staged(ctx["prepub_url"], ctx["token"], ctx["repo"], path,
                                  prefix, catalog, build_id=ctx.get("build_id", ""),
                                  bearer_auth=ctx.get("bearer_auth", False),
-                                 no_verify_tls=ctx.get("no_verify_tls", False))
+                                 no_verify_tls=ctx.get("no_verify_tls", False),
+                                 identity_path=identity, identity_hash=identity_hash,
+                                 replace=replace)
                    if submit else catalog)   # dry-run: catalog hash for the verify
     finally:
         _safe_rm(tar)
@@ -911,6 +945,7 @@ def publish_one(spec, ctx):
     # Publish once: with a packages template a package's path is its identity,
     # so one that is already there (same build hash) is not sent again.
     skip_pkg = False   # the tree is there: publish only its missing modulefile
+    replace = False    # another build's tree is there: replace it
     publish_once = bool((ctx.get("templates") or {}).get("packages"))
     if publish_once and ctx.get("submit", True):
         path = package_path(spec, ctx)
@@ -927,6 +962,21 @@ def publish_one(spec, ctx):
                     "%s@%s: %s is already published by another build (hash %s, this "
                     "build %s); not overwriting it (--replace-on-conflict would)" % (
                         pkg, vdir, path, state.get("hash") or "unknown", spec.get("hash")))
+            elif not state.get("hash") or not spec.get("hash"):
+                raise SystemExit(
+                    "%s@%s: %s cannot be replaced: prepub decides on the build hashes, "
+                    "and %s has none" % (pkg, vdir, path,
+                                         "the published package" if not state.get("hash")
+                                         else "this build"))
+            elif not prepub_replace_allowed(ctx):
+                # Refused here, before the upload, rather than by prepub after it.
+                raise SystemExit(
+                    "%s@%s: %s is published by another build (hash %s, this build %s); "
+                    "--replace-on-conflict asks prepub to replace it, but this prepub "
+                    "does not allow replacing (replace_on_conflict on the node)" % (
+                        pkg, vdir, path, state["hash"], spec.get("hash")))
+            else:
+                replace = True
 
     tar_gz = tar_path(spec, ctx["tars_root"], ctx["arch"])
     if not os.path.isfile(tar_gz):
@@ -998,7 +1048,7 @@ def publish_one(spec, ctx):
             _lbl = "%s@%s(pkg)" % (pkg, vdir)
             jid = _publish_tar(ctx, path, pkg_tar, _lbl, fp=_fp,
                                identity=path if publish_once else "",
-                               identity_hash=spec.get("hash", ""))
+                               identity_hash=spec.get("hash", ""), replace=replace)
             jobs.append((jid, _lbl))
 
         # Modulefile: a package that ships etc/modulefiles/<pkg> publishes it as
@@ -1178,14 +1228,16 @@ def main(argv=None):
                          "job. Both order biggest-first and run concurrently at "
                          "N>1; ingest ignores the cvmfs-stage flags below.")
     ap.add_argument("--replace-on-conflict", action="store_true",
-                    help="REPUBLISH: if a package's path is already published, "
-                         "the add-only prepare fails on a UNIQUE conflict; retry "
-                         "it once with `cvmfs-stage --replace`, which deletes the "
-                         "existing subtree inside the prepared revision (prior "
-                         "revisions keep objects until GC) and re-adds the new "
-                         "content. New paths are unaffected. REQUIRES the prepub "
-                         "daemon to also run with replace_on_conflict, else the "
-                         "graft still refuses.")
+                    help="REPLACE a package, or the merged view, that another "
+                         "build published at its path: when the published hash "
+                         "differs from this build's, prepub deletes the old "
+                         "subtree and commits this one (prior revisions keep "
+                         "objects until GC). The same hash is skipped as usual. "
+                         "REQUIRES prepub with replace_on_conflict; bits checks "
+                         "that before uploading. Release views, aliases and "
+                         "modulefiles are never replaced. On the staged path the "
+                         "add-only prepare also retries with `cvmfs-stage --replace`, "
+                         "and prepub needs its ingest path too (it deletes with it).")
     ap.add_argument("--workers", type=int, default=1,
                     help="prepare up to N packages concurrently, biggest tar "
                          "first. Default 1 = serial, manifest "
@@ -1422,7 +1474,8 @@ def main(argv=None):
 def _publish_merged_view(ctx, specs, emit):
     """The release's merged view (cvmfs_views_template), one per release and
     arch. A new directory, so it publishes on any path; one already there is
-    kept unless --replace-on-conflict. Returns the rc contribution."""
+    kept, unless --replace-on-conflict and its fingerprint (in its .meta.json)
+    differs from this build's view. Returns the rc contribution."""
     import shutil
     view_path = fixed_dir(ctx, "views")
     if not view_path:
@@ -1430,7 +1483,8 @@ def _publish_merged_view(ctx, specs, emit):
               % ctx["templates"]["views"]])
         return 1
     state = published_state(ctx, view_path) if ctx["submit"] else None
-    if state and state.get("exists") and not ctx.get("replace_on_conflict"):
+    exists = bool(state and state.get("exists"))
+    if exists and not ctx.get("replace_on_conflict"):
         emit(["SKIPPED merged view: already published at %s" % view_path])
         return 0
     staging = tempfile.mkdtemp(prefix="mview-", dir=ctx["tmp_dir"])
@@ -1443,6 +1497,29 @@ def _publish_merged_view(ctx, specs, emit):
             sys.stderr.write("[publish] merged view: %s from %s, not %s\n"
                              % (path, winner, loser))
         write_view_setup(staging, "/cvmfs/%s/%s" % (ctx["repo"], view_path))
+        # The view's identity: what prepub compares to decide to replace it.
+        # Modes are hashed, so they must not depend on the publisher's umask.
+        for dp, dns, _fns in os.walk(staging):
+            for d in dns:
+                os.chmod(os.path.join(dp, d), 0o755)
+        fp = tree_fingerprint(staging)
+        replace = False
+        if exists:
+            if state.get("hash") == fp:
+                emit(["SKIPPED merged view: %s is unchanged" % view_path])
+                return 0
+            if not state.get("hash"):
+                emit(["SKIPPED merged view: %s was published without a fingerprint "
+                      "and cannot be replaced" % view_path])
+                return 0
+            if not prepub_replace_allowed(ctx):
+                emit(["FAILED merged view: %s differs, and this prepub does not allow "
+                      "replacing (replace_on_conflict on the node)" % view_path])
+                return 1
+            replace = True
+        with open(os.path.join(staging, ".meta.json"), "w") as f:
+            json.dump({"package": {"package": "merged-view", "hash": fp}}, f)
+        os.chmod(os.path.join(staging, ".meta.json"), 0o644)
         # No .cvmfscatalog here: both publish paths ingest with create-catalog-on-
         # root (-c / -C true), which adds the marker itself; a second one fails.
         fd, tar = tempfile.mkstemp(suffix=".tar", dir=ctx["tmp_dir"])
@@ -1451,7 +1528,9 @@ def _publish_merged_view(ctx, specs, emit):
         label = "merged-view@%s" % view_path
         sys.stderr.write("[publish] merged view %s: %d links, %d conflicts\n"
                          % (view_path, len(res["linked"]), len(res["conflicts"])))
-        emit(["PUBLISHED %s %s" % (_publish_tar(ctx, view_path, tar, label), label)])
+        jid = _publish_tar(ctx, view_path, tar, label, identity=view_path,
+                           identity_hash=fp, replace=replace)
+        emit(["PUBLISHED %s %s" % (jid, label)])
         return 0
     except (SystemExit, Exception) as exc:
         emit(["FAILED merged view: %s" % exc])

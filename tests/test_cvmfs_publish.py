@@ -843,8 +843,45 @@ class TestPackagesAndReleaseView(unittest.TestCase):
     def test_replace_on_conflict_overrides_a_different_build(self):
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
-        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "other"}):
-            self.assertEqual(cp.publish_one(self.SPEC, self._ctx(replace_on_conflict=True)), [])
+        ctx = self._ctx(replace_on_conflict=True)
+        self._tarball(ctx, self.SPEC, ["bin/root", "etc/modulefiles/ROOT"])
+        sent = []
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "other"}), \
+             mock.patch.object(cp, "prepub_replace_allowed", lambda c: True), \
+             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, **k:
+                               sent.append((lbl, k.get("identity"), k.get("identity_hash", ""),
+                                            k.get("replace", False))) or "J"):
+            cp.publish_one(self.SPEC, ctx)
+        # The package is replaced under its own hash; its modulefile never is,
+        # and keeps its identity, so one already there is skipped.
+        self.assertEqual(sent, [
+            ("ROOT@6.36-2(pkg)", "g/el9-gcc15-opt/ROOT/6.36-2", "h1", True),
+            ("ROOT@6.36-2(modules)", "g/el9-gcc15-opt/Modules/ROOT/6.36-2", "", False)])
+
+    def test_replace_needs_this_builds_hash(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        spec = dict(self.SPEC, hash="")
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "other"}), \
+             mock.patch.object(cp, "prepub_replace_allowed", lambda c: True), \
+             mock.patch.object(cp, "_publish_tar", _boom):
+            with self.assertRaises(SystemExit) as cm:
+                cp.publish_one(spec, self._ctx(replace_on_conflict=True))
+        self.assertIn("this build has none", str(cm.exception))
+
+    def test_replace_refused_before_the_upload(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx(replace_on_conflict=True)
+        self._tarball(ctx, self.SPEC, ["bin/root"])
+        for state, allowed, why in (({"exists": True, "hash": "other"}, False, "does not allow"),
+                                    ({"exists": True}, True, "the published package has none")):
+            with mock.patch.object(cp, "published_state", lambda c, p: state), \
+                 mock.patch.object(cp, "prepub_replace_allowed", lambda c: allowed), \
+                 mock.patch.object(cp, "_publish_tar", _boom):
+                with self.assertRaises(SystemExit) as cm:
+                    cp.publish_one(self.SPEC, ctx)
+            self.assertIn(why, str(cm.exception))
 
     def test_view_root_is_a_whole_directory(self):
         import bits_helpers.cvmfs_publish as cp
@@ -1108,16 +1145,79 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertEqual(lines, ["SKIPPED merged view: already published at g/views/LCG_110/el9-gcc15-opt"])
         lines.clear()
         with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
-             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, fp=None:
+             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, fp=None, **k:
                                sent.append((p, names(t))) or "JM"):
             self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
         self.assertEqual([p for p, _ in sent], ["g/views/LCG_110/el9-gcc15-opt"])
         # -c / -C true adds the root marker itself; a second one fails the ingest.
         self.assertNotIn("./.cvmfscatalog", sent[0][1])
         self.assertIn("./bin/root", sent[0][1])
+        self.assertIn("./.meta.json", sent[0][1])   # its fingerprint, for replacing
         # The view root must be enterable by everyone, not mkdtemp's 0700.
         self.assertEqual(modes["."] & 0o777, 0o755)
         self.assertEqual(lines, ["PUBLISHED JM merged-view@g/views/LCG_110/el9-gcc15-opt"])
+
+    def test_merged_view_fingerprint_does_not_depend_on_umask(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm)
+        self._tarball(ctx, self.SPEC, ["bin/root", "include/x/a.h", "lib/libA.so"])
+        fps = []
+
+        def pub(c, p, t, lbl, **k):
+            fps.append(k["identity_hash"]); return "J"
+        for mask in (0o022, 0o002):
+            old = os.umask(mask)
+            try:
+                with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
+                     mock.patch.object(cp, "_publish_tar", pub):
+                    cp._publish_merged_view(ctx, [self.SPEC], lambda out: None)
+            finally:
+                os.umask(old)
+        self.assertEqual(len(set(fps)), 1, fps)
+
+    def test_merged_view_replaced_only_when_it_differs(self):
+        import tarfile
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm, replace_on_conflict=True)
+        self._tarball(ctx, self.SPEC, ["bin/root"])
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+
+        def run(state, allowed=True):
+            sent, lines = [], []
+
+            def pub(c, p, t, lbl, **k):
+                with tarfile.open(t) as tf:
+                    meta = json.load(tf.extractfile("./.meta.json"))
+                sent.append(dict(k, meta=meta))
+                return "JM"
+            with mock.patch.object(cp, "published_state", lambda c, p: state), \
+                 mock.patch.object(cp, "prepub_replace_allowed", lambda c: allowed), \
+                 mock.patch.object(cp, "_publish_tar", pub):
+                rc = cp._publish_merged_view(ctx, [self.SPEC], lines.extend)
+            return rc, sent, lines
+
+        rc, sent, _ = run({"exists": False})
+        fp = sent[0]["meta"]["package"]["hash"]
+        self.assertEqual((rc, sent[0]["identity"], sent[0]["identity_hash"], sent[0]["replace"]),
+                         (0, vp, fp, False))
+        # The same view: nothing to send.
+        rc, sent, lines = run({"exists": True, "hash": fp})
+        self.assertEqual((rc, sent, lines), (0, [], ["SKIPPED merged view: %s is unchanged" % vp]))
+        # A different view: replaced, under this build's fingerprint.
+        rc, sent, _ = run({"exists": True, "hash": "other"})
+        self.assertEqual((rc, sent[0]["identity_hash"], sent[0]["replace"]), (0, fp, True))
+        # Published before fingerprints: kept, nothing to compare.
+        rc, sent, lines = run({"exists": True})
+        self.assertEqual((rc, sent), (0, []))
+        self.assertIn("without a fingerprint", lines[0])
+        # prepub does not allow replacing: refused before the upload.
+        rc, sent, lines = run({"exists": True, "hash": "other"}, allowed=False)
+        self.assertEqual((rc, sent), (1, []))
+        self.assertIn("does not allow", lines[0])
 
     def test_base_module_published_when_missing(self):
         fake = lambda s, c: [("J", "x(pkg)")]
@@ -1264,7 +1364,7 @@ class TestSubmitIngest(unittest.TestCase):
         import bits_helpers.prepub as pp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
         tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z" * size)
-        cp._MAX_TAR.pop(url, None)
+        cp._HEALTH.pop(url, None)
         with mock.patch.object(pp, "_make_session", lambda *a, **k: sess), \
              mock.patch.object(pp, "_signed_uri", lambda u: u), \
              mock.patch.object(pp, "_auth_headers", lambda *a, **k: {}):
@@ -1304,20 +1404,97 @@ class TestSubmitIngest(unittest.TestCase):
         self.assertEqual(cap["files"]["identity_hash"], (None, "H"))
         self.assertEqual(cap["signed"]["identity_hash"], "H")
 
-    def test_identity_not_sent_when_replacing(self):
+    def test_replace_sent_and_signed_only_with_identity_and_hash(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        tarf = os.path.join(t, "p.tar")
+        sess, _ = self._sess()
+        cap = {}
+        orig_post = sess.post
+        def post(url, files=None, headers=None, timeout=None):
+            cap["files"] = files; return orig_post(url, files, headers, timeout)
+        sess.post = post
+        def fake_auth(token, method, uri, fields=None, **kw):
+            cap["signed"] = fields; return {}
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: sess), \
+             mock.patch.object(pp, "_signed_uri", lambda u: u), \
+             mock.patch.object(pp, "_auth_headers", fake_auth):
+            for kw, want in (({"identity_path": "p", "identity_hash": "H", "replace": True}, "true"),
+                             ({"identity_path": "p", "replace": True}, None),
+                             ({"identity_path": "p", "identity_hash": "H"}, None)):
+                open(tarf, "wb").write(b"z")
+                cp.submit_ingest("http://id", "t", "r", "p", tarf, **kw)
+                self.assertEqual(cap["signed"].get("replace"), want, kw)
+                self.assertEqual(cap["files"].get("replace"), want and (None, want), kw)
+
+    def test_staged_submit_carries_identity_and_replace(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        sess, _ = self._sess()
+        cap = {}
+        orig_post = sess.post
+        def post(url, files=None, headers=None, timeout=None):
+            cap["files"] = files; return orig_post(url, files, headers, timeout)
+        sess.post = post
+        def fake_auth(token, method, uri, fields=None, **kw):
+            cap["signed"] = fields; return {}
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: sess), \
+             mock.patch.object(pp, "_signed_uri", lambda u: u), \
+             mock.patch.object(pp, "_auth_headers", fake_auth):
+            cp.submit_staged("http://s", "t", "r", "p", "PFX", "CC",
+                             identity_path="p", identity_hash="H", replace=True)
+        for k, v in (("identity_path", "p"), ("identity_hash", "H"), ("replace", "true")):
+            self.assertEqual(cap["files"][k], (None, v))
+            self.assertEqual(cap["signed"][k], v)
+
+    def test_identity_kept_when_replacing(self):
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
         tarf = os.path.join(t, "p.tar"); open(tarf, "wb").write(b"z")
         got = []
         def fake_submit(*a, **k):
-            got.append(k.get("identity_path")); return "J"
-        ctx = {"publish_path": "ingest", "prepub_url": "u", "token": "t", "repo": "r"}
+            got.append((k.get("identity_path"), k.get("identity_hash"), k.get("replace"))); return "J"
+        ctx = {"publish_path": "ingest", "prepub_url": "u", "token": "t", "repo": "r",
+               "replace_on_conflict": True}
         with mock.patch.object(cp, "submit_ingest", fake_submit):
-            cp._publish_tar(dict(ctx), "p", tarf, "l", identity="p")
-            open(tarf, "wb").write(b"z")
-            cp._publish_tar(dict(ctx, replace_on_conflict=True), "p", tarf, "l", identity="p")
-        self.assertEqual(got, ["p", ""])
+            cp._publish_tar(dict(ctx), "p", tarf, "l", identity="p", identity_hash="H",
+                            replace=True)
+        # prepub decides on the published hash: the identity goes with the replace.
+        self.assertEqual(got, [("p", "H", True)])
+
+    def test_health_not_cached_from_a_bad_answer(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        answers = [(503, {"status": "draining"}), (200, ["not", "a", "dict"]),
+                   (200, {"replace_allowed": True})]
+
+        class Sess:
+            def get(self, url, timeout=None):
+                code, body = answers.pop(0)
+                return type("R", (), {"status_code": code, "json": lambda self: body})()
+        cp._HEALTH.pop("http://h", None)
+        with mock.patch.object(pp, "_make_session", lambda *a, **k: Sess()):
+            got = [cp.prepub_replace_allowed({"prepub_url": "http://h"}) for _ in range(4)]
+        cp._HEALTH.pop("http://h", None)
+        self.assertEqual(got, [False, False, True, True])   # cached once usable
+
+    def test_replace_allowed_from_health(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        import bits_helpers.prepub as pp
+        for health, want in (({"replace_allowed": True}, True), ({}, False)):
+            class Sess:
+                def get(self, url, timeout=None):
+                    return type("R", (), {"json": lambda self: health})()
+            cp._HEALTH.pop("http://h", None)
+            with mock.patch.object(pp, "_make_session", lambda *a, **k: Sess()):
+                self.assertEqual(cp.prepub_replace_allowed({"prepub_url": "http://h"}), want)
+        cp._HEALTH.pop("http://h", None)
 
     def test_reset_upload_says_why(self):
         import requests
