@@ -841,6 +841,10 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         self.assertEqual(cp._spec_path(noarch, ctx, "modules"), "g/el9-gcc15-opt/Modules/ROOT")
 
     def test_replace_on_conflict_overrides_a_different_build(self):
+        import subprocess
+        if "GNU tar" not in subprocess.run(["tar", "--version"], capture_output=True,
+                                           text=True).stdout:
+            self.skipTest("publish packs with GNU tar --hard-dereference (not bsdtar)")
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         ctx = self._ctx(replace_on_conflict=True)
