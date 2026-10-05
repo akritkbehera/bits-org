@@ -609,20 +609,24 @@ class TestPublishOneLayout(unittest.TestCase):
         with open(os.path.join(t, "seen.json")) as fh:
             self.assertEqual(json.load(fh), tm)
 
-        # With a packages template, an already published tree (same hash) whose
-        # modulefile is missing gets only the modulefile.
+        # With a packages template the modulefile is not published on its own:
+        # the package carries it, and module_links links it in later.
         ptm = dict(tm, packages="{prefix}/{arch}/{pkg}/{tag}")
         pctx = dict(ctx, templates=ptm, prepub_url="http://p", token="", submit=True)
         spec2 = dict(spec, hash="H")
         paths.clear()
         with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
-             mock.patch.object(cp, "published_state",
-                               lambda c, p: {"exists": "Modules" not in p, "hash": "H"}), \
+             mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
              mock.patch.object(cp, "_publish_tar",
                                lambda c, p, *a, **k: paths.append(p) or "J"):
             jobs = cp.publish_one(spec2, pctx)
-        self.assertEqual(paths, ["g/el9-gcc14-opt/Modules/modulefiles/GCC"])
-        self.assertEqual([lbl for _, lbl in jobs], ["GCC@14-1(modules)"])
+        self.assertEqual(paths, ["g/tc/GCC/14-1"])   # the toolchain arch: its own tree
+        self.assertTrue(spec2["_modulefile"])
+        # An already published tree (same hash) is skipped whole.
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "H"}), \
+             mock.patch.object(cp, "_publish_tar", _boom):
+            with self.assertRaises(cp.AlreadyPublished):
+                cp.publish_one(dict(spec, hash="H"), pctx)
 
 
 def cp_tar_path(spec, ctx):
@@ -735,6 +739,70 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         rc, sent, _, _ = self._main(fake)
         self.assertEqual((rc, sent), (0, []))
 
+    def test_modulefiles_linked_in_one_job(self):
+        import tarfile
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+
+        def fake(spec, ctx):
+            if spec["package"] == "six":
+                raise cp.AlreadyPublished("g/el9-gcc15-opt/six/6.36-2")
+            spec["_modulefile"] = True
+            return [("J1", "ROOT@6.36-2(pkg)")]
+        tars = []
+        real = cp.publish_links
+        def links(ctx, root, ls, label):
+            tars.append(sorted(ls)); return real(ctx, root, ls, label)
+        # six was published before: its link is added if its package has one.
+        for six_has, want in ((True, 2), (False, 1)):
+            state = lambda p: {"exists": (p.endswith("/etc/modulefiles/six") and six_has)
+                               or "BASE" in p}
+            tars.clear()
+            with mock.patch.object(cp, "publish_links", links):
+                rc, sent, out, _ = self._main(fake, base_state=state)
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(tars[0]), want)
+            self.assertIn(("g/el9-gcc15-opt/Modules/ROOT/6.36-2",
+                           "g/el9-gcc15-opt/ROOT/6.36-2/etc/modulefiles/ROOT"), tars[0])
+            self.assertEqual([p for p, _, how in sent], ["g/el9-gcc15-opt/Modules"])
+            self.assertIn("PUBLISHED JV modulefiles@g/el9-gcc15-opt/Modules", out)
+        # All links there already: no job.
+        rc, sent, out, _ = self._main(fake, base_state={"exists": True})
+        self.assertEqual((rc, sent), (0, []))
+        # A failed package gets no link.
+        def failing(spec, ctx):
+            raise SystemExit("boom")
+        tars.clear()
+        with mock.patch.object(cp, "publish_links", links):
+            rc, sent, out, _ = self._main(failing, base_state=lambda p: {"exists": False})
+        self.assertEqual((rc, tars), (1, []))
+
+    def test_dry_run_links_are_not_failures(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+
+        def fake(spec, ctx):
+            spec["_modulefile"] = True
+            return [("FP", "%s@6.36-2(pkg)" % spec["package"])]
+        # A dry run "publishes" with an empty job id and no error.
+        with mock.patch.object(cp, "publish_links", lambda *a: ("", None)):
+            rc, _, out, err = self._main(fake, ["--dry-run", "--release-view"])
+        self.assertEqual(rc, 0, out + err)
+        self.assertNotIn("FAILED", out + err)
+        self.assertIn("modulefiles@g/el9-gcc15-opt/Modules", out)
+
+    def test_noarch_modulefile_link_crosses_to_its_tree(self):
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx(submit=False)
+        noarch = dict(self.SPEC, package="six", effective_architecture="share",
+                      _modulefile=True)
+        root, links = cp.module_links(ctx, [noarch])
+        self.assertEqual(root, "g/el9-gcc15-opt/Modules")
+        (link, target), = links
+        self.assertEqual(link, "g/el9-gcc15-opt/Modules/six/6.36-2")
+        self.assertEqual(os.path.relpath(target, os.path.dirname(link)),
+                         "../../../noarch/six/6.36-2/etc/modulefiles/six")
+
     def test_release_view_links_only_what_is_missing(self):
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
@@ -820,7 +888,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._main(lambda s, c: [], ["--release-view", "--one", "ROOT"])
 
-    def test_skipped_package_still_gets_a_missing_modulefile(self):
+    def test_skipped_package_leaves_its_modulefile_to_the_links(self):
         from unittest import mock
         import bits_helpers.cvmfs_publish as cp
         ctx = self._ctx()
@@ -829,13 +897,11 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         def state(c, p):
             asked.append(p)
             return {"exists": True, "hash": "h1"} if "Modules" not in p else {"exists": False}
-        # Modulefile missing -> both paths are asked; with no tar here to take
-        # it from, the package still counts as published (and stays in the view).
+        # Only the package is asked: a missing modulefile is module_links' job.
         with mock.patch.object(cp, "published_state", state):
             with self.assertRaises(cp.AlreadyPublished):
                 cp.publish_one(self.SPEC, ctx)
-        self.assertEqual(asked, ["g/el9-gcc15-opt/ROOT/6.36-2",
-                                 "g/el9-gcc15-opt/Modules/ROOT/6.36-2"])
+        self.assertEqual(asked, ["g/el9-gcc15-opt/ROOT/6.36-2"])
         # A noarch package's modulefile goes to the build arch, not "share".
         noarch = dict(self.SPEC, effective_architecture="share")
         self.assertEqual(cp._spec_path(noarch, ctx, "modules"), "g/el9-gcc15-opt/Modules/ROOT")
@@ -856,11 +922,10 @@ class TestPackagesAndReleaseView(unittest.TestCase):
                                sent.append((lbl, k.get("identity"), k.get("identity_hash", ""),
                                             k.get("replace", False))) or "J"):
             cp.publish_one(self.SPEC, ctx)
-        # The package is replaced under its own hash; its modulefile never is,
-        # and keeps its identity, so one already there is skipped.
+        # The package is replaced under its own hash; its modulefile is inside
+        # it, and its link (same path) needs no change.
         self.assertEqual(sent, [
-            ("ROOT@6.36-2(pkg)", "g/el9-gcc15-opt/ROOT/6.36-2", "h1", True),
-            ("ROOT@6.36-2(modules)", "g/el9-gcc15-opt/Modules/ROOT/6.36-2", "", False)])
+            ("ROOT@6.36-2(pkg)", "g/el9-gcc15-opt/ROOT/6.36-2", "h1", True)])
 
     def test_replace_needs_this_builds_hash(self):
         from unittest import mock

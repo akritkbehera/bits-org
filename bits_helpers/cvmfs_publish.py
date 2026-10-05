@@ -627,6 +627,37 @@ def native_path(spec, ctx):
     return _spec_path(spec, dict(ctx, templates=tm), "path", arch=ctx["arch"])
 
 
+def module_links(ctx, specs):
+    """(modules root, [(modulefile path, its file in the package)]) for the
+    packages whose modulefile is not published yet, or None without a fixed
+    modules directory. The link replaces the separate copy: modulefiles find
+    their package through $BASEDIR, not their own location, and module names
+    come from the link's path."""
+    root = (fixed_dir(ctx, "modules")
+            if (ctx.get("templates") or {}).get("modules") else None)
+    if not root:
+        return None
+    links = []
+    for s_ in specs:
+        mod = _spec_path(s_, ctx, "modules")
+        if not mod:
+            continue
+        rev = s_.get("revision", "")
+        link = "%s/%s" % (mod, s_.get("version", "") + ("-" + rev if rev else ""))
+        target = "%s/etc/modulefiles/%s" % (package_path(s_, ctx), s_["package"])
+        has = s_.get("_modulefile")   # known when this run extracted the package
+        if ctx["submit"]:
+            st = published_state(ctx, link)
+            if st and st.get("exists"):
+                continue
+            if has is None:           # published before: ask whether it has one
+                st = published_state(ctx, target)
+                has = bool(st and st.get("exists"))
+        if has:
+            links.append((link, target))
+    return root, links
+
+
 def publish_links(ctx, root, links, label):
     """Publish relative symlinks (view path, target) rooted at *root* as one job.
     Returns (job id, None) or (None, error). Ingest first and never replace: the
@@ -930,7 +961,8 @@ def build_view_tar(links, root, tmp_dir=None):
 def publish_one(spec, ctx):
     """Full producer pipeline for ONE package, staged OR ingest path. Mirrors the CI loop
     body: locate tar -> untar -> resolve path -> relocate -> relativise -> tar ->
-    cvmfs-stage -> submit; plus the modulefile as a second job. Returns a list of
+    cvmfs-stage -> submit; plus the modulefile as a second job, unless a fixed
+    modules directory gets a link to it instead (module_links). Returns a list of
     (job_id, label). ctx is a dict of shared config (repo, prefix, tars_root, ...).
     An empty list means the package had no tar (system-provided) and was skipped.
     """
@@ -947,11 +979,18 @@ def publish_one(spec, ctx):
     skip_pkg = False   # the tree is there: publish only its missing modulefile
     replace = False    # another build's tree is there: replace it
     publish_once = bool((ctx.get("templates") or {}).get("packages"))
+    # The package carries its modulefile (etc/modulefiles/<pkg>); with a fixed
+    # modules directory it gets a link there, one job for the whole build
+    # (module_links), instead of a copy published as a commit of its own.
+    link_modules = publish_once and bool(
+        (ctx.get("templates") or {}).get("modules") and fixed_dir(ctx, "modules"))
     if publish_once and ctx.get("submit", True):
         path = package_path(spec, ctx)
         state = published_state(ctx, path)
         if state and state.get("exists"):
             if state.get("hash") and state["hash"] == spec.get("hash"):
+                if link_modules:
+                    raise AlreadyPublished(path)   # its link: module_links
                 mod = _spec_path(spec, ctx, "modules")
                 mstate = published_state(ctx, "%s/%s" % (mod, vdir)) if mod else None
                 if mstate is None or mstate.get("exists"):
@@ -1052,9 +1091,11 @@ def publish_one(spec, ctx):
             jobs.append((jid, _lbl))
 
         # Modulefile: a package that ships etc/modulefiles/<pkg> publishes it as
-        # a SECOND prepub job at the modules path (mirrors the CI loop).
+        # a SECOND prepub job at the modules path (mirrors the CI loop) -- only
+        # without a fixed modules directory, which module_links fills instead.
         modfile = os.path.join(pkgroot, "etc", "modulefiles", pkg)
-        if os.path.isfile(modfile):
+        spec["_modulefile"] = os.path.isfile(modfile)   # for module_links
+        if spec["_modulefile"] and not link_modules:
             mod_path = resolve_pkg_path(
                 pkgroot, ctx["repo"], pkg, vdir, ver, rev, ctx.get("platform", ""),
                 ctx.get("install_dir", ""), commit, ctx.get("user", ""), family,
@@ -1434,9 +1475,22 @@ def main(argv=None):
         if aliases:
             label = "aliases@%s" % pkgs_root
             jid, err = publish_links(ctx, pkgs_root, aliases, label)
-            _emit(["PUBLISHED %s %s" % (jid, label)] if jid else
+            # err, not jid, decides: a dry run publishes with an empty job id.
+            _emit(["PUBLISHED %s %s" % (jid, label)] if err is None else
                   ["FAILED %d package alias(es) in %s: %s" % (len(aliases), pkgs_root, err)])
-            rc |= 0 if jid else 1
+            rc |= 0 if err is None else 1
+
+    # The modulefiles: one job linking each new package's own modulefile into
+    # the modules directory, after the packages. Only packages that published
+    # (or were there) get one, so this need not wait for a clean run.
+    mlinks = module_links(ctx, in_view) if (templates or {}).get("packages") else None
+    if mlinks and mlinks[1]:
+        mroot, links = mlinks
+        label = "modulefiles@%s" % mroot
+        jid, err = publish_links(ctx, mroot, links, label)
+        _emit(["PUBLISHED %s %s" % (jid, label)] if err is None else
+              ["FAILED %d modulefile link(s) in %s: %s" % (len(links), mroot, err)])
+        rc |= 0 if err is None else 1
 
     # The release view goes in only over a complete set of packages.
     if a.release_view:
@@ -1457,15 +1511,14 @@ def main(argv=None):
             label = "release-view@%s" % root
             jid, err = (publish_links(ctx, root, links, label) if links
                         else (None, None))
-            if jid:
-                _emit(["PUBLISHED %s %s" % (jid, label)])
-            elif not links:
-                jid = True   # complete already: the merged view still follows
+            if not links:   # complete already: the merged view still follows
                 _emit(["SKIPPED %s: every link is already published" % label])
+            elif err is None:   # (a dry run publishes with an empty job id)
+                _emit(["PUBLISHED %s %s" % (jid, label)])
             else:
                 rc = 1
                 _emit(["FAILED release view (%s)" % err])
-            if jid and ctx["templates"].get("views"):
+            if err is None and ctx["templates"].get("views"):
                 order = {id(sp): i for i, sp in enumerate(publishable)}
                 rc |= _publish_merged_view(ctx, sorted(in_view, key=lambda sp: order[id(sp)]), _emit)
     return rc

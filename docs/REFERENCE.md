@@ -1933,7 +1933,13 @@ modulefiles resolve against ($BASEDIR/<pkg>/<ver-rev>). Packages published
 elsewhere (noarch packages, a toolchain with [`own_hash: true`](#shared-toolchains-own_hash)) get a relative symlink there. With the
 ALICE-style templates
 `{prefix}/{arch}/Packages/…` and `{prefix}/{arch}/Modules/modulefiles/{pkg}`,
-`BITS_MODULEDIR=<prefix> BITS_PLATFORM=<arch> bitsenv …` then works unchanged. Template tokens: `{pkg} {version} {revision} {tag}`
+`BITS_MODULEDIR=<prefix> BITS_PLATFORM=<arch> bitsenv …` then works unchanged.
+A package's modulefile is published inside it (`etc/modulefiles/<pkg>`); after
+the packages, one job adds a relative symlink `<modules dir>/<pkg>/<ver-rev>` to
+it for each package that has none yet, instead of a commit per modulefile. Like
+the release view, it merges into an existing directory and so needs prepub's
+ingest path; two publishes adding the same links at the same time make the
+second one fail (the next publish finds them there). Template tokens: `{pkg} {version} {revision} {tag}`
 (version-revision) `{family} {platform}` (console platform, e.g. `x86_64-el9`)
 `{arch}` (build arch, e.g. `x86_64-el9-gcc15-opt`) `{release}` `{day}`.
 
@@ -1945,7 +1951,7 @@ then the build) should pass the same `--day` to both, so the two agree across a
 UTC midnight.
 
 When a `cvmfs_packages_template` is set, each package upload carries its target
-path and build hash (a modulefile upload carries the path only), so cvmfs-prepub
+path and build hash, so cvmfs-prepub
 completes a rerun queued behind the original without publishing it twice, and
 refuses a path another build published. With `--replace-on-conflict` a package
 whose published hash differs is sent with `replace`: prepub deletes the old
