@@ -220,6 +220,10 @@ def _scan_local_tars(spec: dict, work_dir: str, architecture: str) -> bool:
         if not match:
             continue
         rev_hash = match.group(1)
+        if (spec.get("_revision_policy_local_fallback")
+                and rev_hash == spec.get("hash")
+                and name.endswith("-{}.{}.tar.gz".format(spec["hash"], spec_arch))):
+            return True
         if "local" in name:
             if rev_hash in spec.get("local_hashes", []):
                 return True
@@ -240,7 +244,7 @@ def _is_already_installed(spec: dict, work_dir: str, architecture: str) -> bool:
 
 
 def _classify(spec: dict, work_dir: str, architecture: str,
-              sync_helper=None) -> str:
+              sync_helper=None, write_store=None) -> str:
     """Return the state string for one resolved package spec."""
     pkg = spec["package"]
 
@@ -267,20 +271,29 @@ def _classify(spec: dict, work_dir: str, architecture: str,
             for h in spec.get("remote_hashes", []):
                 if pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff) is not None:
                     return FROM_REMOTE_STORE
-            return BUILD_FROM_SOURCE
-        try:
-            sync_helper.fetch_tarball(spec)
-            tar_hash_dir = join(
-                work_dir,
-                "TARS", effective_arch(spec, architecture),
-                "store", spec["hash"][:2], spec["hash"],
-            )
-            tarballs = [t for t in glob(join(tar_hash_dir, "*gz"))
-                        if os.path.isfile(t)]
-            if tarballs:
-                return FROM_REMOTE_STORE
-        except Exception:
-            pass
+        else:
+            try:
+                sync_helper.fetch_tarball(spec)
+                tar_hash_dir = join(
+                    work_dir,
+                    "TARS", effective_arch(spec, architecture),
+                    "store", spec["hash"][:2], spec["hash"],
+                )
+                tarballs = [t for t in glob(join(tar_hash_dir, "*gz"))
+                            if os.path.isfile(t)]
+                if tarballs:
+                    return FROM_REMOTE_STORE
+            except Exception:
+                pass
+    has_write_store = (bool(getattr(sync_helper, "writeStore", ""))
+                       if write_store is None else bool(write_store))
+    if spec.get("_revision_policy_hash_injected") and not has_write_store:
+        from bits_helpers.hashing import apply_local_hash_fallback
+        apply_local_hash_fallback(spec, write_store=False, reusable=False)
+        if _is_already_installed(spec, work_dir, architecture):
+            return ALREADY_INSTALLED
+        if _scan_local_tars(spec, work_dir, architecture):
+            return FROM_STORE
     return BUILD_FROM_SOURCE
 
 
@@ -523,6 +536,7 @@ def doStatus(args, parser) -> None:
 
     hash_error_pkgs: List[str] = []
 
+    status_write_store = bool(getattr(sync_helper, "writeStore", ""))
     for p in buildOrder:
         spec = specs[p]
 
@@ -594,7 +608,11 @@ def doStatus(args, parser) -> None:
             spec["hash"] = spec["remote_revision_hash"]
             spec["revision"] = "1"
 
-        state = _classify(spec, work_dir, args.architecture, sync_helper)
+        state = _classify(spec, work_dir, args.architecture, sync_helper,
+                          write_store=status_write_store)
+        if spec["is_devel_pkg"]:
+            # Build disables remote writes after reaching a development package.
+            status_write_store = False
         version_str = spec.get("version", "?")
         if spec["is_devel_pkg"]:
             version_str = "{} (dev)".format(version_str)

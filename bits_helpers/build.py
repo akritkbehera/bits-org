@@ -1856,11 +1856,6 @@ def build_one_package(p, ctx):
   # a single, definitive hash.
   debug("Calculating hash.")
   debug("develPkgs = %r", sorted(spec["package"] for spec in specs.values() if spec["is_devel_pkg"]))
-  # Hash revisions follow the writer state used by the regular revision
-  # counter. Development packages disable the writer below, so they use local
-  # hashes even when the command started with a writable store.
-  spec["revision_policy_local"] = (
-    not bool(getattr(syncHelper, "writeStore", "")) or spec["is_devel_pkg"])
   storeHook(p, specs, args.defaults[0])
   storeHashes(p, specs, considerRelocation=(
     raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH
@@ -1970,12 +1965,9 @@ def build_one_package(p, ctx):
         "this version coexist the convenience symlink will be silently "
         "overwritten.", spec["package"], spec["package"], spec["version"],
       )
-    # Hash revisions use the hash family selected by the local/remote revision
-    # policy. Other forced revisions retain the historical remote hash choice.
-    if spec.get("_revision_policy_hash_injected"):
-      spec["hash"] = forced
-    else:
-      spec["hash"] = spec["remote_revision_hash"]
+    # Keep the remote hash for lookup and reuse. A policy-injected label can
+    # fall back to the local hash after the remote reuse attempt below.
+    spec["hash"] = spec["remote_revision_hash"]
   else:
     # Normal revision-counter logic: scan existing symlinks and find the
     # next free (or already-matching) revision number.
@@ -2432,6 +2424,37 @@ def build_one_package(p, ctx):
         else:
           debug("Trusted reuse: %s@%s verified against signed manifest",
                 spec["package"], spec["hash"])
+
+    # A hash-policy package first looks up the remote identity, so read-only
+    # builds can reuse CI artifacts. Only after that lookup misses do we switch
+    # the label and store path to the local identity for this build.
+    from bits_helpers.hashing import apply_local_hash_fallback
+    if apply_local_hash_fallback(
+        spec, getattr(syncHelper, "writeStore", ""), spec["cachedTarball"]):
+      create_version_link(spec, args.architecture, workDir)
+      local_hash_dir = os.path.join(
+          workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
+      local_tarballs = [t for t in glob(os.path.join(local_hash_dir, "*gz"))
+                        if os.path.isfile(t)]
+      spec["cachedTarball"] = _select_cached_tarball(
+          local_tarballs, spec, effective_arch(spec, args.architecture))
+
+      # A prior local hash-policy build may already be installed. Check it only
+      # after the remote lookup, preserving remote reuse preference.
+      local_hash_path = _pkg_install_path(
+          workDir, effective_arch(spec, args.architecture), spec)
+      if readHashFile(local_hash_path + "/.build-hash") == spec["hash"]:
+        if getattr(args, "manifest", None) is not None:
+          args.manifest.add_package(
+              spec, "already_installed",
+              effective_architecture=effective_arch(spec, args.architecture))
+        try:
+          from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
+          _touch_sentinel(workDir, args.architecture, spec["package"], ver_rev(spec))
+        except Exception:
+          pass
+        return
+      shutil.rmtree(local_hash_path.encode("utf-8"), True)
 
   # The actual build script.
   

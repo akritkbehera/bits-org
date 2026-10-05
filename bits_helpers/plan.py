@@ -106,6 +106,19 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
         if trusted is not None and h not in trusted:
           return REMOTE_UNSIGNED, h, rev
         return REMOTE, h, rev
+  if spec.get("_revision_policy_hash_injected") and not write_store:
+    from bits_helpers.hashing import apply_local_hash_fallback
+    local_hash = spec["local_revision_hash"]
+    local_files = glob(os.path.join(
+        work_dir, resolve_store_path(eff, local_hash), "*.tar.gz"))
+    local_rev = pick_revision(local_files, spec, eff, forced=local_hash)
+    if local_rev is not None:
+      state = (INSTALLED if _installed(spec, work_dir, eff, local_hash)
+               else LOCAL_TARBALL)
+      apply_local_hash_fallback(spec, write_store, reusable=False)
+      return state, local_hash, local_rev
+    apply_local_hash_fallback(spec, write_store, reusable=False)
+    return BUILD, spec["hash"], spec["revision"]
   if forced is not None or write_store:
     return BUILD, spec["remote_revision_hash"], forced or ""
   return BUILD, spec["local_revision_hash"], ""
