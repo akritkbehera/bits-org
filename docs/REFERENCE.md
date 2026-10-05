@@ -3006,9 +3006,11 @@ packages keep counter (`localN`) revisions: they are built from a local checkout
 under their local hash.
 The hash includes tracked dependencies; this is the package build hash, not its
 source commit hash. Install paths and tarball names use `<version>-<hash>` with
-no `local` prefix, through the existing forced-revision mechanism. Uploads keep
-using the same content-addressed store paths. Omitting `revision_policy` retains
-the existing revision-counter behavior.
+no `local` prefix, through the existing forced-revision mechanism. With a
+read-only store, bits checks for the remote hash first and reuses it when
+available; if it must build the package locally, it uses the local hash as the
+label and store path. Uploads keep using the same content-addressed store paths.
+Omitting `revision_policy` retains the existing revision-counter behavior.
 
 #### How the install path changes
 

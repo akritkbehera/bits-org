@@ -15,7 +15,7 @@ from bits_helpers.status import _scan_local_tars
 
 
 class RevisionPolicyTest(unittest.TestCase):
-    def specs(self, defaults=None, force=None, overrides=None, local_policy=False):
+    def specs(self, defaults=None, force=None, overrides=None):
         recipes = {
             "app": "package: app\nversion: '1'\n" + (force or "") + "---\necho build\n",
             "defaults-release": "package: defaults-release\nversion: '1'\n---\n",
@@ -39,7 +39,6 @@ class RevisionPolicyTest(unittest.TestCase):
             )
         for name in ("defaults-release", "app"):
             specs[name].update(commit_hash="0", is_devel_pkg=False)
-            specs[name]["revision_policy_local"] = local_policy
             storeHashes(name, specs, considerRelocation=False)
             specs[name]["hash"] = specs[name]["remote_revision_hash"]
         return specs
@@ -59,12 +58,6 @@ class RevisionPolicyTest(unittest.TestCase):
             self.assertEqual(spec["force_revision"], spec["hash"])
         self.assertNotEqual(hashed["app"]["force_revision"],
                             hashed["defaults-release"]["force_revision"])
-
-    def test_hash_policy_uses_local_hash_when_revision_would_be_local(self):
-        local = self.specs({"revision_policy": "hash"}, local_policy=True)
-        for spec in local.values():
-            self.assertEqual(spec["force_revision"], spec["local_revision_hash"])
-            self.assertNotEqual(spec["force_revision"], spec["remote_revision_hash"])
 
     def test_explicit_revisions_keep_precedence(self):
         for value in ("", "rc1"):
@@ -151,6 +144,60 @@ class RevisionPolicyReviewTest(unittest.TestCase):
         spec["is_devel_pkg"] = False
         _apply_revision_policy(spec)
         self.assertEqual(spec["force_revision"], self.HASH)
+
+    def test_build_hash_fallback_waits_until_remote_reuse_misses(self):
+        from bits_helpers.hashing import apply_local_hash_fallback
+        spec = {"_revision_policy_hash_injected": True,
+                "remote_revision_hash": self.HASH,
+                "local_revision_hash": "de" + "ad" * 19,
+                "force_revision": self.HASH, "revision": self.HASH,
+                "hash": self.HASH}
+        self.assertFalse(apply_local_hash_fallback(spec, False, reusable=True))
+        self.assertEqual(spec["hash"], self.HASH)
+        self.assertEqual(spec["force_revision"], self.HASH)
+
+        self.assertTrue(apply_local_hash_fallback(spec, False, reusable=False))
+        self.assertEqual(spec["hash"], spec["local_revision_hash"])
+        self.assertEqual(spec["force_revision"], spec["local_revision_hash"])
+        self.assertFalse(apply_local_hash_fallback(spec, True, reusable=False))
+
+    def test_plan_reuses_remote_hash_before_local_build_fallback(self):
+        from bits_helpers.plan import REMOTE, classify
+        spec = {"package": "app", "version": "1", "revision_policy": "hash",
+                "_revision_policy_hash_injected": True,
+                "force_revision": self.HASH, "remote_revision_hash": self.HASH,
+                "local_revision_hash": "de" + "ad" * 19,
+                "remote_hashes": [self.HASH], "local_hashes": [],
+                "hash": self.HASH, "requires": []}
+
+        class ReadOnlyStore:
+            writeStore = ""
+
+            @staticmethod
+            def list_store_tarballs(arch, pkg_hash):
+                return ["app-1-{}.{}.tar.gz".format(pkg_hash, arch)]
+
+        with tempfile.TemporaryDirectory() as work_dir:
+            state, pkg_hash, revision = classify(
+                spec, self.ARCH, work_dir, ReadOnlyStore(),
+                can_list=True, write_store=False, trusted=None)
+            self.assertEqual((state, pkg_hash, revision),
+                             (REMOTE, self.HASH, self.HASH))
+
+    def test_status_uses_local_hash_after_remote_lookup_misses(self):
+        from bits_helpers.status import BUILD_FROM_SOURCE, _classify
+        spec = {"package": "app", "version": "1", "revision_policy": "hash",
+                "_revision_policy_hash_injected": True,
+                "force_revision": self.HASH, "remote_revision_hash": self.HASH,
+                "local_revision_hash": "de" + "ad" * 19,
+                "remote_hashes": [self.HASH], "local_hashes": [],
+                "hash": self.HASH, "revision": self.HASH}
+        with tempfile.TemporaryDirectory() as work_dir:
+            state = _classify(spec, work_dir, self.ARCH, sync_helper=None,
+                              write_store=False)
+        self.assertEqual(state, BUILD_FROM_SOURCE)
+        self.assertEqual(spec["hash"], spec["local_revision_hash"])
+        self.assertEqual(spec["revision"], spec["local_revision_hash"])
 
     def test_untracked_label_fatal_only_under_hash_policy(self):
         from bits_helpers import build
