@@ -706,7 +706,8 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         sent = []
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(cp, "publish_one", fake), \
-             mock.patch.object(cp, "published_state", lambda c, p: base_state), \
+             mock.patch.object(cp, "published_state", lambda c, p: (
+                 base_state(p) if callable(base_state) else base_state)), \
              mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, fp=None:
                                sent.append((p, lbl, c["publish_path"])) or "JV"), \
              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -722,7 +723,9 @@ class TestPackagesAndReleaseView(unittest.TestCase):
             if spec["package"] == "six":
                 raise cp.AlreadyPublished("g/el9-gcc15-opt/six/6.36-2")
             return [("J1", "ROOT@6.36-2(pkg)")]
-        rc, sent, out, _ = self._main(fake, ["--release-view"])
+        # Packages (and BASE) already there, release-view links not yet.
+        new_links = lambda p: {"exists": "/releases/" not in p}
+        rc, sent, out, _ = self._main(fake, ["--release-view"], base_state=new_links)
         self.assertEqual(rc, 0)
         self.assertIn("SKIPPED six@6.36: already published", out)
         # One view job, always via ingest (merges into a shared release dir).
@@ -731,6 +734,37 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         # Without the flag: packages only.
         rc, sent, _, _ = self._main(fake)
         self.assertEqual((rc, sent), (0, []))
+
+    def test_release_view_links_only_what_is_missing(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        links = []
+        orig = cp.publish_links
+
+        def capture(ctx, root, lks, label):
+            links.extend(p for p, _ in lks)
+            return orig(ctx, root, lks, label)
+
+        def run(fake, state, templates=None):
+            links.clear()
+            with mock.patch.object(cp, "publish_links", capture):
+                return self._main(fake, ["--release-view"], templates=templates,
+                                  base_state=state)
+        published = lambda spec, ctx: [("J1", "%s(pkg)" % spec["package"])]
+        skip_all = lambda spec, ctx: (_ for _ in ()).throw(cp.AlreadyPublished("x"))
+        # Every link already there (published now or before): no release-view job,
+        # and the merged view step still runs (here: skipped, it exists too).
+        for fake in (published, skip_all):
+            rc, sent, out, _ = run(fake, {"exists": True},
+                                   templates=dict(self.TM, views="{prefix}/views/{release}/{arch}"))
+            self.assertEqual((rc, links), (0, []))
+            self.assertIn("every link is already published", out)
+            self.assertIn("SKIPPED merged view", out)
+        # Links missing, or prepub cannot tell: they are sent.
+        for state in ({"exists": False}, None):
+            rc, sent, out, _ = run(skip_all, state)
+            self.assertEqual((rc, len(links)), (0, 2))
+            self.assertIn("PUBLISHED JV release-view@g/releases/LCG_110", out)
 
     def test_view_falls_back_to_the_configured_path_without_ingest(self):
         import io, contextlib
@@ -750,7 +784,8 @@ class TestPackagesAndReleaseView(unittest.TestCase):
                 return "JV"
             err = io.StringIO()
             with mock.patch.object(cp, "publish_one", lambda s, c: [("J", "x")]), \
-                 mock.patch.object(cp, "published_state", lambda c, p: {"exists": True}), \
+                 mock.patch.object(cp, "published_state",
+                                   lambda c, p: {"exists": "/releases/" not in p}), \
                  mock.patch.object(cp, "_publish_tar", pub), \
                  contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                 rc = cp.main(["--manifest", m.name, "--repo", "r", "--arch", "el9-gcc15-opt",

@@ -1392,11 +1392,24 @@ def main(argv=None):
             _emit(["FAILED release view: not created, some packages failed"])
         elif in_view:
             root = view_root(ctx)
-            links = [(_spec_path(s, ctx, "view"), package_path(s, ctx)) for s in in_view]
+            # The release root is shared (earlier builds, other platforms) and
+            # ingest only adds: send only the links that are not there yet.
+            links = []
+            for s_ in in_view:
+                vpath = _spec_path(s_, ctx, "view")
+                if not vpath:
+                    continue
+                st = published_state(ctx, vpath) if ctx["submit"] else None
+                if not (st and st.get("exists")):
+                    links.append((vpath, package_path(s_, ctx)))
             label = "release-view@%s" % root
-            jid, err = publish_links(ctx, root, [lk for lk in links if lk[0]], label)
+            jid, err = (publish_links(ctx, root, links, label) if links
+                        else (None, None))
             if jid:
                 _emit(["PUBLISHED %s %s" % (jid, label)])
+            elif not links:
+                jid = True   # complete already: the merged view still follows
+                _emit(["SKIPPED %s: every link is already published" % label])
             else:
                 rc = 1
                 _emit(["FAILED release view (%s)" % err])
