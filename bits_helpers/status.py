@@ -43,6 +43,7 @@ from bits_helpers.utilities import (
     resolve_tag,
     topological_sort,
     ver_rev,
+    is_virtual_package,
 )
 from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
 from bits_helpers.arch import (
@@ -287,7 +288,8 @@ def _classify(spec: dict, work_dir: str, architecture: str,
                 pass
     has_write_store = (bool(getattr(sync_helper, "writeStore", ""))
                        if write_store is None else bool(write_store))
-    if spec.get("_revision_policy_hash_injected") and not has_write_store:
+    if (spec.get("_revision_policy_hash_injected") and not has_write_store
+            and not is_virtual_package(spec)):
         from bits_helpers.hashing import apply_local_hash_fallback
         apply_local_hash_fallback(spec, write_store=False, reusable=False)
         if _is_already_installed(spec, work_dir, architecture):
@@ -522,13 +524,32 @@ def doStatus(args, parser) -> None:
     # Processed in topological order so dependency hashes are available.
     rows: List[dict] = []
 
+    # Resolve the same read/write store inputs as `bits build`. Status does not
+    # write anything, but the presence of a write store changes the hash-policy
+    # label selected for packages that are not reusable from the read store.
+    write_store_url = (getattr(args, "writeStore", "")
+                       or os.environ.get("BITS_WRITE_STORE")
+                       or os.environ.get("WRITE_STORE") or "")
+    remote_store_url = (getattr(args, "remoteStore", "")
+                        or os.environ.get("BITS_REMOTE_STORE")
+                        or os.environ.get("REMOTE_STORE") or "")
+    if remote_store_url.endswith("::rw"):
+        if write_store_url:
+            parser.error("cannot specify ::rw and --write-store at the same time")
+        remote_store_url = remote_store_url[:-4]
+        write_store_url = remote_store_url
+    if getattr(args, "no_remote_store", False):
+        remote_store_url = ""
+    if not remote_store_url and write_store_url:
+        remote_store_url = write_store_url
+
     # Optional remote store for --check-store probing
     sync_helper = None
-    if getattr(args, "checkStore", False) and getattr(args, "remoteStore", ""):
+    if getattr(args, "checkStore", False) and remote_store_url:
         try:
             from bits_helpers.sync import remote_from_url
             sync_helper = remote_from_url(
-                args.remoteStore, "", args.architecture, work_dir,
+                remote_store_url, "", args.architecture, work_dir,
                 getattr(args, "insecure", False)
             )
         except Exception as exc:
@@ -536,7 +557,7 @@ def doStatus(args, parser) -> None:
 
     hash_error_pkgs: List[str] = []
 
-    status_write_store = bool(getattr(sync_helper, "writeStore", ""))
+    status_write_store = bool(write_store_url)
     for p in buildOrder:
         spec = specs[p]
 

@@ -324,6 +324,18 @@ class TestClassify(unittest.TestCase):
         spec["revision"] = "1"
         self.assertEqual(_classify(spec, self.tmp, self.arch), BUILD_FROM_SOURCE)
 
+    def test_hash_policy_fallback_does_not_change_virtual_package_hash(self):
+        rh = "aabb" + "0" * 36
+        lh = "ccdd" + "0" * 36
+        spec = self._spec(pkg="recipe-loader", source="",
+                          remote_revision_hash=rh, local_revision_hash=lh,
+                          remote_hashes=[rh], local_hashes=[lh])
+        spec.update(provides_repository=True, _revision_policy_hash_injected=True,
+                    force_revision=rh, hash=rh, revision=rh)
+        self.assertEqual(_classify(spec, self.tmp, self.arch), BUILD_FROM_SOURCE)
+        self.assertEqual(spec["hash"], rh)
+        self.assertEqual(spec["revision"], rh)
+
     def test_local_checkout_will_rebuild(self):
         spec = self._spec(pkg="MyAnalysis", version="dev", is_devel=True,
                           devel_hash="newhash", deps_hash="")
@@ -497,7 +509,7 @@ class TestDoStatus(unittest.TestCase):
 
     def _make_args(self, pkgname, json_output=False, check_store=False,
                    force_tracked=True, no_devel=None, disable=None,
-                   force_rebuild=None, fetch_repos=False):
+                   force_rebuild=None, fetch_repos=False, write_store=""):
         import argparse
         args = argparse.Namespace(
             pkgname        = pkgname,
@@ -513,6 +525,7 @@ class TestDoStatus(unittest.TestCase):
             force_rebuild  = force_rebuild or [],
             fetchRepos     = fetch_repos,
             remoteStore    = "",
+            writeStore     = write_store,
             no_remote_store = False,
             checkStore     = check_store,
             json_output    = json_output,
@@ -593,6 +606,60 @@ class TestDoStatus(unittest.TestCase):
                         status_mod.doStatus(args, parser)
             data = json.loads(mock_out.getvalue())
         self.assertEqual(data["packages"][0]["state"], BUILD_FROM_SOURCE)
+
+    @patch("bits_helpers.status.getPackageList")
+    @patch("bits_helpers.status.parseDefaults")
+    @patch("bits_helpers.status.readDefaults")
+    @patch("bits_helpers.hashing.storeHashes")
+    @patch("bits_helpers.build.storeHook")
+    def test_write_store_keeps_hash_policy_on_remote_hash(self, mock_hook,
+                                                           mock_store_hashes,
+                                                           mock_read_defaults,
+                                                           mock_parse_defaults,
+                                                           mock_get_package_list):
+        """A writable store means a missing hash-policy package keeps remote identity."""
+        rh = "aabbcc" + "0" * 34
+        lh = "ddeeff" + "0" * 34
+        mock_parse_defaults.return_value = (None, {}, {}, {})
+        mock_read_defaults.return_value = None
+
+        spec = _make_spec(pkg="mylib", version="1.0",
+                          remote_revision_hash=rh, local_revision_hash=lh,
+                          remote_hashes=[rh], local_hashes=[lh])
+        spec["revision_policy"] = "hash"
+
+        def fake_get_pkg_list(*args, **kwargs):
+            kwargs["specs"]["mylib"] = spec
+            return ([], ["mylib"], set(), None)
+        mock_get_package_list.side_effect = fake_get_pkg_list
+
+        def fake_store_hashes(p, specs, considerRelocation):
+            package = specs[p]
+            package["remote_revision_hash"] = rh
+            package["local_revision_hash"] = lh
+            package["remote_hashes"] = [rh]
+            package["local_hashes"] = [lh]
+            package["force_revision"] = rh
+            package["_revision_policy_hash_injected"] = True
+            package["deps_hash"] = ""
+        mock_store_hashes.side_effect = fake_store_hashes
+
+        args = self._make_args(["mylib"], json_output=True,
+                               write_store="b3://bits-write")
+        import bits_helpers.status as status_mod
+        with patch("sys.stdout", new_callable=StringIO) as mock_out:
+            with patch("bits_helpers.status.topological_sort", return_value=["mylib"]):
+                with patch("bits_helpers.status.compute_combined_arch", return_value=self.arch):
+                    with patch("bits_helpers.status.prunePaths"):
+                        import argparse
+                        parser = argparse.ArgumentParser()
+                        parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
+                        status_mod.doStatus(args, parser)
+            data = json.loads(mock_out.getvalue())
+
+        package = data["packages"][0]
+        self.assertEqual(package["hash"], rh)
+        self.assertEqual(package["state"], BUILD_FROM_SOURCE)
 
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")

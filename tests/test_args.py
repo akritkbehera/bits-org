@@ -61,6 +61,7 @@ CORRECT_BEHAVIOR = [
   ((), "build --force-unknown-architecture zlib --no-remote-store --remote-store rsync://test.local/", [("noSystem", None), ("remoteStore", "")]),
   ((), "build zlib --architecture slc7_x86-64"                                         , [("noSystem", None), ("preferSystem", False), ("remoteStore", "https://s3.cern.ch/swift/v1/alibuild-repo")]),
   ((), "build zlib --architecture ubuntu1804_x86-64"                                   , [("noSystem", None), ("preferSystem", False), ("remoteStore", "")]),
+  ((), "status zlib --write-store b3://bits-write"                                      , [("action", "status"), ("writeStore", "b3://bits-write")]),
   ((), "build zlib -a slc7_x86-64"                                                     , [("docker", False), ("dockerImage", None), ("docker_extra_args", ["--network=host", _MOCK_CPUSET_ARG])]),
   ((), "build zlib -a slc7_x86-64 --docker-image registry.cern.ch/alisw/some-builder"  , [("docker", True), ("dockerImage", "registry.cern.ch/alisw/some-builder")]),
   ((), "build zlib -a slc7_x86-64 --docker"                                            , [("docker", True), ("dockerImage", "gitlab-registry.cern.ch/bits/containers/x86_64-slc7:latest")]),

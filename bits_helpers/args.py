@@ -773,6 +773,11 @@ def add_status_arguments(subparsers, ctx):
       help="Remote binary store URL. Used only when --check-store is given.",
   )
   status_parser.add_argument(
+      "--write-store", dest="writeStore", metavar="STORE", default="",
+      help=("Writable binary store URL. Used to predict whether a hash-policy "
+            "package will use its remote or local hash."),
+  )
+  status_parser.add_argument(
       "--no-remote-store", dest="no_remote_store", action="store_true", default=False,
       help="Disable any remote store (even if a default is configured).",
   )
