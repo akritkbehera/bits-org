@@ -24,10 +24,13 @@ from bits_helpers.status import (
     _emit_json,
     _emit_table,
     _is_already_installed,
+    _prepare_spec_for_hash,
     _resolve_commit_hash,
     _scan_local_tars,
     _try_populate_refs,
 )
+from bits_helpers.hashing import storeHashes
+from bits_helpers.build import add_initdotsh_hash_marker
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -138,6 +141,32 @@ class TestTryPopulateRefs(unittest.TestCase):
 # ── _resolve_commit_hash ───────────────────────────────────────────────────────
 
 class TestResolveCommitHash(unittest.TestCase):
+    def test_defaults_hash_includes_build_initdotsh_mode_marker(self):
+        spec = OrderedDict({
+            "package": "defaults-release",
+            "version": "vCMS",
+            "tag": "vCMS",
+            "recipe": "",
+            "pkg_family": "",
+            "commit_hash": "0",
+            "scm_refs": {},
+            "is_devel_pkg": False,
+            "requires": [],
+            "env": OrderedDict([
+                ("CXXSTD", "20"),
+                ("DCMAKE_BUILD_TYPE", "Release"),
+            ]),
+        })
+        spec["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
+
+        storeHashes("defaults-release", {"defaults-release": spec}, False)
+
+        self.assertEqual(
+            spec["remote_revision_hash"],
+            "0028228fa91a801048bac07afed5974c27e293dc",
+        )
+        self.assertEqual(spec["local_revision_hash"], spec["remote_revision_hash"])
+
     def test_branch_ref_resolved(self):
         spec = _make_spec(tag="main")
         spec["scm_refs"] = {"refs/heads/main": "deadbeef"}
@@ -156,6 +185,33 @@ class TestResolveCommitHash(unittest.TestCase):
         spec["scm_refs"] = {}
         _resolve_commit_hash(spec)
         self.assertEqual(spec["commit_hash"], "0")
+
+    def test_tarball_sources_use_tag_as_commit_hash(self):
+        """Tarball-only recipes must hash like build, which uses the tag."""
+        spec = _make_spec(tag="1.0")
+        del spec["source"]
+        spec["sources"] = ["https://example.org/source-1.0.tar.gz"]
+        spec["commit_hash"] = "0"
+        spec["scm_refs"] = {}
+        _resolve_commit_hash(spec)
+        self.assertEqual(spec["commit_hash"], "1.0")
+
+    def test_hash_inputs_expand_recipe_variables_like_build(self):
+        spec = _make_spec(tag="%(gmpVersion)s")
+        del spec["source"]
+        spec["commit_hash"] = "0"
+        spec["variables"] = OrderedDict(gmpVersion="6.3.0")
+        spec["sources"] = ["https://example.org/gmp-%(gmpVersion)s.tar.gz"]
+        spec["patches"] = ["gmp-%(gmpVersion)s.patch"]
+        spec["recipe"] = "build %(gmpVersion)s"
+
+        _prepare_spec_for_hash(spec, ["release"], {}, "/recipes")
+
+        self.assertEqual(spec["tag"], "6.3.0")
+        self.assertEqual(spec["commit_hash"], "6.3.0")
+        self.assertEqual(spec["sources"], ["https://example.org/gmp-6.3.0.tar.gz"])
+        self.assertEqual(spec["patches"], ["gmp-6.3.0.patch"])
+        self.assertEqual(spec["recipe"], "build 6.3.0")
 
     def test_date_tag_expanded(self):
         spec = _make_spec(tag="v%(year)s-1")
@@ -561,6 +617,82 @@ class TestDoStatus(unittest.TestCase):
             with open(defaults_file, "w") as fh:
                 fh.write("package: defaults-release\nversion: \"1\"\n---\n")
         return config_dir
+
+    def test_defaults_release_hash_matches_build_hash(self):
+        """Status must hash defaults-release like build's defaults reader."""
+        from copy import deepcopy
+        import argparse
+        import bits_helpers.status as status_mod
+
+        base_env = OrderedDict([
+            ("CXXSTD", "20"),
+            ("DCMAKE_BUILD_TYPE", "Release"),
+        ])
+        defaults_meta = {"env": base_env.copy(), "variables": {}}
+        status_spec = OrderedDict({
+            "package": "defaults-release",
+            "version": "vCMS",
+            "tag": "vCMS",
+            "recipe": "",
+            "pkg_family": "",
+            "revision_policy": "hash",
+            "commit_hash": "0",
+            "scm_refs": {},
+            "is_devel_pkg": False,
+            "requires": [],
+            "env": OrderedDict(),
+        })
+
+        def parse_defaults(disable, reader, *args):
+            meta, _body = reader()
+            return None, {"defaults-release": {"env": meta["env"]}}, {}, meta
+
+        def get_packages(*args, **kwargs):
+            status_spec["env"] = kwargs["overrides"]["defaults-release"]["env"]
+            kwargs["specs"]["defaults-release"] = status_spec
+            return [], ["defaults-release"], set(), None
+
+        args = self._make_args(["defaults-release"], json_output=True)
+        with patch("bits_helpers.status.readDefaults",
+                   return_value=(deepcopy(defaults_meta), "")), \
+             patch("bits_helpers.status.parseDefaults", side_effect=parse_defaults), \
+             patch("bits_helpers.status.getPackageList", side_effect=get_packages), \
+             patch("bits_helpers.status.topological_sort",
+                   return_value=["defaults-release"]), \
+             patch("bits_helpers.status.compute_combined_arch", return_value=self.arch), \
+             patch("bits_helpers.status.prunePaths"), \
+             patch("bits_helpers.repo_provider.resolve_config_dir"), \
+             patch("bits_helpers.repo_provider.load_always_on_providers", return_value={}), \
+             patch("bits_helpers.repo_provider.fetch_repo_providers_iteratively",
+                   return_value={}), \
+             patch("bits_helpers.build.storeHook"), \
+             patch("sys.stdout", new_callable=StringIO) as out:
+            parser = argparse.ArgumentParser()
+            parser.error = lambda msg: (_ for _ in ()).throw(SystemExit(msg))
+            status_mod.doStatus(args, parser)
+            status_hash = json.loads(out.getvalue())["packages"][0]["hash"]
+
+        # Build uses this helper in its defaults reader before creating the
+        # defaults-release package spec. Hash that build-side spec independently
+        # and require status to report the same identity.
+        build_meta = {"env": base_env.copy()}
+        add_initdotsh_hash_marker(build_meta, enabled=True)
+        build_spec = OrderedDict({
+            "package": "defaults-release",
+            "version": "vCMS",
+            "tag": "vCMS",
+            "recipe": "",
+            "pkg_family": "",
+            "revision_policy": "hash",
+            "commit_hash": "0",
+            "scm_refs": {},
+            "is_devel_pkg": False,
+            "requires": [],
+            "env": build_meta["env"],
+        })
+        storeHashes("defaults-release", {"defaults-release": build_spec}, False)
+
+        self.assertEqual(status_hash, build_spec["remote_revision_hash"])
 
     @patch("bits_helpers.status.getPackageList")
     @patch("bits_helpers.status.parseDefaults")

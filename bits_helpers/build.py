@@ -96,6 +96,17 @@ def apply_defaults_legacy_initdotsh(args, defaults_meta, explicit) -> bool:
   return True
 
 
+def add_initdotsh_hash_marker(defaults_meta, enabled) -> None:
+  """Add the module-based init.sh mode to the defaults package hash inputs."""
+  if not enabled:
+    return
+  env = defaults_meta.get("env")
+  if not isinstance(env, dict):
+    env = OrderedDict()
+    defaults_meta["env"] = env
+  env["BITS_INITDOTSH_FROM_MODULES"] = "1"
+
+
 def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None) -> None:
   """Background task: prefetch the prebuilt tarball + all source archives.
 
@@ -2859,12 +2870,7 @@ def doBuild(args, parser):
     # reconstruction on it. In legacy mode (--legacy-initdotsh) nothing is added,
     # so its hashes are byte-identical to the pre-modules default (alidist tarballs
     # stay reusable).
-    if getattr(args, "initdotshFromModules", False):
-      from collections import OrderedDict as _OD
-      # An empty `env:` block parses to None, so setdefault would keep it None.
-      if not isinstance(meta.get("env"), dict):
-        meta["env"] = _OD()
-      meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
+    add_initdotsh_hash_marker(meta, getattr(args, "initdotshFromModules", False))
     return meta, body
   # Deriving the dependency env from the dependencies' modulefiles is the default.
   # --legacy-initdotsh (CLI) or BITS_LEGACY_INITDOTSH=1 (the environment — the

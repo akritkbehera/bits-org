@@ -39,8 +39,11 @@ from bits_helpers.sl import Sapling
 from bits_helpers.log import debug, info, warning, banner
 from bits_helpers.packages import getPackageList
 from bits_helpers.utilities import (
+    apply_version_from,
     prunePaths,
+    resolve_spec_data,
     resolve_tag,
+    resolve_version,
     topological_sort,
     ver_rev,
     is_virtual_package,
@@ -150,8 +153,12 @@ def _resolve_commit_hash(spec: dict, default_vars=None) -> None:
     except (KeyError, ValueError):
         pass
     if "source" not in spec:
-        # Package has no source (e.g. a meta-package); commit_hash is "0".
-        spec.setdefault("commit_hash", "0")
+        # Tarball-source recipes use their resolved tag (usually the version)
+        # as commit_hash, matching doBuild. Only truly source-less packages
+        # such as defaults-release use "0". Leaving tarball recipes at the
+        # initialization value "0" changes their hashes and prevents status
+        # from finding the artifacts build published.
+        spec["commit_hash"] = spec["tag"] if "sources" in spec else "0"
         return
     scm_refs = spec.get("scm_refs", {})
     # Prefer branch head; fall back to literal tag / commit hash string.
@@ -159,6 +166,56 @@ def _resolve_commit_hash(spec: dict, default_vars=None) -> None:
         scm_refs.get("refs/heads/" + spec["tag"])
         or spec["tag"]
     )
+
+
+def _prepare_spec_for_hash(spec: dict, defaults: list, default_vars: dict,
+                           config_dir: str, branch_basename: str = "",
+                           branch_stream: str = "") -> None:
+    """Resolve hash inputs the same way build.py does before storeHashes()."""
+    from bits_helpers.paths import resolveLocalPath
+
+    apply_version_from(spec, default_vars)
+    if "tag" not in spec:
+        spec["tag"] = spec["version"]
+
+    if "source" in spec:
+        spec["tag"] = resolve_tag(spec, default_vars)
+        spec["commit_hash"] = (
+            spec.get("scm_refs", {}).get("refs/heads/" + spec["tag"])
+            or spec["tag"]
+        )
+    if "sources" in spec:
+        spec["tag"] = resolve_tag(spec, default_vars)
+        spec["sources"] = [resolveLocalPath(config_dir, source)
+                            for source in spec["sources"]]
+        spec["commit_hash"] = spec["tag"]
+    elif "source" not in spec and not spec.get("version_from"):
+        spec["commit_hash"] = "0"
+
+    spec["version"] = resolve_version(
+        spec, defaults, branch_basename, branch_stream)
+    spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
+    for key, value in spec["variables"].items():
+        spec["variables"][key] = resolve_spec_data(
+            spec, value, defaults, branch_basename, branch_stream)
+    if "source" in spec:
+        spec["source"] = resolve_spec_data(
+            spec, spec["source"], defaults, branch_basename, branch_stream)
+    if "sources" in spec:
+        spec["sources"] = [resolve_spec_data(
+            spec, source, defaults, branch_basename, branch_stream)
+            for source in spec["sources"]]
+    if "patches" in spec:
+        spec["patches"] = [resolve_spec_data(
+            spec, patch, defaults, branch_basename, branch_stream)
+            for patch in spec["patches"]]
+
+    default_vars = default_vars or None
+    recipe_opts_in = bool(spec["variables"] or spec.get("expand_recipe", False))
+    if recipe_opts_in or default_vars:
+        spec["recipe"] = resolve_spec_data(
+            spec, spec["recipe"], defaults, branch_basename, branch_stream,
+            default_vars=default_vars, strict=recipe_opts_in)
 
 
 def _fetch_refs_with_clone(spec: dict, reference_sources: str,
@@ -270,7 +327,10 @@ def _classify(spec: dict, work_dir: str, architecture: str,
         eff = effective_arch(spec, architecture)
         if store_can_list(sync_helper):
             for h in spec.get("remote_hashes", []):
-                if pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff) is not None:
+                names = sync_helper.list_store_tarballs(eff, h)
+                debug("Remote status lookup for %s@%s hash %s: %d candidate(s)",
+                      pkg, spec.get("version", "?"), h, len(names))
+                if pick_revision(names, spec, eff) is not None:
                     return FROM_REMOTE_STORE
         else:
             try:
@@ -395,9 +455,20 @@ def doStatus(args, parser) -> None:
     resolve_config_dir(args)
 
     # ── Defaults and overrides ─────────────────────────────────────────────────
-    defaults_reader = lambda: readDefaults(
-        args.configDir, args.defaults, parser.error, args.architecture
-    )
+    def defaults_reader():
+        meta, body = readDefaults(
+            args.configDir, args.defaults, parser.error, args.architecture
+        )
+        # Build hashes this marker into defaults-release by default. Keep status
+        # on the same identity; the aliBuild compatibility environment selects
+        # legacy hashes and therefore omits it.
+        legacy_initdotsh = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower()
+        if legacy_initdotsh not in ("1", "true", "yes", "on"):
+            if not isinstance(meta.get("env"), dict):
+                meta["env"] = OrderedDict()
+            meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
+        return meta, body
+
     err, overrides, taps, defaults_meta = parseDefaults(
         args.disable, defaults_reader, debug, args.architecture, args.configDir
     )
@@ -558,6 +629,14 @@ def doStatus(args, parser) -> None:
     hash_error_pkgs: List[str] = []
 
     status_write_store = bool(write_store_url)
+    _branch_err, _branch_value = git(
+        ("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
+    branch_basename = (re.sub("refs/heads/", "", _branch_value)
+                       if _branch_err == 0 else "")
+    branch_stream = re.sub("-patches$", "", branch_basename)
+    if branch_stream == branch_basename:
+        branch_stream = ""
+
     for p in buildOrder:
         spec = specs[p]
 
@@ -583,8 +662,13 @@ def doStatus(args, parser) -> None:
         else:
             spec.setdefault("scm_refs", {})
 
-        # Resolve commit hash
-        _resolve_commit_hash(spec, defaults_meta.get("variables"))
+        # Resolve exactly the hash inputs that doBuild prepares before
+        # storeHashes: tags/versions, templated sources and patches, variables,
+        # and recipe text. Hashing the raw recipe fields makes status look under
+        # a different store key from the build (especially for %(var)s URLs).
+        _prepare_spec_for_hash(
+            spec, args.defaults, defaults_meta.get("variables"), args.configDir,
+            branch_basename, branch_stream)
 
         # Devel package: compute devel_hash from local changes
         if spec["is_devel_pkg"]:
@@ -609,6 +693,9 @@ def doStatus(args, parser) -> None:
         try:
             storeHook(p, specs, args.defaults[0])
             storeHashes(p, specs, considerRelocation=consider_relocation)
+            debug("Status hashes for %s: remote %s; local %s", p,
+                  spec.get("remote_revision_hash", "?"),
+                  spec.get("local_revision_hash", "?"))
         except Exception as exc:
             debug("Hash computation failed for %s: %s", p, exc)
             hash_error_pkgs.append(p)
