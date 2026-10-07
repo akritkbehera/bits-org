@@ -640,6 +640,8 @@ class TestDoStatus(unittest.TestCase):
             "scm_refs": {},
             "is_devel_pkg": False,
             "requires": [],
+            "build_requires": [],
+            "runtime_requires": [],
             "env": OrderedDict(),
         })
 
