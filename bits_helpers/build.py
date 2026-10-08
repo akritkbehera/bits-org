@@ -3002,10 +3002,15 @@ def doBuild(args, parser):
   # defaults system: layout module_path). Nothing consumes it yet (later step).
   from bits_helpers.cvmfs_layout import (resolve_reuse_from, split_reuse_policy,
                                          reuse_module_path_from_templates,
-                                         resolve_release, path_release)
+                                         resolve_release, path_release, reuse_from_option)
+  # $BITS_REUSE_FROM is the default of --reuse-from (see reuse_from_option).
+  args.reuseFrom, _reuse_env = reuse_from_option(getattr(args, "reuseFrom", None))
   # Sugar: a trailing '::relaxed'/'::strict' on --reuse-from sets the reuse
-  # policy alongside the source (reconciled with --reuse-policy below).
+  # policy alongside the source (reconciled with --reuse-policy below). An
+  # explicit --reuse-policy wins over the suffix of the env default.
   _reuse_src, _reuse_from_policy = split_reuse_policy(getattr(args, "reuseFrom", None))
+  if _reuse_env and getattr(args, "reusePolicy", None) is not None:
+    _reuse_from_policy = None
   # --reuse-from cvmfs prefers the system: layout module_path; if that is not
   # declared, fall back to the group's cvmfs_modules_template (one declaration
   # drives both publish and reuse). Expanded with raw_architecture — the DEPLOYED
@@ -3021,7 +3026,17 @@ def doBuild(args, parser):
   try:
     args.reuseFrom = resolve_reuse_from(_reuse_src, _reuse_layout)
   except ValueError as exc:
-    dieOnError(True, str(exc))
+    # Only the env default 'cvmfs' for recipes without a CVMFS layout is skipped;
+    # an explicit --reuse-from, or a malformed default, still stops the build.
+    dieOnError(not (_reuse_env and _reuse_src == "cvmfs"), str(exc))
+    warning("BITS_REUSE_FROM=%s not used: %s", os.environ.get("BITS_REUSE_FROM"), exc)
+    args.reuseFrom, _reuse_from_policy = None, None
+  # Nor does the env default reuse from a tree that is not there (nothing deployed
+  # for this architecture, or a template bits cannot expand).
+  if _reuse_env and args.reuseFrom and not os.path.isdir(args.reuseFrom):
+    warning("BITS_REUSE_FROM=%s not used: %s is not a directory",
+            os.environ.get("BITS_REUSE_FROM"), args.reuseFrom)
+    args.reuseFrom, _reuse_from_policy = None, None
   # Build the local, re-anchored overlay from the deployment named by
   # --reuse-from, so reused deps can be set up via modules. The install base (the
   # deployment's Packages root) comes from the layout — available for

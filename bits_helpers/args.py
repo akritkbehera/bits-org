@@ -1676,7 +1676,7 @@ def add_build_arguments(subparsers, ctx):
                                   "defaults `system:` layout (module_dir under cvmfs_dir); fails if that is "
                                   "not configured. A trailing '::relaxed' or '::strict' also sets the reuse "
                                   "policy (e.g. 'cvmfs::relaxed'); it must agree with --reuse-policy if both "
-                                  "are given."))
+                                  "are given. Defaults to $BITS_REUSE_FROM; an empty value turns reuse off."))
   build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
                             help=("Comma-separated packages to always build locally even under "
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "

@@ -13,7 +13,8 @@ from bits_helpers.cvmfs_layout import resolve_cvmfs_layout as R
 from bits_helpers.cvmfs_layout import resolve_cvmfs_templates as RT
 from bits_helpers.cvmfs_layout import (
     resolve_release, path_release, bake_release, _declared_release,
-    resolve_reuse_from, split_reuse_policy, reuse_module_path_from_templates)
+    resolve_reuse_from, split_reuse_policy, reuse_module_path_from_templates,
+    reuse_from_option)
 
 ARCH = "ubuntu2510_x86-64-gcc15-dbg"
 
@@ -320,6 +321,23 @@ class ResolveReuseFromTest(unittest.TestCase):
             resolve_reuse_from("cvmfs", None)
         with self.assertRaises(ValueError):
             resolve_reuse_from("cvmfs", {})  # layout present but no module_path
+
+
+class ReuseFromOptionTest(unittest.TestCase):
+    def test_given_value_wins_over_env(self):
+        env = {"BITS_REUSE_FROM": "cvmfs"}
+        self.assertEqual(reuse_from_option("/cvmfs/x/modules", env), ("/cvmfs/x/modules", False))
+        self.assertEqual(reuse_from_option("cvmfs::relaxed", env), ("cvmfs::relaxed", False))
+
+    def test_empty_value_turns_the_env_default_off(self):
+        self.assertEqual(reuse_from_option("", {"BITS_REUSE_FROM": "cvmfs"}), ("", False))
+
+    def test_env_is_the_default(self):
+        self.assertEqual(reuse_from_option(None, {"BITS_REUSE_FROM": "cvmfs"}), ("cvmfs", True))
+
+    def test_unset_or_empty_env_means_no_reuse(self):
+        self.assertEqual(reuse_from_option(None, {}), (None, False))
+        self.assertEqual(reuse_from_option(None, {"BITS_REUSE_FROM": ""}), (None, False))
 
 
 class SplitReusePolicyTest(unittest.TestCase):

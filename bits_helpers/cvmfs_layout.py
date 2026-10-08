@@ -43,6 +43,20 @@ def _render(template, subst):
     return _VAR_RE.sub(lambda m: str(subst.get(m.group(1), m.group(0))), template)
 
 
+def reuse_from_option(given, environ=os.environ):
+    """The ``--reuse-from`` value to use and whether it is the env default.
+
+    ``$BITS_REUSE_FROM`` is the default (the bits.bits entry point on CVMFS sets
+    it for a community). Any value given, from the command line or a ``bits use``
+    profile, wins over it, an empty one turning reuse off. Returns
+    ``(value, from_env)``.
+    """
+    if given is not None:
+        return given, False
+    value = environ.get("BITS_REUSE_FROM") or None
+    return value, value is not None
+
+
 def split_reuse_policy(reuse_from):
     """Split an optional trailing ``::<policy>`` off a ``--reuse-from`` value.
 
