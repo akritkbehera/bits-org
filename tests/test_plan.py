@@ -82,6 +82,29 @@ class ClassifyTest(unittest.TestCase):
     self.assertEqual(self._classify(_Store(), write_store=True), (plan.BUILD, RH, ""))
     self.assertEqual(self._classify(_Store(), write_store=False), (plan.BUILD, LH, ""))
 
+  def _hash_policy_local_fallback(self):
+    spec = _spec(
+        revision_policy="hash", _revision_policy_hash_injected=True,
+        force_revision=RH, hash=RH, revision=RH)
+    self._tarball(LH, LH)
+    return spec
+
+  def test_hash_policy_local_fallback_finds_local_tarball(self):
+    spec = self._hash_policy_local_fallback()
+    self.assertEqual(self._classify(**spec), (plan.LOCAL_TARBALL, LH, LH))
+
+  def test_hash_policy_local_fallback_finds_installed_local_build(self):
+    spec = self._hash_policy_local_fallback()
+    self._installed(LH, LH)
+    self.assertEqual(self._classify(**spec), (plan.INSTALLED, LH, LH))
+
+  def test_hash_policy_fallback_does_not_change_virtual_package_hash(self):
+    spec = _spec(
+        provides_repository=True, _revision_policy_hash_injected=True,
+        force_revision=RH, hash=RH, revision=RH)
+    self.assertEqual(self._classify(**spec), (plan.BUILD, RH, RH))
+    self.assertEqual(spec["hash"], RH)
+
   def test_devel(self):
     self.assertEqual(self._classify(is_devel_pkg=True)[0], plan.DEVEL)
 
