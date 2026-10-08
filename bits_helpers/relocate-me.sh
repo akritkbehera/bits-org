@@ -16,11 +16,21 @@ if [[ -s ${THISDIR}/etc/profile.d/.bits-relocate ]] ; then
   # goes to <pkg_path> directly, no arch/pkg/ver wrapper) sets
   # BITS_RELOCATE_STRIP_PP=1 so the full …/INSTALLROOT/$PH/$PP prefix collapses to
   # INSTALL_BASE and the paths don't gain a doubled $PP.
-  _pp_strip=""
-  [ -n "${BITS_RELOCATE_STRIP_PP:-}" ] && _pp_strip="s|${PKG_DIR}/INSTALLROOT/$PH/$PP|$INSTALL_BASE|g;"
+  #
+  # R3 FIX: the package's own staging prefix (…/INSTALLROOT/$PH) is first mapped
+  # to a placeholder, so the bare-$PKG_DIR expression below cannot re-match inside
+  # it. Without this, when INSTALL_BASE itself lives under $PKG_DIR (the unpack-
+  # into-INSTALLROOT pass), the bare $PKG_DIR rewrite doubled the prefix to
+  # …/INSTALLROOT/$PH/INSTALLROOT/$PH, and the later final pass stripped only one
+  # layer, leaving a stale staging path behind. The placeholder is replaced with
+  # INSTALL_BASE last.
+  _self='@@BITS_SELF_ROOT@@'
+  _expr=""
+  [ -n "${BITS_RELOCATE_STRIP_PP:-}" ] && _expr="s|${PKG_DIR}/INSTALLROOT/$PH/$PP|${_self}|g;"
+  _expr="${_expr}s|${PKG_DIR}/INSTALLROOT/$PH|${_self}|g;s|${PKG_DIR}|$INSTALL_BASE|g;s|${_self}|$INSTALL_BASE|g"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    sed -i.unrelocated -e "${_pp_strip}s|${PKG_DIR}/INSTALLROOT/$PH|$INSTALL_BASE|g;s|${PKG_DIR}|$INSTALL_BASE|g" "${THISDIR}/$f"
+    sed -i.unrelocated -e "$_expr" "${THISDIR}/$f"
     rm -f "${THISDIR}/${f}.unrelocated"
   done < "${THISDIR}/etc/profile.d/.bits-relocate"
 fi
