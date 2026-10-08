@@ -414,8 +414,9 @@ function printGroups() {
 }
 
 function stripDyld() {
+  # Succeeds with nothing to strip too: callers run under set -e.
   TO_STRIP=$( (typeset | grep ^DYLD | cut -d= -f1 | grep '_modshare$' | xargs echo ) 2> /dev/null )
-  [ ! "X$TO_STRIP" = X ] && echo unset $TO_STRIP && echo ';'
+  if [ -n "$TO_STRIP" ]; then echo unset $TO_STRIP; echo ';'; fi
 }
 
 function _bt_mark() {

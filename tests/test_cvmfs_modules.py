@@ -49,7 +49,7 @@ _CVMFS_BASE = ("#%Module1.0\n"
 @unittest.skipUnless(_modulecmd(), "needs modulecmd (Environment Modules)")
 class CvmfsModulesTest(unittest.TestCase):
   def setUp(self):
-    self.tmp = tempfile.mkdtemp()
+    self.tmp = os.path.realpath(tempfile.mkdtemp())   # macOS: /var -> /private/var
     self.inst = os.path.join(self.tmp, "inst")
     os.makedirs(self.inst)
     for f in ("bits", "bitsBuild", "bitsModules"):
