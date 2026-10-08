@@ -16,11 +16,16 @@ if [[ -s ${THISDIR}/etc/profile.d/.bits-relocate ]] ; then
   # goes to <pkg_path> directly, no arch/pkg/ver wrapper) sets
   # BITS_RELOCATE_STRIP_PP=1 so the full …/INSTALLROOT/$PH/$PP prefix collapses to
   # INSTALL_BASE and the paths don't gain a doubled $PP.
+  # Protect this package's own staging prefix while the broader PKG_DIR
+  # replacement runs. INSTALL_BASE can itself start with PKG_DIR (for example
+  # /sw/INSTALLROOT/$PH), so replacing the longer prefix directly would let
+  # the following substitution match the replacement and duplicate it.
+  _self_root="__BITS_RELOCATE_SELF_${PH}_$$__"
   _pp_strip=""
-  [ -n "${BITS_RELOCATE_STRIP_PP:-}" ] && _pp_strip="s|${PKG_DIR}/INSTALLROOT/$PH/$PP|$INSTALL_BASE|g;"
+  [ -n "${BITS_RELOCATE_STRIP_PP:-}" ] && _pp_strip="s|${PKG_DIR}/INSTALLROOT/$PH/$PP|${_self_root}|g;"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    sed -i.unrelocated -e "${_pp_strip}s|${PKG_DIR}/INSTALLROOT/$PH|$INSTALL_BASE|g;s|${PKG_DIR}|$INSTALL_BASE|g" "${THISDIR}/$f"
+    sed -i.unrelocated -e "${_pp_strip}s|${PKG_DIR}/INSTALLROOT/$PH|${_self_root}|g;s|${PKG_DIR}|$INSTALL_BASE|g;s|${_self_root}|$INSTALL_BASE|g" "${THISDIR}/$f"
     rm -f "${THISDIR}/${f}.unrelocated"
   done < "${THISDIR}/etc/profile.d/.bits-relocate"
 fi
@@ -45,3 +50,4 @@ case "$PKGNAME" in
     fi
     ;;
 esac
+
