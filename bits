@@ -110,6 +110,9 @@ Usage: $0 \\
 
     ${EM}q${EZ} or ${EM}query${EZ} [REGEXP]
       List all available modules, or the ones matching ${ET}REGEXP${EZ} if provided.
+      With ${ET}BITS_CVMFS_PREFIX${EZ} set (the CVMFS entry point sets it for a community),
+      the modules the community published there for ${ET}ARCHITECTURE${EZ} are listed and
+      loaded too, after the local ones.
 
     ${EM}list${EZ}
       List loaded modules.
@@ -290,21 +293,124 @@ function normModules() {
   echo "${result[*]}"
 }
 
-function existModules() {
-  # A bits module <pkg>[/<version>] is present iff it exists in the modulefile
-  # cache: <pkg>/<version> is a file, a bare <pkg> a directory. Test that
-  # directly — instant — instead of spawning `modulecmd avail` (a full-tree
-  # scan/evaluate) once per requested module, which was the main reason
-  # load/enter/printenv were notably slower than q. Fall back to modulecmd only
-  # when the direct lookup misses, so extra MODULEPATH entries and
-  # default-version aliases still resolve. The `..` guard keeps the fast path
-  # from matching path-traversal names (modulecmd then rejects them).
-  local MODULE mroot="${WORK_DIR}/MODULES/${ARCHITECTURE}"
-  for MODULE in "$@"; do
-    [[ "$MODULE" != *..* && -e "$mroot/$MODULE" ]] && continue
-    $MODULECMD bash -t avail 2>&1 | grep -qFx "$MODULE" || \
-      { printf "${ER}ERROR: $MODULE was not found${EZ}\n" >&2; return 1; }
+function listCvmfsModules() {
+  # Emit <pkg>/<version> for every modulefile in the CVMFS module trees (no
+  # BASE), via the serving-catalog fast path when it applies, else find.
+  local t bm
+  (( ${#CVMFS_TREES[@]} )) || return 0
+  if [[ -n "$BITS_PY" ]]; then bm="${BITSDIR}/bitsModules"
+  else bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules"); fi
+  for t in "${CVMFS_TREES[@]}"; do
+    { [[ -x "$bm" ]] && ${BITS_PY:+"$BITS_PY" -E -s} "$bm" "$t" 2> /dev/null; } ||
+      ( cd "$t" && find . -mindepth 2 -maxdepth 2 \( -type f -o -type l \) | sed -e 's|^\./||' )
+  done | grep -E '^[^/.][^/]*/[^/.][^/]*$' | grep -v '^BASE/' || true
+}
+
+function resolveModules() {
+  # Find the module tree of each module <pkg>[/<version>]: the local MODULEPATH
+  # (the modulefile cache, reuse overlays, the user's own entries), then the
+  # CVMFS trees in order; the first that has it wins. <pkg>/<version> is a
+  # file there, a bare <pkg> a directory. Testing that directly is instant;
+  # `modulecmd avail` (a full scan) runs only when no tree has it, so
+  # default-version aliases still resolve locally. The `..` guard keeps the
+  # direct test from matching path-traversal names (modulecmd rejects them).
+  # Sets GROUP_TREE (a CVMFS tree, or "" for the local MODULEPATH) and
+  # GROUP_MODS (its modules, space-separated), one entry per tree used, in tree
+  # order.
+  local M t i found mp trees=("" "${CVMFS_TREES[@]}") mods=()
+  IFS=: read -r -a mp <<< "$MODULEPATH"
+  for t in "${trees[@]}"; do mods+=(""); done
+  for M in "$@"; do
+    found=
+    if [[ "$M" != *..* ]]; then
+      for t in "${mp[@]}"; do [[ -n "$t" && -e "$t/$M" ]] && { found=0; break; }; done
+      for ((i = 1; i < ${#trees[@]} && ${#found} == 0; i++)); do
+        [[ -e "${trees[i]}/$M" ]] && found=$i
+      done
+    fi
+    [[ -z "$found" ]] && $MODULECMD bash -t avail 2>&1 | grep -qFx "$M" && found=0
+    [[ -n "$found" ]] || { printf "${ER}ERROR: $M was not found${EZ}\n" >&2; return 1; }
+    mods[found]+="${mods[found]:+ }$M"
   done
+  GROUP_TREE=(); GROUP_MODS=()
+  for ((i = 0; i < ${#trees[@]}; i++)); do
+    [[ -n "${mods[i]}" ]] && { GROUP_TREE+=("${trees[i]}"); GROUP_MODS+=("${mods[i]}"); }
+  done
+  return 0
+}
+
+function resolveLoaded() {
+  # For unload: group the modules by the tree they were loaded from, read from
+  # _LMFILES_ (<tree>/<pkg>/<version>); any other module, e.g. one no tree has
+  # any more, goes with the local MODULEPATH, as before. Sets GROUP_TREE and
+  # GROUP_MODS as resolveModules does.
+  local M f t i found lm trees=("" "${CVMFS_TREES[@]}") mods=()
+  IFS=: read -r -a lm <<< "${_LMFILES_:-}"
+  for t in "${trees[@]}"; do mods+=(""); done
+  for M in "$@"; do
+    found=0
+    for ((i = 1; i < ${#trees[@]} && found == 0; i++)); do
+      for f in "${lm[@]}"; do
+        [[ "$f" == "${trees[i]}/$M" || "$f" == "${trees[i]}/$M/"* ]] && { found=$i; break; }
+      done
+    done
+    mods[found]+="${mods[found]:+ }$M"
+  done
+  GROUP_TREE=(); GROUP_MODS=()
+  for ((i = 0; i < ${#trees[@]}; i++)); do
+    [[ -n "${mods[i]}" ]] && { GROUP_TREE+=("${trees[i]}"); GROUP_MODS+=("${mods[i]}"); }
+  done
+  return 0
+}
+
+function localOnly() {
+  # --dev sources the packages' own init.sh from the work directory: local
+  # modules only.
+  local i cv=
+  for ((i = 0; i < ${#GROUP_TREE[@]}; i++)); do
+    [[ -n "${GROUP_TREE[i]}" ]] && cv+=" ${GROUP_MODS[i]}"
+  done
+  [[ -z "$cv" ]] && return 0
+  printf "${ER}ERROR: --dev works with local modules only, not with CVMFS ones:%s${EZ}\n" "$cv" >&2
+  return 1
+}
+
+function groupModulecmd() {
+  # groupModulecmd SHELL ACTION I: modulecmd for the modules of group I against
+  # their tree alone (MODULEPATH = that tree, the local one as it is), so their
+  # dependencies come from the same tree. BASEDIR is set to the tree's packages:
+  # bits modulefiles find their package through it, and those of a second tree
+  # skip their BASE/1.0 when the first tree's is loaded already.
+  local t="${GROUP_TREE[$3]}"
+  if [[ -z "$t" ]]; then
+    BASEDIR="${WORK_DIR}/${ARCHITECTURE}" $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}
+  else
+    MODULEPATH="$t" BASEDIR="${t%/Modules/modulefiles}/Packages" $MODULECMD "$1" "$2" ${GROUP_MODS[$3]}
+  fi
+}
+
+function evalGroups() {
+  # evalGroups ACTION: apply every group in this shell, in order, each on the
+  # result of the previous one. After CVMFS groups BASEDIR is the local one
+  # again, so that a local module loaded by hand later (BASE/1.0 being loaded
+  # already) finds its package.
+  local i
+  for ((i = 0; i < ${#GROUP_TREE[@]}; i++)); do
+    eval "$(groupModulecmd bash "$1" "$i" 2> >(grep -v "$IGNORE_ERR" >&2))"
+  done
+  [[ -z "${GROUP_TREE[*]}" ]] || export BASEDIR="${WORK_DIR}/${ARCHITECTURE}"
+}
+
+function printGroups() {
+  # printGroups ACTION: print every group's commands for $MODULES_SHELL. Each
+  # group is run after the previous one is applied here, and modulecmd prints
+  # whole values, so the output evaluated in order gives what evalGroups gives.
+  local i n=${#GROUP_TREE[@]}
+  for ((i = 0; i < n; i++)); do
+    groupModulecmd "$MODULES_SHELL" "$1" "$i" 2> >(grep -v "$IGNORE_ERR" >&2)
+    (( i + 1 < n )) && eval "$(groupModulecmd bash "$1" "$i" 2> /dev/null)"
+  done
+  return 0
 }
 
 function stripDyld() {
@@ -584,6 +690,26 @@ done
 export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${_bits_overlays:+":$_bits_overlays"}${MODULEPATH:+":$MODULEPATH"}"
 unset _bits_overlays _ov
 MODULEPATH=$(echo "$MODULEPATH" | sed -e 's/::*/:/g; s/^://; s/:$//')
+
+# The CVMFS module trees of a community ($BITS_CVMFS_PREFIX, which the CVMFS
+# entry point sets): <prefix>/<arch>/Modules/modulefiles for each deployed arch
+# that is $ARCHITECTURE but for a trailing -opt/-dbg, in this order: the exact
+# one, the one without build type (own_hash packages, the toolchain), -opt,
+# -dbg. They come after the local MODULEPATH and stay off it: each tree is
+# used on its own (groupModulecmd), as its BASE/1.0 sets BASEDIR for it alone.
+CVMFS_TREES=()
+if [[ -n "${BITS_CVMFS_PREFIX:-}" ]]; then
+  _b=${ARCHITECTURE%-opt}; _b=${_b%-dbg}
+  for _a in "$ARCHITECTURE" "$_b" "$_b-opt" "$_b-dbg"; do
+    _t="${BITS_CVMFS_PREFIX%/}/$_a/Modules/modulefiles"
+    [[ -d "$_t" ]] || continue
+    # Physical, as BASE/1.0 resolves its BASEDIR (file normalize): the same
+    # paths whether BASE is loaded in the same run or was loaded before.
+    _t=$(cd "$_t" && pwd -P)
+    [[ " ${CVMFS_TREES[*]} " != *" $_t "* ]] && CVMFS_TREES+=("$_t")
+  done
+  unset _a _b _t
+fi
 IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # -q (which unsets VERBOSE) silences environment-modules' "Loading <pkg>" /
 # "Loading requirement:" progress lines so setenv/printenv/load/enter output can
@@ -617,10 +743,11 @@ case "$ACTION" in
     _bt_mark preamble
     collectModules
     _bt_mark collectModules
-    existModules $MODULES
-    _bt_mark existModules
+    resolveModules $MODULES
+    _bt_mark resolveModules
     PS1DEV=
     if [[ $DEVOPT == 1 ]];then
+      localOnly
       PS1DEV=" (dev)"
       for MODULE in $MODULES; do
         # Reject module names containing path-traversal sequences to prevent
@@ -632,7 +759,7 @@ case "$ACTION" in
         . "$WORK_DIR/$ARCHITECTURE/$MODULE/etc/profile.d/init.sh"
       done
     else
-      eval $($MODULECMD bash add $MODULES 2> >(grep -v "$IGNORE_ERR" >&2))
+      evalGroups add
     fi
     _bt_mark modulecmd
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
@@ -666,9 +793,15 @@ case "$ACTION" in
     [[ $ACTION == printenv ]] && ACTION=load
     MODULES=$(normModules "${ARGS[@]}")
     _bt_mark preamble
-    [[ $ACTION == load ]] && { collectModules; _bt_mark collectModules; existModules $MODULES; _bt_mark existModules; }
+    if [[ $ACTION == load ]]; then
+      collectModules; _bt_mark collectModules
+      resolveModules $MODULES; _bt_mark resolveModules
+    else
+      resolveLoaded $MODULES
+    fi
     [[ $VERBOSE == 1 ]] && printf "${ET}Use ${EM}bits list${ET} to list loaded modules.${EZ}\n" >&2
     if [[ $DEVOPT == 1 ]];then
+      localOnly
       echo "Warning: Development mode for '$ACTION' is not supported via bits. Please remove '--dev' or run manually shown below" >&2
       echo "*** Please run following commands manually to load dev environment for '$MODULES' ***" >&2
       echo "" >&2
@@ -680,18 +813,18 @@ case "$ACTION" in
       exit 0
     fi
     detectShell
-    $MODULECMD $MODULES_SHELL $ACTION $MODULES 2> >(grep -v "$IGNORE_ERR" >&2)
+    printGroups "$ACTION"
     # --view: emit the view-collapsed path overrides AFTER the module setup so they
     # win on eval. printenv/load only print (they don't load in-process), so the
     # closure is loaded in a subshell to compute the collapse; output is rendered
     # in the caller's shell syntax (sh export vs csh setenv).
     if [[ $VIEWOPT == 1 && $ACTION == load ]]; then
       _vshell=sh; case "$MODULES_SHELL" in csh|tcsh) _vshell=csh;; esac
-      ( eval "$($MODULECMD bash load $MODULES 2> /dev/null)"
+      ( evalGroups load 2> /dev/null
         _bitsView --work-dir "${WORK_DIR}" --arch "${ARCHITECTURE}" --shell "$_vshell" 2> /dev/null )
     fi
     _bt_mark modulecmd
-    [[ $UNAME == Darwin ]] && ( eval $($MODULECMD $MODULES_SHELL $ACTION $MODULES 2> /dev/null) &> /dev/null; stripDyld )
+    [[ $UNAME == Darwin ]] && ( evalGroups "$ACTION" &> /dev/null; stripDyld )
     exit 0
   ;;
   setenv)
@@ -699,8 +832,8 @@ case "$ACTION" in
     [[ -z "${COMMAND_IN_ENV[*]}" ]] && { printHelp "No command specified with -c"; false; }
     MODULES=$(normModules "${ARGS[@]}")
     collectModules
-    existModules $MODULES
-    eval $($MODULECMD bash add $MODULES 2> >(grep -v "$IGNORE_ERR" >&2))
+    resolveModules $MODULES
+    evalGroups add
     [[ $UNAME == Darwin ]] && eval $(stripDyld)
     [[ -n "${BITS_VIEW:-}" ]] && VIEWOPT=1   # view: true package auto-enables --view
     unset BITS_VIEW                          # consume-and-clear (no leak into -c command)
@@ -718,7 +851,7 @@ case "$ACTION" in
       _fmt=( cat )
     fi
     # List straight from the install tree (no MODULES rebuild, no modulecmd).
-    listAvailableModules | LC_ALL=C sort | "${SEARCH_CMD[@]}" | "${_fmt[@]}"
+    { listAvailableModules; listCvmfsModules; } | LC_ALL=C sort -u | "${SEARCH_CMD[@]}" | "${_fmt[@]}"
     exit ${PIPESTATUS[2]}  # SEARCH grep
   ;;
   avail)

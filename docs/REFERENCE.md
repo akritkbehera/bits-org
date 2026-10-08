@@ -1708,6 +1708,20 @@ helper). This works only when the tree is the root of its own catalog with no
 nested catalogs below it; otherwise bits falls back to the normal directory walk,
 with the same result.
 
+**A community's modules on CVMFS.** With `BITS_CVMFS_PREFIX` set to a community's
+CVMFS prefix (the bits entry point on CVMFS sets it), `bits q`, `enter`, `load`,
+`printenv`, `unload` and `setenv` also use the modules the community published there,
+after the local ones. bits uses the trees `<prefix>/<arch>/Modules/modulefiles` whose
+`<arch>` is `ARCHITECTURE` but for a trailing `-opt`/`-dbg`, in this order: the exact
+one, the one without build type (the toolchain), `-opt`, `-dbg`. So
+`-a x86_64-el9-gcc14-opt` uses `x86_64-el9-gcc14-opt`, `x86_64-el9-gcc14` and
+`x86_64-el9-gcc14-dbg`, never another compiler or OS. A module comes from the first
+tree that has it, local builds first; `q` lists each name once. Each tree's modules
+are loaded against that tree alone, with its own `BASEDIR`, so modules from several
+trees can be loaded together; `unload` uses the tree each module was loaded from. The
+CVMFS trees are not put on `MODULEPATH`: inside `bits enter`, a `module load` by hand
+sees only the local modules. `--dev` works with local modules only.
+
 ---
 
 ### bits modulecmd
@@ -3247,6 +3261,7 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | `BITS_LEGACY_REGISTRY` | _(unset)_ | `1` selects the legacy `alisw/<distro>-builder` images (the `aliBuild` wrapper sets it). |
 | `BITS_LEGACY_INITDOTSH` | _(unset)_ | `1` selects the legacy build-time `init.sh` (same as `--legacy-initdotsh`); the `aliBuild` wrapper sets it. |
 | `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` (empty under the `aliBuild` wrapper) | URL of the repository-provider set; an `@<tag>` suffix pins a snapshot. Environment only (no build flag). |
+| `BITS_CVMFS_PREFIX` | _(unset)_ | A community's CVMFS prefix (e.g. `/cvmfs/bits.cern.ch/key4hep`): `bits q`, `enter`, `load`, `printenv`, `unload` and `setenv` also use its modules for the architecture, after the local ones (see [bits query](#bits-query--list--avail)). The bits entry point on CVMFS sets it for a community. |
 | `BITS_REUSE_FROM` | _(unset)_ | Default of `--reuse-from` for `bits build` (e.g. `cvmfs`); the bits entry point on CVMFS sets it for a community. Any `--reuse-from`, from the command line or a `bits use` profile, wins, and an empty one turns reuse off. When the recipes declare no CVMFS layout, or the modules tree it names does not exist, the default is skipped with a warning instead of stopping the build; an explicit `--reuse-policy` wins over its `::relaxed`/`::strict` suffix. |
 | `REMOTE_STORE`, `WRITE_STORE` | _(unset)_ | Read and write store URLs when no flag is given; `BITS_REMOTE_STORE`/`BITS_WRITE_STORE` override them (see [§21](#21-remote-binary-store-backends)). |
 | `BITS_S3_STORE` | `https://s3.cern.ch/lcgapp-bits-testing` | Default store for `bits publish`, `certify`, `sign`, `bits store` and `compliance`. |
