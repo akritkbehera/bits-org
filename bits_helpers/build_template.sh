@@ -23,7 +23,7 @@ run_hooks() {
   local _hv="${hook_type}_HOOKS" _sv="SKIP_${hook_type}_HOOKS"
   hooks_list="${!_hv}"
   skip_list="${!_sv}"
-  if [[ "$PKGREVISION" != local* ]]; then
+  if [[ "$PKGREVISION" != local* || -n "$BITS_CI_MODE" ]]; then
     [ -n "$skip_list" ] && echo "bits: skipping hooks if enabled not allowed while uploading. Aborting." && exit 1
   fi
   # B6 FIX: use 'while IFS= read -r' so hook names with glob chars don't expand.
@@ -226,6 +226,13 @@ _bits_cpath="${CPATH-}" _bits_cpath_set="${CPATH+x}"
 if [ -n "$_bits_cpath_set" ]; then export CPATH="$_bits_cpath"; else unset CPATH; fi
 unset _bits_cpath _bits_cpath_set
 
+# Temporary CI diagnostic for the libfabric -> autotools Perl module failure.
+if [ "$PKGNAME" = "libfabric" ]; then
+  printf 'BITS_RELOCATE_PROBE build-env WORK_DIR=%s AUTOTOOLS_ROOT=%s PERL5LIB=%s\n' \
+    "$WORK_DIR" "${AUTOTOOLS_ROOT:-}" "${PERL5LIB:-}"
+  find "$WORK_DIR" -path '*/external/autotools/*/share/autoconf/Autom4te/C4che.pm' -print 2>/dev/null
+fi
+
 # Add support for direnv https://github.com/direnv/direnv/
 #
 # This is beneficial for all the cases where the build step requires some
@@ -309,8 +316,15 @@ else
   rm -rf "$INSTALLROOT"
   mv "$WORK_DIR/TMP/$PKGHASH/$PKGPATH" "$INSTALLROOT"
   pushd "$WORK_DIR/INSTALLROOT/$PKGHASH"
+  echo "BITS_RELOCATE_PROBE phase=unpack package=$PKGNAME cached=$CACHED_TARBALL"
+  printf 'BITS_RELOCATE_PROBE WORK_DIR=%s INSTALLROOT=%s PKGPATH=%s\n' \
+    "$WORK_DIR" "$INSTALLROOT" "$PKGPATH"
+  ls -ld "$INSTALLROOT" "$INSTALLROOT/relocate-me.sh" 2>&1 || true
   if [ -w "$INSTALLROOT" ]; then
+      echo "BITS_RELOCATE_PROBE running unpack relocation"
       WORK_DIR=$WORK_DIR /bin/bash -ex "$INSTALLROOT/relocate-me.sh"
+  else
+      echo "BITS_RELOCATE_PROBE skipped unpack relocation: INSTALLROOT is not writable"
   fi
   popd
   find "$INSTALLROOT" -name "*.unrelocated" -delete
@@ -487,7 +501,8 @@ if [ "$CAN_DELETE" = 1 ] && [ -z "$BITS_HAS_WRITE_STORE" ]; then
   # There might be an old existing tarball, and we should delete it.
   # (When a write store is configured the tarball is still needed for upload, so
   # we fall through and create it; doFinalSync removes it again after upload.)
-  rm -f "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
+  rm -f "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV" \
+        "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.sha256"
 elif [ -z "$CACHED_TARBALL" ]; then
   # Deterministic packaging (finding R1): the store tarball must be byte-identical
   # across build nodes, or two builds of the same hash record different
@@ -500,13 +515,25 @@ elif [ -z "$CACHED_TARBALL" ]; then
   # with tools/verify-deterministic-tarball.sh.
   _comp=${BITS_TAR_COMPRESSOR:-gzip -n}
   _dst="$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV.processing"
+  # Checksum the tarball as it is written, so the build manifest and the store
+  # upload need not read it again: <tarball>.sha256 holds "sha256:<hex> <size>".
+  if command -v sha256sum >/dev/null 2>&1; then _sum="sha256sum"
+  elif command -v shasum >/dev/null 2>&1; then _sum="shasum -a 256"
+  else _sum=; fi
+  rm -f "$_dst.sum"
+  # A failed write or checksum fails _pack, and with it the pipeline (the build
+  # branch above set pipefail, so a failing tar or compressor does too).
+  _pack() (
+    set -o pipefail
+    if [ -n "$_sum" ]; then tee "$_dst" | $_sum > "$_dst.sum"; else cat > "$_dst"; fi
+  )
   # Prefer GNU tar: it normalises mtime/owner IN THE ARCHIVE (no on-disk change).
   if command -v gtar >/dev/null 2>&1; then _tar=gtar
   elif tar --version 2>/dev/null | grep -qi 'GNU tar'; then _tar=tar
   else _tar=; fi
   if [ -n "$_tar" ]; then
     "$_tar" --sort=name --owner=0 --group=0 --numeric-owner --mtime='@0' \
-        -cC "$WORK_DIR/INSTALLROOT/$PKGHASH" . | $_comp -c > "$_dst"
+        -cC "$WORK_DIR/INSTALLROOT/$PKGHASH" . | $_comp -c | _pack
   else
     # bsdtar (e.g. macOS without gtar): deterministic order + numeric zero owner.
     # bsdtar cannot set a uniform archive mtime, so packages are byte-reproducible
@@ -515,10 +542,18 @@ elif [ -z "$CACHED_TARBALL" ]; then
     echo "bits: WARNING: GNU tar not found; $PKGNAME tarball may not be byte-reproducible (install gnu-tar)." >&2
     ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH" && find . -print | LC_ALL=C sort > "$_dst.list" )
     ( cd "$WORK_DIR/INSTALLROOT/$PKGHASH" && tar --no-recursion --uid 0 --gid 0 \
-        --numeric-owner -T "$_dst.list" -cf - ) | $_comp -c > "$_dst"
+        --numeric-owner -T "$_dst.list" -cf - ) | $_comp -c | _pack
     rm -f "$_dst.list"
   fi
-  mv "$_dst" "$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
+  _final="$WORK_DIR/TARS/$HASH_PATH/$PACKAGE_WITH_REV"
+  mv "$_dst" "$_final"
+  # Written after the tarball, so it is never older than the file it describes.
+  rm -f "$_final.sha256"
+  if [ -s "$_dst.sum" ]; then
+    printf 'sha256:%%s %%s\n' "$(cut -d' ' -f1 < "$_dst.sum")" \
+      "$(wc -c < "$_final" | tr -d ' ')" > "$_final.sha256"
+  fi
+  rm -f "$_dst.sum"
   ln -nfs "../../$HASH_PATH/$PACKAGE_WITH_REV" \
      "$WORK_DIR/TARS/$EFFECTIVE_ARCHITECTURE/$PKGNAME/$PACKAGE_WITH_REV"
 fi
@@ -528,8 +563,15 @@ wait "$rsync_pid"
 # Use $PKGPATH (= $EFFECTIVE_ARCHITECTURE[/$PKGFAMILY]/$PKGNAME/$_VERREV) so
 # that PKGFAMILY packages (e.g. externals/foo, cms/bar) are found correctly.
 cd "$WORK_DIR"
+echo "BITS_RELOCATE_PROBE phase=final package=$PKGNAME"
+printf 'BITS_RELOCATE_PROBE WORK_DIR=%s target=%s PKGPATH=%s\n' \
+  "$WORK_DIR" "$WORK_DIR/$PKGPATH" "$PKGPATH"
+ls -ld "$WORK_DIR/$PKGPATH" "$WORK_DIR/$PKGPATH/relocate-me.sh" 2>&1 || true
 if [ -w "$WORK_DIR/$PKGPATH" ]; then
+  echo "BITS_RELOCATE_PROBE running final relocation"
   /bin/bash -ex "$PKGPATH/relocate-me.sh"
+else
+  echo "BITS_RELOCATE_PROBE skipped final relocation: target is not writable"
 fi
 
 # Last package built gets a "latest" mark.
@@ -550,4 +592,3 @@ fi
 # Mark the build as successful with a placeholder. Allows running incremental
 # recipe in case the package is in development mode.
 echo "${DEVEL_HASH}${DEPS_HASH}" > "$BUILDDIR/.build_succeeded"
-
