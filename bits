@@ -5,6 +5,16 @@
 
 BITSDIR="$(dirname "$0")"
 
+# An install that brings its own runtime (bits.bits: /cvmfs/bits.cern.ch/bits)
+# has it in runtime/ beside these scripts, and bits then runs its Python and its
+# modulecmd from there by path, adding nothing to the environment of what it
+# builds or loads. Otherwise (a git checkout, a pip install) BITS_PY is empty and
+# python3, bitsBuild and modulecmd come from PATH exactly as before.
+# That Python ignores the PYTHON* variables and the user's site-packages (-E -s):
+# inside an entered environment they belong to the stack's Python, not to bits'.
+BITS_PY=
+[[ -x "$BITSDIR/runtime/bin/python3" ]] && BITS_PY="$BITSDIR/runtime/bin/python3"
+
 # `.bitsuse` saved-arg profile (see `bits use`): inject the [common] + [<action>]
 # tokens right after the action, BEFORE anything is parsed, so both the build
 # path and the module commands (q/enter/…, which read ARGV below) see them.
@@ -14,7 +24,7 @@ BITSDIR="$(dirname "$0")"
 if [[ -f .bitsuse || -f .bitscmd || -d "$HOME/.bits/use" ]]; then
   _bits_prof=()
   while IFS= read -r -d '' _bits_t; do _bits_prof+=("$_bits_t"); done \
-    < <(BITS_SELF="${BITSDIR}" python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' --rewrite0 -- "$@")
+    < <(BITS_SELF="${BITSDIR}" "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' --rewrite0 -- "$@")
   [[ ${#_bits_prof[@]} -gt 0 ]] && set -- "${_bits_prof[@]}"
   unset _bits_prof _bits_t
 fi
@@ -27,7 +37,7 @@ ARGV=("$@"); ARGC=$#   # ARGC must be a plain integer, not an array
 # deployed tests (strace, optionally --docker) and writes .cvmfsbundle-* into one
 # tar. Self-contained; needs no work dir. Uses the raw ARGV, unmangled.
 if [[ "${ARGV[0]:-}" == "preload" ]]; then
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.preload_cmd import main; sys.exit(main())' "${ARGV[@]:1}"
+  BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.preload_cmd import main; sys.exit(main())' "${ARGV[@]:1}"
 fi
 
 # `bits overlay <format> …` — emit a consumable overlay of the built closure in a
@@ -35,14 +45,14 @@ fi
 # $BITS_OVERLAY_PLUGINS). Self-contained like preload; dispatched before the
 # build/defaults arg setup. Generic verb — nothing CERN-specific in the core CLI.
 if [[ "${ARGV[0]:-}" == "overlay" ]]; then
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.overlay import main; sys.exit(main())' "${ARGV[@]:1}"
+  BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.overlay import main; sys.exit(main())' "${ARGV[@]:1}"
 fi
 
 # `bits lcg-view …` — DEPRECATED alias for `bits overlay lcg` (same arguments).
 # Kept so any straggler still calling it works; new recipes use `bits overlay lcg`.
 if [[ "${ARGV[0]:-}" == "lcg-view" ]]; then
   echo "bits: 'lcg-view' is deprecated; use 'bits overlay lcg'." >&2
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.overlay.lcg import main; sys.exit(main())' "${ARGV[@]:1}"
+  BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.overlay.lcg import main; sys.exit(main())' "${ARGV[@]:1}"
 fi
 
 # Optional phase timing for diagnosing slow load/enter: set BITS_TIMING=1 to
@@ -173,8 +183,9 @@ function _listPkgVersions() {
   local dir="$1" real bm
   real=$(readlink -f "$dir" 2> /dev/null || echo "$dir")
   if [[ "$real" == /cvmfs/* ]]; then
-    bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules")
-    if [[ -x "$bm" ]] && "$bm" "$dir" --depth2-dirs 2> /dev/null; then
+    if [[ -n "$BITS_PY" ]]; then bm="${BITSDIR}/bitsModules"
+    else bm=$(command -v bitsModules 2> /dev/null || echo "${BITSDIR}/bitsModules"); fi
+    if [[ -x "$bm" ]] && ${BITS_PY:+"$BITS_PY" -E -s} "$bm" "$dir" --depth2-dirs 2> /dev/null; then
       return 0
     fi
   fi
@@ -353,7 +364,7 @@ fi
 # before work-dir/module setup: it only touches the profile.
 if [[ "${1:-}" == "use" ]]; then
   shift
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' "$@"
+  BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.bits_use import main; sys.exit(main())' "$@"
 fi
 
 # `bits cvmfs {platforms,show,summary,stage,publish} …` → the CVMFS group.
@@ -363,7 +374,7 @@ fi
 # S3, not the local install tree.
 if [[ "${1:-}" == "cvmfs" ]]; then
   shift
-  BITS_SELF="${BITSDIR}" exec python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_inspect import main; sys.exit(main())' "$@"
+  BITS_SELF="${BITSDIR}" exec "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.cvmfs_inspect import main; sys.exit(main())' "$@"
 fi
 
 for arg in "$@"
@@ -371,11 +382,11 @@ do
   case $arg in
     architecture|brew|build|certify|checksums|clean|cleanup|prune|compliance|cvmfs-path|deps|doctor|import|init|publish|sbom|sign|stats|status|verify|version|-debug|-d)
          mkdir -p "$BITS_WORK_DIR" || echo "Cannot create directory: $BITS_WORK_DIR"
-        "$BITSDIR/bitsBuild" "$@"
+        ${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
     -n|--dry-run|--version)
-        "$BITSDIR/bitsBuild" "$@"
+        ${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" "$@"
 	    exit $?
         ;;
         *)
@@ -516,7 +527,8 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
     ARCHITECTURE="${_present[0]}"            # sole installed arch — no python spawn
   elif [[ ${#_present[@]} -gt 1 ]]; then
     # Several present: prefer the host's native arch if installed.
-    _host="$("bitsBuild" architecture 2> /dev/null || "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+    _host="$( { [[ -z "$BITS_PY" ]] && "bitsBuild" architecture 2> /dev/null; } ||
+              ${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
     ARCHITECTURE=
     if [[ -n "$_host" ]]; then
       for _a in "${_present[@]}"; do [[ "$_a" == "$_host" ]] && { ARCHITECTURE="$_a"; break; }; done
@@ -541,15 +553,16 @@ if [[ -z "$_ARCH_GIVEN" ]]; then
     fi
   else
     # Nothing installed yet → host arch from python (e.g. for a first build).
-    ARCHITECTURE="$("bitsBuild" architecture 2> /dev/null || true)"
-    [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$("$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
+    ARCHITECTURE="$([[ -z "$BITS_PY" ]] && "bitsBuild" architecture 2> /dev/null || true)"
+    [[ -z "$ARCHITECTURE" ]] && ARCHITECTURE="$(${BITS_PY:+"$BITS_PY" -E -s} "$BITSDIR/bitsBuild" architecture 2> /dev/null || true)"
   fi
 fi
 _bt_mark archdetect         # arch autodetect (python spawn only when needed)
 [[ -z "$ARCHITECTURE" ]] && { printHelp "Cannot autodetect architecture"; false; }
 
-# Look for modulecmd (v3) or modulecmd-compat (>= v4)
-MODULECMD=$(command -v modulecmd 2> /dev/null || true)
+# Look for modulecmd (v3) or modulecmd-compat (>= v4): bits' own runtime first
+MODULECMD="$BITSDIR/runtime/bin/modulecmd"
+[[ -x "$MODULECMD" ]] || MODULECMD=$(command -v modulecmd 2> /dev/null || true)
 [[ -x "$MODULECMD" ]] || MODULECMD="$(dirname $(command -v envml 2> /dev/null || true) 2> /dev/null || true)/../libexec/modulecmd-compat"
 [[ -x "$MODULECMD" ]] || MODULECMD="$(brew --prefix modules 2> /dev/null || true)/libexec/modulecmd-compat"
 [[ -x "$MODULECMD" ]] || { installHint; false; }
@@ -589,7 +602,7 @@ IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # env var, so the collapse reads the *real* module PYTHONPATH and never echoes the
 # bits source directory back into the user's environment.
 _bitsView() {
-  BITS_SELF="${BITSDIR}" python3 -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.view_cmd import main; sys.exit(main())' "$@"
+  BITS_SELF="${BITSDIR}" "${BITS_PY:-python3}" ${BITS_PY:+-E -s} -c 'import os,sys; sys.path.insert(0, os.environ.get("BITS_SELF","")); from bits_helpers.view_cmd import main; sys.exit(main())' "$@"
 }
 applyView() {
   [[ $VIEWOPT == 1 ]] || return 0

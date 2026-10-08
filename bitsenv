@@ -218,6 +218,12 @@ else
    modulecmd="$modules/$version/$distro_dir/$distro_xrelease/bin/modulecmd"
 fi
 
+if [[ ! -f "$modulecmd" && -x "$path/runtime/bin/modulecmd" ]]; then
+  # bits' own runtime, when this install brings one (see bits)
+  modulecmd="$path/runtime/bin/modulecmd"
+  moduleenv=
+fi
+
 if [[ ! -f "$modulecmd" ]]; then
   # Fallback on system-installed
   [[ $BITSENV_DEBUG == 1 ]] && printf "NOTICE: using modulecmd from the system\n" >&2

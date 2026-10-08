@@ -48,6 +48,10 @@ S3KEYS="${BITS_AWS_KEYS_FILE:-$HOME/.bits/s3keys}"
 # bitsStore lives next to the bits_helpers package (bits/), so it imports the
 # helpers from its own directory — no dependency on `bits` being on PATH.
 SELFDIR="$(cd "$(dirname "$0")" && pwd)"
+# bits' own runtime when this install brings one (see bits), else python3 from PATH.
+# The runtime ignores PYTHONPATH (-E -s), so it gets this directory as BITSSTORE_SELF.
+BITS_PY=(python3)
+[[ -x "$SELFDIR/runtime/bin/python3" ]] && BITS_PY=("$SELFDIR/runtime/bin/python3" -E -s)
 
 # Load creds if present; a missing file is not fatal here (--help needs no S3).
 # The Python side checks for credentials before it actually touches S3.
@@ -60,10 +64,12 @@ if [ -f "$S3KEYS" ]; then
   [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN || true
 fi
 
-BITSSTORE_STORE="$STORE" \
+BITSSTORE_STORE="$STORE" BITSSTORE_SELF="$SELFDIR" \
   PYTHONPATH="${SELFDIR}${PYTHONPATH:+:$PYTHONPATH}" \
-  exec python3 - "$@" <<'PY'
+  exec "${BITS_PY[@]}" - "$@" <<'PY'
 import argparse, datetime, fnmatch, hashlib, json, os, sys, tempfile
+if sys.flags.ignore_environment:   # bits' own runtime: PYTHONPATH is not read
+    sys.path.insert(0, os.environ["BITSSTORE_SELF"])
 
 from bits_helpers.publish import _normalize_s3_store
 from bits_helpers.sync import remote_from_url
