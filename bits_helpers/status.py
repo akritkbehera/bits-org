@@ -28,7 +28,6 @@ import os
 import re
 import shutil
 import sys
-from collections import OrderedDict
 from glob import glob
 from os.path import abspath, basename, dirname, join
 from pathlib import Path
@@ -40,9 +39,9 @@ from bits_helpers.log import debug, info, warning, banner
 from bits_helpers.packages import getPackageList
 from bits_helpers.utilities import (
     prunePaths,
-    resolve_tag,
     topological_sort,
     ver_rev,
+    is_virtual_package,
 )
 from bits_helpers.defaults import parseDefaults, readDefaults, validateDefaults
 from bits_helpers.arch import (
@@ -138,28 +137,6 @@ def _try_populate_refs(spec: dict, reference_sources: str, package: str) -> None
         spec.setdefault("scm_refs", {})
 
 
-def _resolve_commit_hash(spec: dict, default_vars=None) -> None:
-    """Set spec["commit_hash"] from scm_refs, falling back to the tag string."""
-    if "tag" not in spec:
-        spec["tag"] = spec["version"]
-    # Expand date-based tags (%(year)s etc.) and defaults/recipe variables, so
-    # `bits status` resolves the same tag the build does.
-    try:
-        spec["tag"] = resolve_tag(spec, default_vars)
-    except (KeyError, ValueError):
-        pass
-    if "source" not in spec:
-        # Package has no source (e.g. a meta-package); commit_hash is "0".
-        spec.setdefault("commit_hash", "0")
-        return
-    scm_refs = spec.get("scm_refs", {})
-    # Prefer branch head; fall back to literal tag / commit hash string.
-    spec["commit_hash"] = (
-        scm_refs.get("refs/heads/" + spec["tag"])
-        or spec["tag"]
-    )
-
-
 def _fetch_refs_with_clone(spec: dict, reference_sources: str,
                            package: str) -> None:
     """Populate spec["scm_refs"] by cloning / fetching the reference repo.
@@ -220,6 +197,10 @@ def _scan_local_tars(spec: dict, work_dir: str, architecture: str) -> bool:
         if not match:
             continue
         rev_hash = match.group(1)
+        if (spec.get("_revision_policy_local_fallback")
+                and rev_hash == spec.get("hash")
+                and name.endswith("-{}.{}.tar.gz".format(spec["hash"], spec_arch))):
+            return True
         if "local" in name:
             if rev_hash in spec.get("local_hashes", []):
                 return True
@@ -240,7 +221,7 @@ def _is_already_installed(spec: dict, work_dir: str, architecture: str) -> bool:
 
 
 def _classify(spec: dict, work_dir: str, architecture: str,
-              sync_helper=None) -> str:
+              sync_helper=None, write_store=None) -> str:
     """Return the state string for one resolved package spec."""
     pkg = spec["package"]
 
@@ -265,22 +246,35 @@ def _classify(spec: dict, work_dir: str, architecture: str,
         eff = effective_arch(spec, architecture)
         if store_can_list(sync_helper):
             for h in spec.get("remote_hashes", []):
-                if pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff) is not None:
+                names = sync_helper.list_store_tarballs(eff, h)
+                debug("Remote status lookup for %s@%s hash %s: %d candidate(s)",
+                      pkg, spec.get("version", "?"), h, len(names))
+                if pick_revision(names, spec, eff) is not None:
                     return FROM_REMOTE_STORE
-            return BUILD_FROM_SOURCE
-        try:
-            sync_helper.fetch_tarball(spec)
-            tar_hash_dir = join(
-                work_dir,
-                "TARS", effective_arch(spec, architecture),
-                "store", spec["hash"][:2], spec["hash"],
-            )
-            tarballs = [t for t in glob(join(tar_hash_dir, "*gz"))
-                        if os.path.isfile(t)]
-            if tarballs:
-                return FROM_REMOTE_STORE
-        except Exception:
-            pass
+        else:
+            try:
+                sync_helper.fetch_tarball(spec)
+                tar_hash_dir = join(
+                    work_dir,
+                    "TARS", effective_arch(spec, architecture),
+                    "store", spec["hash"][:2], spec["hash"],
+                )
+                tarballs = [t for t in glob(join(tar_hash_dir, "*gz"))
+                            if os.path.isfile(t)]
+                if tarballs:
+                    return FROM_REMOTE_STORE
+            except Exception:
+                pass
+    has_write_store = (bool(getattr(sync_helper, "writeStore", ""))
+                       if write_store is None else bool(write_store))
+    if (spec.get("_revision_policy_hash_injected") and not has_write_store
+            and not is_virtual_package(spec)):
+        from bits_helpers.hashing import apply_local_hash_fallback
+        apply_local_hash_fallback(spec, write_store=False, reusable=False)
+        if _is_already_installed(spec, work_dir, architecture):
+            return ALREADY_INSTALLED
+        if _scan_local_tars(spec, work_dir, architecture):
+            return FROM_STORE
     return BUILD_FROM_SOURCE
 
 
@@ -365,7 +359,10 @@ def _emit_json(rows: List[dict], architecture: str) -> None:
 def doStatus(args, parser) -> None:
     """Resolve the dependency tree and report the build state of each package."""
     # Deferred heavy imports (build.py pulls in jinja2, analytics, etc.)
-    from bits_helpers.build import storeHook, hash_local_changes
+    from bits_helpers.build import (
+        add_initdotsh_hash_marker, apply_defaults_legacy_initdotsh,
+        defaults_store_url, hash_local_changes, prepare_hash_inputs,
+        resolve_initdotsh_mode, storeHook)
     from bits_helpers.hashing import storeHashes
     from bits_helpers.log import dieOnError
     from bits_helpers.git import git
@@ -380,13 +377,23 @@ def doStatus(args, parser) -> None:
     resolve_config_dir(args)
 
     # ── Defaults and overrides ─────────────────────────────────────────────────
-    defaults_reader = lambda: readDefaults(
-        args.configDir, args.defaults, parser.error, args.architecture
-    )
+    # The init.sh mode is part of the defaults-release hash: decide it as build
+    # does (BITS_LEGACY_INITDOTSH, else a defaults file's legacy_initdotsh, else
+    # from modules), so that status computes the same package identities.
+    initdotsh_explicit = resolve_initdotsh_mode(args)
+
+    def defaults_reader():
+        meta, body = readDefaults(
+            args.configDir, args.defaults, parser.error, args.architecture
+        )
+        add_initdotsh_hash_marker(meta, args.initdotshFromModules)
+        return meta, body
+
     err, overrides, taps, defaults_meta = parseDefaults(
         args.disable, defaults_reader, debug, args.architecture, args.configDir
     )
     dieOnError(err, err)
+    apply_defaults_legacy_initdotsh(args, defaults_meta, initdotsh_explicit)
 
     raw_architecture = args.architecture
     args.architecture = compute_combined_arch(defaults_meta, args.defaults, raw_architecture)
@@ -509,19 +516,53 @@ def doStatus(args, parser) -> None:
     # Processed in topological order so dependency hashes are available.
     rows: List[dict] = []
 
+    # Resolve the same read/write store inputs as `bits build`. Status does not
+    # write anything, but the presence of a write store changes the hash-policy
+    # label selected for packages that are not reusable from the read store.
+    write_store_url = (getattr(args, "writeStore", "")
+                       or os.environ.get("BITS_WRITE_STORE")
+                       or os.environ.get("WRITE_STORE") or "")
+    remote_store_url = (getattr(args, "remoteStore", "")
+                        or os.environ.get("BITS_REMOTE_STORE")
+                        or os.environ.get("REMOTE_STORE") or "")
+    # As in build: without a store from the command line or environment, the
+    # one the defaults name (system: remote_store, ::rw for a writable one).
+    if not remote_store_url and not getattr(args, "no_remote_store", False):
+        remote_store_url, defaults_rw = defaults_store_url(defaults_meta)
+        if defaults_rw and not write_store_url:
+            write_store_url = remote_store_url
+    if remote_store_url.endswith("::rw"):
+        if write_store_url:
+            parser.error("cannot specify ::rw and --write-store at the same time")
+        remote_store_url = remote_store_url[:-4]
+        write_store_url = remote_store_url
+    if getattr(args, "no_remote_store", False):
+        remote_store_url = ""
+    if not remote_store_url and write_store_url:
+        remote_store_url = write_store_url
+
     # Optional remote store for --check-store probing
     sync_helper = None
-    if getattr(args, "checkStore", False) and getattr(args, "remoteStore", ""):
+    if getattr(args, "checkStore", False) and remote_store_url:
         try:
             from bits_helpers.sync import remote_from_url
             sync_helper = remote_from_url(
-                args.remoteStore, "", args.architecture, work_dir,
+                remote_store_url, "", args.architecture, work_dir,
                 getattr(args, "insecure", False)
             )
         except Exception as exc:
             warning("Cannot initialise remote store for --check-store: %s", exc)
 
     hash_error_pkgs: List[str] = []
+
+    status_write_store = bool(write_store_url)
+    _branch_err, _branch_value = git(
+        ("symbolic-ref", "-q", "HEAD"), directory=args.configDir, check=False)
+    branch_basename = (re.sub("refs/heads/", "", _branch_value)
+                       if _branch_err == 0 else "")
+    branch_stream = re.sub("-patches$", "", branch_basename)
+    if branch_stream == branch_basename:
+        branch_stream = ""
 
     for p in buildOrder:
         spec = specs[p]
@@ -548,23 +589,27 @@ def doStatus(args, parser) -> None:
         else:
             spec.setdefault("scm_refs", {})
 
-        # Resolve commit hash
-        _resolve_commit_hash(spec, defaults_meta.get("variables"))
-
         # Devel package: compute devel_hash from local changes
-        if spec["is_devel_pkg"]:
+        def devel(spec):
             try:
                 out = spec["scm"].checkedOutCommitName(directory=spec["source"])
                 spec["commit_hash"] = out.strip()
                 local_hash, _ = hash_local_changes(spec)
                 spec["devel_hash"] = spec["commit_hash"] + local_hash
                 out = spec["scm"].branchOrRef(directory=spec["source"])
-                dev_branch = out.replace("/", "-")
-                spec["tag"] = (getattr(args, "develPrefix", None) or dev_branch)
+                spec["tag"] = out.replace("/", "-")
                 spec["commit_hash"] = "0"
             except Exception as exc:
-                debug("Could not compute devel_hash for %s: %s", p, exc)
+                debug("Could not compute devel_hash for %s: %s", spec["package"], exc)
                 spec.setdefault("devel_hash", "")
+
+        # Resolve exactly the hash inputs that doBuild prepares before
+        # storeHashes (the same function): tags/versions, templated sources and
+        # patches, variables, and recipe text. Hashing the raw recipe fields
+        # makes status look under a different store key from the build.
+        prepare_hash_inputs(
+            spec, specs, args.defaults, defaults_meta.get("variables"),
+            args.configDir, branch_basename, branch_stream, devel=devel)
 
         # Compute build hashes (same as doBuild main loop)
         consider_relocation = (
@@ -574,6 +619,9 @@ def doStatus(args, parser) -> None:
         try:
             storeHook(p, specs, args.defaults[0])
             storeHashes(p, specs, considerRelocation=consider_relocation)
+            debug("Status hashes for %s: remote %s; local %s", p,
+                  spec.get("remote_revision_hash", "?"),
+                  spec.get("local_revision_hash", "?"))
         except Exception as exc:
             debug("Hash computation failed for %s: %s", p, exc)
             hash_error_pkgs.append(p)
@@ -594,7 +642,11 @@ def doStatus(args, parser) -> None:
             spec["hash"] = spec["remote_revision_hash"]
             spec["revision"] = "1"
 
-        state = _classify(spec, work_dir, args.architecture, sync_helper)
+        state = _classify(spec, work_dir, args.architecture, sync_helper,
+                          write_store=status_write_store)
+        if spec["is_devel_pkg"]:
+            # Build disables remote writes after reaching a development package.
+            status_write_store = False
         version_str = spec.get("version", "?")
         if spec["is_devel_pkg"]:
             version_str = "{} (dev)".format(version_str)

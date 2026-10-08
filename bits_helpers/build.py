@@ -96,6 +96,139 @@ def apply_defaults_legacy_initdotsh(args, defaults_meta, explicit) -> bool:
   return True
 
 
+def add_initdotsh_hash_marker(defaults_meta, enabled) -> None:
+  """Add the module-based init.sh mode to the defaults package hash inputs."""
+  if not enabled:
+    return
+  env = defaults_meta.get("env")
+  if not isinstance(env, dict):
+    env = OrderedDict()
+    defaults_meta["env"] = env
+  env["BITS_INITDOTSH_FROM_MODULES"] = "1"
+
+
+def resolve_initdotsh_mode(args) -> bool:
+  """Set ``args.initdotshFromModules``: the --initdotsh-from-modules /
+  --legacy-initdotsh flag, else legacy when BITS_LEGACY_INITDOTSH is set (the
+  aliBuild wrapper sets it), else from modules (the default). Returns whether
+  the choice was explicit (flag or env var): only then does it win over a
+  defaults file's ``legacy_initdotsh`` (apply_defaults_legacy_initdotsh)."""
+  explicit = (getattr(args, "initdotshFromModules", None) is not None
+              or os.environ.get("BITS_LEGACY_INITDOTSH", "").strip() != "")
+  if getattr(args, "initdotshFromModules", None) is None:
+    args.initdotshFromModules = os.environ.get(
+      "BITS_LEGACY_INITDOTSH", "").strip().lower() not in ("1", "true", "yes", "on")
+  return explicit
+
+
+def defaults_store_url(defaults_meta):
+  """The binary store the active defaults name (``system: remote_store``, else a
+  top-level ``remote_store``), as ``(url, writable)``: normalised, with a
+  trailing ``::rw`` taken as writable. ``("", False)`` when there is none."""
+  system = defaults_meta.get("system", {}) or {}
+  url = system.get("remote_store", defaults_meta.get("remote_store"))
+  if not url:
+    return "", False
+  url = str(url).strip()
+  writable = url.endswith("::rw")
+  from bits_helpers.sync import normalise_store_url
+  return normalise_store_url(url[:-4] if writable else url), writable
+
+
+def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
+                        branch_basename="", branch_stream="", devel=None,
+                        devel_version=None) -> None:
+  """Resolve what storeHashes() hashes for *spec*: tag and commit, version,
+  sources, patches, variables and recipe text. `bits build` and `bits status`
+  both use it, so that they compute the same package identity.
+
+  *devel* is called for a development package with a source, once its tag is
+  resolved; it sets commit_hash, devel_hash and tag from the checkout.
+  *devel_version*, if set, then replaces a development package's version
+  (--devel-prefix). *spec* needs its scm_refs when it has a source.
+  """
+  spec["commit_hash"] = "0"
+  # version_from: <var> — take version (and, for a source-less package, tag +
+  # commit_hash) directly from a named defaults variable. Runs before the tag
+  # defaulting / source blocks so a synthetic package can be versioned by e.g.
+  # the LCG release without a source. No-op unless the recipe sets version_from.
+  apply_version_from(spec, default_vars)
+  if "tag" not in spec:
+    spec["tag"] = spec["version"]
+  if "source" in spec:
+    # Tag may contain date params like %(year)s, %(month)s, %(day)s, %(hour),
+    # plus any variable from the defaults profile / the recipe (e.g. an
+    # override of tag: "%(release)s" driven by variables: release:).
+    spec["tag"] = resolve_tag(spec, default_vars)
+    # First, we try to resolve the "tag" as a branch name, and use its tip as
+    # the commit_hash. If it's not a branch, it must be a tag or a raw commit
+    # hash, so we use it directly. A development package then takes its
+    # commit from the checkout (devel).
+    spec["commit_hash"] = spec["scm_refs"].get("refs/heads/" + spec["tag"], spec["tag"])
+    if spec.get("is_devel_pkg") and devel is not None:
+      devel(spec)
+
+  if "sources" in spec:
+    # Expand a templated tag (e.g. "v%(version)s") for tarball sources too.
+    # The git branch above only resolves it when a `source:` is present, so a
+    # tarball-only recipe kept the raw tag, which then leaked into commit_hash
+    # and the SOURCES/<pkg>/<version>/<tag> path. No-op for literal tags.
+    spec["tag"] = resolve_tag(spec, default_vars)
+    spec["sources"] = [resolveLocalPath(config_dir, s) for s in spec["sources"]]
+    spec["commit_hash"] = spec["tag"]
+  # Version may contain date params like tag, plus %(commit_hash)s,
+  # %(short_hash)s and %(tag)s.
+  spec["version"] = resolve_version(spec, defaults, branch_basename, branch_stream)
+
+  spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
+  variables = spec["variables"]
+  if "Python" in spec.get("requires", []):
+    # Find the Python package spec safely
+    python_version_str = ""
+    py_spec = specs.get("Python")
+    if isinstance(py_spec, dict):
+      python_version_str = (py_spec.get("version", "") or "").replace("v", "")
+    python_version = python_version_str.split(".") if python_version_str else []
+
+    # Safely extract major, minor, patch versions
+    major = python_version[0] if len(python_version) > 0 else "0"
+    minor = python_version[1] if len(python_version) > 1 else "0"
+    patch = python_version[2] if len(python_version) > 2 else "0"
+
+    # Populate variables dictionary
+    variables.update({
+        "python_major_version": major,
+        "python_minor_version": minor,
+        "python_patch_version": patch,
+        "python_major_minor": f"{major}.{minor}",
+        "python_major_minor_str": f"{major}{minor}",
+    })
+  for k, v in variables.items():
+    variables[k] = resolve_spec_data(spec, v, defaults, branch_basename, branch_stream)
+  if "source" in spec:
+    spec["source"] = resolve_spec_data(spec, spec["source"], defaults, branch_basename, branch_stream)
+  if "sources" in spec:
+    spec["sources"] = [resolve_spec_data(spec, src, defaults, branch_basename, branch_stream) for src in spec["sources"]]
+  if "patches" in spec:
+    spec["patches"] = [resolve_spec_data(spec, p, defaults, branch_basename, branch_stream) for p in spec["patches"]]
+  # Variables defined in the active --defaults profile's `variables:` block are
+  # available to every recipe body.  When a recipe does not itself opt into
+  # expansion (no `variables:` / `expand_recipe: true`) we expand it in SOFT
+  # mode: only known variables are substituted and any other %(...)s / bare %
+  # is left untouched, so profile-wide variables never clobber or break a
+  # recipe that happens to contain a literal %(...)s or shell `%`.
+  default_vars = default_vars or None
+  recipe_opts_in = bool(variables or spec.get("expand_recipe", False))
+  if recipe_opts_in or default_vars:
+    spec["recipe"] = resolve_spec_data(spec, spec["recipe"], defaults,
+                                       branch_basename, branch_stream,
+                                       default_vars=default_vars,
+                                       strict=recipe_opts_in)
+
+  if spec.get("is_devel_pkg") and devel_version is not None:
+    spec["version"] = devel_version
+
+
 def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None) -> None:
   """Background task: prefetch the prebuilt tarball + all source archives.
 
@@ -1965,8 +2098,8 @@ def build_one_package(p, ctx):
         "this version coexist the convenience symlink will be silently "
         "overwritten.", spec["package"], spec["package"], spec["version"],
       )
-    # Hash was already computed; align spec["hash"] to the remote store
-    # (forced revisions are never prefixed with "local").
+    # Keep the remote hash for lookup and reuse. A policy-injected label can
+    # fall back to the local hash after the remote reuse attempt below.
     spec["hash"] = spec["remote_revision_hash"]
   else:
     # Normal revision-counter logic: scan existing symlinks and find the
@@ -2205,126 +2338,135 @@ def build_one_package(p, ctx):
   # dangling symlinks — e.g. created by a previous interrupted run that
   # wrote fetch_symlinks() entries before the actual tarball existed —
   # are NOT mistaken for a successfully installed package.
+  # Development packages have their own rebuild-detection logic above.
+  # spec["hash"] is only useful here for regular packages.
+  def _handle_already_installed(hashPath):
+    hashFile = hashPath + "/.build-hash"
+    if os.path.islink(hashPath) and os.path.isdir(hashPath):
+      fileHash = spec["hash"]
+    else:
+      fileHash = readHashFile(hashFile)
+    if fileHash == spec["hash"] and not spec["is_devel_pkg"]:
+      # If we get here, the installed package matches the selected hash. It is
+      # already usable, so we can register its dependency closure and skip work.
+      debug("Package %s is already installed with the expected hash.", spec["package"])
+      # own_hash arch bridge (reuse compatibility): an own_hash package (the
+      # toolchain) is installed ONLY under its build-type-NEUTRAL arch. A consumer
+      # whose init.sh was generated by the current initdotsh sources it from that
+      # neutral arch, but a consumer — or the own_hash package's own init.sh —
+      # reused from an OLDER store tarball carries a baked path under the build arch
+      # ($BITS_ARCH_PREFIX). Materialise a build-arch -> neutral symlink so those
+      # older references resolve, instead of forcing a toolchain rebuild. Only when
+      # the effective (neutral) arch actually differs from the build arch.
+      _bridge_eff = effective_arch(spec, args.architecture)
+      if spec.get("own_hash") and _bridge_eff != args.architecture:
+        _bridge_neutral = _pkg_install_path(workDir, _bridge_eff, spec)
+        _bridge_build   = _pkg_install_path(workDir, args.architecture, spec)
+        if os.path.isdir(_bridge_neutral) and not os.path.exists(_bridge_build):
+          try:
+            os.makedirs(os.path.dirname(_bridge_build), exist_ok=True)
+            symlink(os.path.relpath(_bridge_neutral, os.path.dirname(_bridge_build)),
+                    _bridge_build)
+            debug("own_hash arch bridge: %s -> %s", _bridge_build, _bridge_neutral)
+          except OSError as _bridge_exc:
+            debug("own_hash arch bridge symlink failed (%s)", _bridge_exc)
+      # If using incremental builds, next time we execute the script we need to remove
+      # the placeholders which avoid rebuilds.
+      if spec["is_devel_pkg"] and "incremental_recipe" in spec:
+        unlink(hashFile)
+      if "obsolete_tarball" in spec:
+        unlink(realpath(spec["obsolete_tarball"]))
+        unlink(spec["obsolete_tarball"])
+      # We can now delete the INSTALLROOT and BUILD directories,
+      # assuming the package is not a development one. We also can
+      # delete the SOURCES in case we have aggressive-cleanup enabled.
+      if not spec["is_devel_pkg"] and args.autoCleanup:
+        cleanupDirs = [buildRoot,
+                       join(workDir, "INSTALLROOT", spec["hash"])]
+        if args.aggressiveCleanup:
+          cleanupDirs.append(join(workDir, "SOURCES", spec["package"]))
+        debug("Cleaning up:\n%s", "\n".join(cleanupDirs))
+
+        for d in cleanupDirs:
+          shutil.rmtree(d.encode("utf8"), True)
+        try:
+          unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest"))
+          if "develPrefix" in args:
+            unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + args.develPrefix))
+        except Exception:
+          pass
+        try:
+          rmdir(join(buildWorkDir, "BUILD"))
+          rmdir(join(workDir, "INSTALLROOT"))
+        except Exception:
+          pass
+      # The install dir is present at the right hash, but that does NOT prove the
+      # content tarball is in the write store: a store wipe (or the first publish
+      # from a node whose local cache stayed warm) leaves a package installed
+      # locally yet absent from S3. Don't assume "installed => published" — when a
+      # write store is configured and the local content tarball is present, push
+      # it. upload_symlinks_and_tarball HEAD-skips when the object already exists,
+      # so this is a cheap no-op in the common case. Guards mirror doFinalSync
+      # (skip local revisions, repository packages, non-redistributable binaries).
+      from bits_helpers.sync import binary_redistributable
+      if getattr(syncHelper, "writeStore", "") \
+         and not spec["revision"].startswith("local") \
+         and not spec.get("provides_repository") \
+         and binary_redistributable(spec):
+        _eff_arch = effective_arch(spec, args.architecture)
+        _tarname  = "%s-%s.%s.tar.gz" % (spec["package"], ver_rev(spec), _eff_arch)
+        _local_tar = os.path.join(workDir, resolve_store_path(_eff_arch, spec["hash"]), _tarname)
+        # Gate on the WRITE-store object itself (a HEAD), never the manifest or the
+        # read store: after a store wipe the package is installed locally but the
+        # S3 object is gone.
+        # The existence HEAD is itself best-effort: _s3_key_exists re-raises any
+        # non-404 (403 expired creds, 503 SlowDown), and a connection timeout is
+        # not even a ClientError — so an un-guarded call here would propagate and
+        # fail an ALREADY-INSTALLED (reused) package, which has an empty BUILD dir
+        # and no log. Under a -j build doing one HEAD per reused package a transient
+        # throttle/timeout is near-certain, so we must never let it fail the package:
+        # on error we fall through and try the (idempotent) publish anyway.
+        _in_write_store = False
+        try:
+          _in_write_store = syncHelper.writestore_has_tarball(spec, args.architecture)
+        except Exception as exc:
+          warning("%s@%s write-store check failed (%s); will try to publish anyway",
+                  spec["package"], spec["version"], exc)
+        if _in_write_store:
+          debug("%s@%s already in the write store; nothing to publish.",
+                spec["package"], spec["version"])
+        elif os.path.isfile(_local_tar):
+          # Absent from the store but present locally: publish it. Best-effort — a
+          # store hiccup (expired creds / transient network) must NOT fail an
+          # otherwise-complete package, unlike a freshly built one in doFinalSync.
+          try:
+            syncHelper.upload_symlinks_and_tarball(spec)
+            info("%s@%s [uploaded from local cache]", spec["package"], spec["version"])
+          except Exception as exc:
+            warning("%s@%s store sync failed: %s", spec["package"], spec["version"], exc)
+        else:
+          warning("%s@%s installed locally but absent from the store and no local "
+                  "tarball — rebuild to publish it.", spec["package"], spec["version"])
+      # Record in the build manifest that this package was already installed.
+      if getattr(args, "manifest", None) is not None:
+        args.manifest.add_package(spec, "already_installed",
+                                  effective_architecture=effective_arch(spec, args.architecture))
+      # Touch the sentinel so the cleanup command knows this package was used.
+      try:
+        from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
+        _touch_sentinel(workDir, args.architecture, spec["package"], ver_rev(spec))
+      except Exception:
+        pass
+      return True
+    return False
+
+  if _handle_already_installed(hashPath):
+    return
+
   if os.path.islink(hashPath) and os.path.isdir(hashPath):
     fileHash = spec["hash"]
   else:
     fileHash = readHashFile(hashFile)
-  # Development packages have their own rebuild-detection logic above.
-  # spec["hash"] is only useful here for regular packages.
-  if fileHash == spec["hash"] and not spec["is_devel_pkg"]:
-    # If we get here, we know we are in sync with whatever remote store.  We
-    # can therefore create a directory which contains all the packages which
-    # were used to compile this one.
-    debug("Package %s was correctly compiled. Moving to next one.", spec["package"])
-    # own_hash arch bridge (reuse compatibility): an own_hash package (the
-    # toolchain) is installed ONLY under its build-type-NEUTRAL arch. A consumer
-    # whose init.sh was generated by the current initdotsh sources it from that
-    # neutral arch, but a consumer — or the own_hash package's own init.sh —
-    # reused from an OLDER store tarball carries a baked path under the build arch
-    # ($BITS_ARCH_PREFIX). Materialise a build-arch -> neutral symlink so those
-    # older references resolve, instead of forcing a toolchain rebuild. Only when
-    # the effective (neutral) arch actually differs from the build arch.
-    _bridge_eff = effective_arch(spec, args.architecture)
-    if spec.get("own_hash") and _bridge_eff != args.architecture:
-      _bridge_neutral = _pkg_install_path(workDir, _bridge_eff, spec)
-      _bridge_build   = _pkg_install_path(workDir, args.architecture, spec)
-      if os.path.isdir(_bridge_neutral) and not os.path.exists(_bridge_build):
-        try:
-          os.makedirs(os.path.dirname(_bridge_build), exist_ok=True)
-          symlink(os.path.relpath(_bridge_neutral, os.path.dirname(_bridge_build)),
-                  _bridge_build)
-          debug("own_hash arch bridge: %s -> %s", _bridge_build, _bridge_neutral)
-        except OSError as _bridge_exc:
-          debug("own_hash arch bridge symlink failed (%s)", _bridge_exc)
-    # If using incremental builds, next time we execute the script we need to remove
-    # the placeholders which avoid rebuilds.
-    if spec["is_devel_pkg"] and "incremental_recipe" in spec:
-      unlink(hashFile)
-    if "obsolete_tarball" in spec:
-      unlink(realpath(spec["obsolete_tarball"]))
-      unlink(spec["obsolete_tarball"])
-    # We can now delete the INSTALLROOT and BUILD directories,
-    # assuming the package is not a development one. We also can
-    # delete the SOURCES in case we have aggressive-cleanup enabled.
-    if not spec["is_devel_pkg"] and args.autoCleanup:
-      cleanupDirs = [buildRoot,
-                     join(workDir, "INSTALLROOT", spec["hash"])]
-      if args.aggressiveCleanup:
-        cleanupDirs.append(join(workDir, "SOURCES", spec["package"]))
-      debug("Cleaning up:\n%s", "\n".join(cleanupDirs))
-
-      for d in cleanupDirs:
-        shutil.rmtree(d.encode("utf8"), True)
-      try:
-        unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest"))
-        if "develPrefix" in args:
-          unlink(join(buildWorkDir, "BUILD", spec["package"] + "-latest-" + args.develPrefix))
-      except Exception:
-        pass
-      try:
-        rmdir(join(buildWorkDir, "BUILD"))
-        rmdir(join(workDir, "INSTALLROOT"))
-      except Exception:
-        pass
-    # The install dir is present at the right hash, but that does NOT prove the
-    # content tarball is in the write store: a store wipe (or the first publish
-    # from a node whose local cache stayed warm) leaves a package installed
-    # locally yet absent from S3. Don't assume "installed => published" — when a
-    # write store is configured and the local content tarball is present, push
-    # it. upload_symlinks_and_tarball HEAD-skips when the object already exists,
-    # so this is a cheap no-op in the common case. Guards mirror doFinalSync
-    # (skip local revisions, repository packages, non-redistributable binaries).
-    from bits_helpers.sync import binary_redistributable
-    if getattr(syncHelper, "writeStore", "") \
-       and not spec["revision"].startswith("local") \
-       and not spec.get("provides_repository") \
-       and binary_redistributable(spec):
-      _eff_arch = effective_arch(spec, args.architecture)
-      _tarname  = "%s-%s.%s.tar.gz" % (spec["package"], ver_rev(spec), _eff_arch)
-      _local_tar = os.path.join(workDir, resolve_store_path(_eff_arch, spec["hash"]), _tarname)
-      # Gate on the WRITE-store object itself (a HEAD), never the manifest or the
-      # read store: after a store wipe the package is installed locally but the
-      # S3 object is gone.
-      # The existence HEAD is itself best-effort: _s3_key_exists re-raises any
-      # non-404 (403 expired creds, 503 SlowDown), and a connection timeout is
-      # not even a ClientError — so an un-guarded call here would propagate and
-      # fail an ALREADY-INSTALLED (reused) package, which has an empty BUILD dir
-      # and no log. Under a -j build doing one HEAD per reused package a transient
-      # throttle/timeout is near-certain, so we must never let it fail the package:
-      # on error we fall through and try the (idempotent) publish anyway.
-      _in_write_store = False
-      try:
-        _in_write_store = syncHelper.writestore_has_tarball(spec, args.architecture)
-      except Exception as exc:
-        warning("%s@%s write-store check failed (%s); will try to publish anyway",
-                spec["package"], spec["version"], exc)
-      if _in_write_store:
-        debug("%s@%s already in the write store; nothing to publish.",
-              spec["package"], spec["version"])
-      elif os.path.isfile(_local_tar):
-        # Absent from the store but present locally: publish it. Best-effort — a
-        # store hiccup (expired creds / transient network) must NOT fail an
-        # otherwise-complete package, unlike a freshly built one in doFinalSync.
-        try:
-          syncHelper.upload_symlinks_and_tarball(spec)
-          info("%s@%s [uploaded from local cache]", spec["package"], spec["version"])
-        except Exception as exc:
-          warning("%s@%s store sync failed: %s", spec["package"], spec["version"], exc)
-      else:
-        warning("%s@%s installed locally but absent from the store and no local "
-                "tarball — rebuild to publish it.", spec["package"], spec["version"])
-    # Record in the build manifest that this package was already installed.
-    if getattr(args, "manifest", None) is not None:
-      args.manifest.add_package(spec, "already_installed",
-                                effective_architecture=effective_arch(spec, args.architecture))
-    # Touch the sentinel so the cleanup command knows this package was used.
-    try:
-      from bits_helpers.cleanup import touch_sentinel as _touch_sentinel
-      _touch_sentinel(workDir, args.architecture, spec["package"], ver_rev(spec))
-    except Exception:
-      pass
-    return
-
   if fileHash != "0":
     debug("Mismatch between local area (%s) and the one which I should build (%s). Redoing.",
           fileHash, spec["hash"])
@@ -2424,6 +2566,34 @@ def build_one_package(p, ctx):
         else:
           debug("Trusted reuse: %s@%s verified against signed manifest",
                 spec["package"], spec["hash"])
+
+    # A hash-policy package first looks up the remote identity, so read-only
+    # builds can reuse CI artifacts. Only after that lookup misses do we switch
+    # the label and store path to the local identity for this build.
+    from bits_helpers.hashing import apply_local_hash_fallback
+    remote_eff = effective_arch(spec, args.architecture)
+    remote_link = os.path.join(
+        workDir, resolve_links_path(remote_eff, spec["package"]),
+        "{}-{}.{}.tar.gz".format(spec["package"], ver_rev(spec), remote_eff))
+    remote_hash = spec["hash"]
+    if apply_local_hash_fallback(
+        spec, getattr(syncHelper, "writeStore", ""), spec["cachedTarball"]):
+      if spec["hash"] != remote_hash:
+        call_ignoring_oserrors(unlink, remote_link)
+      create_version_link(spec, args.architecture, workDir)
+      local_hash_dir = os.path.join(
+          workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
+      local_tarballs = [t for t in glob(os.path.join(local_hash_dir, "*gz"))
+                        if os.path.isfile(t)]
+      spec["cachedTarball"] = _select_cached_tarball(
+          local_tarballs, spec, effective_arch(spec, args.architecture))
+
+      local_hash_path = _pkg_install_path(
+          workDir, effective_arch(spec, args.architecture), spec)
+      buildRoot = join(buildWorkDir, "BUILD", spec["hash"])
+      if _handle_already_installed(local_hash_path):
+        return
+      shutil.rmtree(local_hash_path.encode("utf-8"), True)
 
   # The actual build script.
   
@@ -2822,12 +2992,7 @@ def doBuild(args, parser):
     # reconstruction on it. In legacy mode (--legacy-initdotsh) nothing is added,
     # so its hashes are byte-identical to the pre-modules default (alidist tarballs
     # stay reusable).
-    if getattr(args, "initdotshFromModules", False):
-      from collections import OrderedDict as _OD
-      # An empty `env:` block parses to None, so setdefault would keep it None.
-      if not isinstance(meta.get("env"), dict):
-        meta["env"] = _OD()
-      meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
+    add_initdotsh_hash_marker(meta, getattr(args, "initdotshFromModules", False))
     return meta, body
   # Deriving the dependency env from the dependencies' modulefiles is the default.
   # --legacy-initdotsh (CLI) or BITS_LEGACY_INITDOTSH=1 (the environment — the
@@ -2839,12 +3004,7 @@ def doBuild(args, parser):
   # does it win over a defaults-file request below; the CLI flags set
   # initdotshFromModules to True/False (None when absent), env is
   # BITS_LEGACY_INITDOTSH.
-  _initdotsh_explicit = (getattr(args, "initdotshFromModules", None) is not None
-                         or os.environ.get("BITS_LEGACY_INITDOTSH", "").strip() != "")
-  if getattr(args, "initdotshFromModules", None) is None:
-    _legacy_env = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower() in (
-      "1", "true", "yes", "on")
-    args.initdotshFromModules = not _legacy_env
+  _initdotsh_explicit = resolve_initdotsh_mode(args)
   # Preserve the CLI-supplied disables: parseDefaults appends the config-dir
   # disables to this list in place, so the re-parse below must start clean.
   _cli_disable = list(args.disable)
@@ -3171,12 +3331,8 @@ def doBuild(args, parser):
   # built-in arch default. '::rw' shorthand is honoured as on the CLI.
   if (not getattr(args, "remoteStoreExplicit", False)
       and not getattr(args, "no_remote_store", False)):
-    _rs = _system_opt("remote_store", None)
+    _rs, _rw = defaults_store_url(defaultsMeta)
     if _rs:
-      _rs = str(_rs).strip()
-      from bits_helpers.sync import normalise_store_url
-      _rw = _rs.endswith("::rw")
-      _rs = normalise_store_url(_rs[:-4] if _rw else _rs)
       if _rw and not getattr(args, "writeStore", ""):
         args.writeStore = _rs
       args.remoteStore = _rs
@@ -3625,10 +3781,9 @@ def doBuild(args, parser):
 
   buildTargets = []
   
-  # Resolve the tag to the actual commit ref
+  # Resolve the tag to the actual commit ref, and every other hash input.
   for p in buildOrder:
     spec = specs[p]
-    spec["commit_hash"] = "0"
     develPackageBranch = ""
     # This is a development package (i.e. a local directory named like
     # spec["package"]), but there is no "source" key in its bits recipe,
@@ -3642,103 +3797,28 @@ def doBuild(args, parser):
                "source code from this directory, add a 'source:' key to "
                "{recipe}.sh instead."
                .format(package=p, recipe=p.lower()))
+    assert "source" not in spec or "scm_refs" in spec
 
-    # version_from: <var> — take version (and, for a source-less package, tag +
-    # commit_hash) directly from a named defaults variable. Runs before the tag
-    # defaulting / source blocks so a synthetic package can be versioned by e.g.
-    # the LCG release without a source. No-op unless the recipe sets version_from.
-    apply_version_from(spec, defaultsMeta.get("variables"))
-    if "tag" not in spec:
-      spec["tag"] = spec["version"]
-    if "source" in spec:
-      # Tag may contain date params like %(year)s, %(month)s, %(day)s, %(hour),
-      # plus any variable from the defaults profile / the recipe (e.g. an
-      # override of tag: "%(release)s" driven by variables: release:).
-      spec["tag"] = resolve_tag(spec, defaultsMeta.get("variables"))
-      # First, we try to resolve the "tag" as a branch name, and use its tip as
-      # the commit_hash. If it's not a branch, it must be a tag or a raw commit
-      # hash, so we use it directly. Finally if the package is a development
-      # one, we use the name of the branch as commit_hash.
-      assert "scm_refs" in spec
-      try:
-        spec["commit_hash"] = spec["scm_refs"]["refs/heads/" + spec["tag"]]
-      except KeyError:
-        spec["commit_hash"] = spec["tag"]
-      # We are in development mode, we need to rebuild if the commit hash is
-      # different or if there are extra changes on top.
-      if spec["is_devel_pkg"]:
-        # Devel package: we get the commit hash from the checked source, not from remote.
-        out = spec["scm"].checkedOutCommitName(directory=spec["source"])
-        spec["commit_hash"] = out.strip()
-        local_hash, untracked = hash_local_changes(spec)
-        untrackedFilesDirectories.extend(untracked)
-        spec["devel_hash"] = spec["commit_hash"] + local_hash
-        out = spec["scm"].branchOrRef(directory=spec["source"])
-        develPackageBranch = out.replace("/", "-")
-        spec["tag"] = args.develPrefix if "develPrefix" in args else develPackageBranch
-        spec["commit_hash"] = "0"
+    # We are in development mode, we need to rebuild if the commit hash is
+    # different or if there are extra changes on top.
+    def _devel(spec):
+      nonlocal develPackageBranch
+      # Devel package: we get the commit hash from the checked source, not from remote.
+      out = spec["scm"].checkedOutCommitName(directory=spec["source"])
+      spec["commit_hash"] = out.strip()
+      local_hash, untracked = hash_local_changes(spec)
+      untrackedFilesDirectories.extend(untracked)
+      spec["devel_hash"] = spec["commit_hash"] + local_hash
+      out = spec["scm"].branchOrRef(directory=spec["source"])
+      develPackageBranch = out.replace("/", "-")
+      spec["tag"] = args.develPrefix if "develPrefix" in args else develPackageBranch
+      spec["commit_hash"] = "0"
 
-    if "sources" in spec:
-      # Expand a templated tag (e.g. "v%(version)s") for tarball sources too.
-      # The git branch above only resolves it when a `source:` is present, so a
-      # tarball-only recipe kept the raw tag, which then leaked into commit_hash
-      # and the SOURCES/<pkg>/<version>/<tag> path. No-op for literal tags.
-      spec["tag"] = resolve_tag(spec, defaultsMeta.get("variables"))
-      for i, s in enumerate(spec["sources"]):
-        resolved = resolveLocalPath(args.configDir, s)
-        spec["sources"][i] = resolved
-      spec["commit_hash"] = spec["tag"]
-    # Version may contain date params like tag, plus %(commit_hash)s,
-    # %(short_hash)s and %(tag)s.
-    spec["version"] = resolve_version(spec, args.defaults, branch_basename, branch_stream)
-
-    spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
-    variables = spec["variables"]
-    if "Python" in spec.get("requires", []):
-        # Find the Python package spec safely
-        python_version_str = ""
-        py_spec = specs.get("Python")
-        if isinstance(py_spec, dict):
-            python_version_str = (py_spec.get("version", "") or "").replace("v", "")
-        python_version = python_version_str.split(".") if python_version_str else []
-
-        # Safely extract major, minor, patch versions
-        major = python_version[0] if len(python_version) > 0 else "0"
-        minor = python_version[1] if len(python_version) > 1 else "0"
-        patch = python_version[2] if len(python_version) > 2 else "0"
-
-        # Populate variables dictionary
-        variables.update({
-            "python_major_version": major,
-            "python_minor_version": minor,
-            "python_patch_version": patch,
-            "python_major_minor": f"{major}.{minor}",
-            "python_major_minor_str": f"{major}{minor}",
-        })
-    for k, v in variables.items():
-      variables[k] = resolve_spec_data(spec, v, args.defaults, branch_basename, branch_stream)
-    if "source" in spec:
-      spec["source"] = resolve_spec_data(spec, spec["source"], args.defaults, branch_basename, branch_stream)
-    if "sources" in spec:
-      spec["sources"] = [resolve_spec_data(spec, src, args.defaults, branch_basename, branch_stream) for src in spec["sources"]]
-    if "patches" in spec:
-      spec["patches"] = [resolve_spec_data(spec, p, args.defaults, branch_basename, branch_stream) for p in spec["patches"]]
-    # Variables defined in the active --defaults profile's `variables:` block are
-    # available to every recipe body.  When a recipe does not itself opt into
-    # expansion (no `variables:` / `expand_recipe: true`) we expand it in SOFT
-    # mode: only known variables are substituted and any other %(...)s / bare %
-    # is left untouched, so profile-wide variables never clobber or break a
-    # recipe that happens to contain a literal %(...)s or shell `%`.
-    default_vars = defaultsMeta.get("variables") or None
-    recipe_opts_in = bool(variables or spec.get("expand_recipe", False))
-    if recipe_opts_in or default_vars:
-      spec["recipe"] = resolve_spec_data(spec, spec["recipe"], args.defaults,
-                                         branch_basename, branch_stream,
-                                         default_vars=default_vars,
-                                         strict=recipe_opts_in)
-
-    if spec["is_devel_pkg"] and "develPrefix" in args and args.develPrefix != "ali-master":
-      spec["version"] = args.develPrefix
+    prepare_hash_inputs(
+      spec, specs, args.defaults, defaultsMeta.get("variables"), args.configDir,
+      branch_basename, branch_stream, devel=_devel,
+      devel_version=(args.develPrefix if "develPrefix" in args
+                     and args.develPrefix != "ali-master" else None))
 
   # Decide what is the main package we are building and at what commit.
   #

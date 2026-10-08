@@ -7,15 +7,16 @@ import os.path
 import platform
 import re
 import sys
+import tempfile
 import unittest
 # Assuming you are using the mock library to ... mock things
 from unittest.mock import call, patch, MagicMock, DEFAULT
 from io import StringIO
 from collections import OrderedDict
 
-from bits_helpers.utilities import resolve_tag
+from bits_helpers.utilities import resolve_tag, resolve_store_path
 from bits_helpers.recipe import parseRecipe
-from bits_helpers.build import doBuild
+from bits_helpers.build import doBuild, build_one_package, _BuildLoopCtx
 from bits_helpers.hashing import storeHashes
 from bits_helpers.initdotsh import generate_initdotsh
 
@@ -729,6 +730,127 @@ class BuildTestCase(unittest.TestCase):
         self.assertIn(cmake_line, out)
         self.assertLess(out.index(tools_line), out.index(cmake_line),
                         "local prerequisite Tools must be sourced before reused CMake")
+
+
+class HashPolicyBuildFallbackTest(unittest.TestCase):
+    """Exercise the remote-first hash-policy decision in build_one_package."""
+
+    remote_hash = "a" * 40
+    local_hash = "b" * 40
+
+    class StopAtBuildScript(Exception):
+        pass
+
+    def _run_package(self, work_dir, *, remote_tarball=False):
+        arch = TEST_ARCHITECTURE
+        remote_hash = self.remote_hash
+        spec = {
+            "package": "hash-policy-test", "version": "1.0",
+            "revision_policy": "hash", "is_devel_pkg": False,
+            "remote_revision_hash": self.remote_hash,
+            "local_revision_hash": self.local_hash,
+            "remote_hashes": [self.remote_hash],
+            "local_hashes": [self.local_hash],
+            "requires": [], "build_requires": [], "runtime_requires": [],
+        }
+
+        class ReadOnlyStore:
+            writeStore = ""
+
+            def fetch_symlinks(self, _spec):
+                pass
+
+            def fetch_tarball(self, _spec):
+                if remote_tarball:
+                    directory = os.path.join(
+                        work_dir, resolve_store_path(arch, remote_hash))
+                    os.makedirs(directory, exist_ok=True)
+                    path = os.path.join(
+                        directory,
+                        "hash-policy-test-1.0-{}.{}.tar.gz".format(remote_hash, arch))
+                    with _REAL_OPEN(path, "wb") as stream:
+                        stream.write(b"remote")
+
+        sync = ReadOnlyStore()
+        args = Namespace(
+            architecture=arch, defaults=["release"], workDir=work_dir,
+            autoCleanup=False, aggressiveCleanup=False, docker=False,
+            builders=2, referenceSources="", manifest=None,
+        )
+        cfg = Namespace(
+            reuse_overlay=None, build_local=[], reuse_policy="strict",
+            store_integrity=False, require_signed_reuse=False,
+            parallel_sources=1,
+        )
+        ctx = _BuildLoopCtx(
+            args=args, cfg=cfg, specs={spec["package"]: spec},
+            workDir=work_dir, syncHelper=sync, scheduler=None,
+            mainPackage=spec["package"], raw_architecture=arch,
+            develPackageBranch="", defaultsMeta={}, buildTargets="",
+            packages=[], prefetch_executor=None, cmake_prefix_env=False,
+            specs_for_checksum_phase=[], monitoredDirs={},
+        )
+
+        real_open = _REAL_OPEN
+
+        def stop_at_script(path, *open_args, **open_kwargs):
+            if os.path.basename(os.fspath(path)) == "build_template.sh":
+                raise self.StopAtBuildScript()
+            return real_open(path, *open_args, **open_kwargs)
+
+        def read_hash(path):
+            try:
+                with real_open(path) as stream:
+                    return stream.read().strip("\n")
+            except OSError:
+                return "0"
+
+        with patch("bits_helpers.build.storeHook"), \
+             patch("bits_helpers.build.log_current_package"), \
+             patch("bits_helpers.build.readHashFile", side_effect=read_hash), \
+             patch("bits_helpers.build.open", side_effect=stop_at_script, create=True):
+            try:
+                result = build_one_package(spec["package"], ctx)
+            except self.StopAtBuildScript as stopped:
+                result = stopped
+        return result, spec
+
+    def test_read_only_miss_uses_local_label_and_next_run_skips_build(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            result, spec = self._run_package(work_dir)
+            self.assertIsInstance(result, self.StopAtBuildScript)
+            self.assertEqual(self.local_hash, spec["hash"])
+            self.assertEqual(self.local_hash, spec["revision"])
+            spec_hash = spec["hash"]
+            install_dir = os.path.join(
+                work_dir, TEST_ARCHITECTURE, "hash-policy-test",
+                "1.0-" + spec_hash)
+            os.makedirs(install_dir, exist_ok=True)
+            with _REAL_OPEN(os.path.join(install_dir, ".build-hash"), "w") as stream:
+                stream.write(spec_hash)
+
+            result, spec = self._run_package(work_dir)
+            self.assertIsNone(result)
+            self.assertEqual(self.local_hash, spec["hash"])
+            self.assertEqual(self.local_hash, spec["revision"])
+
+    def test_remote_match_is_preferred_to_existing_local_install(self):
+        with tempfile.TemporaryDirectory() as work_dir:
+            local_install = os.path.join(
+                work_dir, TEST_ARCHITECTURE, "hash-policy-test",
+                "1.0-" + self.local_hash)
+            os.makedirs(local_install, exist_ok=True)
+            with _REAL_OPEN(os.path.join(local_install, ".build-hash"), "w") as stream:
+                stream.write(self.local_hash)
+
+            result, spec = self._run_package(work_dir, remote_tarball=True)
+
+            self.assertIsInstance(result, self.StopAtBuildScript)
+            self.assertEqual(self.remote_hash, spec["hash"])
+            self.assertEqual(self.remote_hash, spec["revision"])
+            self.assertTrue(spec["cachedTarball"].endswith(
+                "hash-policy-test-1.0-{}.{}.tar.gz".format(
+                    self.remote_hash, TEST_ARCHITECTURE)))
 
 
 if __name__ == '__main__':
