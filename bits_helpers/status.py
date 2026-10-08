@@ -455,9 +455,20 @@ def doStatus(args, parser) -> None:
     resolve_config_dir(args)
 
     # ── Defaults and overrides ─────────────────────────────────────────────────
-    defaults_reader = lambda: readDefaults(
-        args.configDir, args.defaults, parser.error, args.architecture
-    )
+    def defaults_reader():
+        meta, body = readDefaults(
+            args.configDir, args.defaults, parser.error, args.architecture
+        )
+        # Build hashes this marker into defaults-release by default. Keep status
+        # on the same identity; the aliBuild compatibility environment selects
+        # legacy hashes and therefore omits it.
+        legacy_initdotsh = os.environ.get("BITS_LEGACY_INITDOTSH", "").strip().lower()
+        if legacy_initdotsh not in ("1", "true", "yes", "on"):
+            if not isinstance(meta.get("env"), dict):
+                meta["env"] = OrderedDict()
+            meta["env"]["BITS_INITDOTSH_FROM_MODULES"] = "1"
+        return meta, body
+
     err, overrides, taps, defaults_meta = parseDefaults(
         args.disable, defaults_reader, debug, args.architecture, args.configDir
     )
