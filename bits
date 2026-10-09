@@ -537,9 +537,9 @@ for ((i=0;i<$ARGC;i++));
 do
   case "${ARGV[$i]}" in
       --architecture|-a)
-	  i+=1 ;ARCHITECTURE="${ARGV[$i]}";;
+	  i=$((i+1)); ARCHITECTURE="${ARGV[$i]}";;
       --work-dir|-w)
-	  i+=1; WORK_DIR="${ARGV[$i]}";;
+	  i=$((i+1)); WORK_DIR="${ARGV[$i]}";;
       --no-refresh)
 	  NO_REFRESH=1;;
       -q)

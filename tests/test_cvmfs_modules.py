@@ -104,6 +104,13 @@ class CvmfsModulesTest(unittest.TestCase):
     self.assertEqual(r.returncode, 0, r.stderr)
     self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
 
+  def test_options_after_the_command(self):
+    # bits q -a ARCH: -a after the command, and an argument after it.
+    r = subprocess.run([os.path.join(self.inst, "bits"), "q", "-a", ARCH, "^[BE]/"],
+                       cwd=self.work, env=self.env, capture_output=True, text=True)
+    self.assertEqual(r.returncode, 0, r.stderr)
+    self.assertEqual(r.stdout.split(), ["B/2-1", "E/5-1"])
+
   def test_q_without_prefix_is_local_only(self):
     r = self._bits("q", BITS_CVMFS_PREFIX="")
     self.assertEqual(r.stdout.split(), ["A/1-1"])
