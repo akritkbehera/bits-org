@@ -1957,6 +1957,11 @@ second one fail (the next publish finds them there). Template tokens: `{pkg} {ve
 (version-revision) `{family} {platform}` (console platform, e.g. `x86_64-el9`)
 `{arch}` (build arch, e.g. `x86_64-el9-gcc15-opt`) `{release}` `{day}`.
 
+A store tarball's file times are zero (it is reproducible, see the Pack step of the
+[build lifecycle](#build-lifecycle-with-a-store)); the published files get the time
+the build recorded the package instead (its manifest `completed_at`), so CVMFS
+shows when it was built (a reused package: when the build reused it), not 1970.
+
 `{day}` is a nightly path slot: when a template uses it, bits fills in the UTC
 weekday (`Mon` … `Sun`); `bits build --day DAY` (or `day:` under `system:`) sets
 it, and an empty value collapses the segment. It is layout only — never hashed,
@@ -3203,6 +3208,7 @@ bits sets these variables in each package's build script before the recipe body 
 | `$BITS_SCRIPT_DIR` | Absolute path to the bits installation directory. |
 | `$INCREMENTAL_BUILD_HASH` | Non-zero when an incremental recipe is in use (development mode). |
 | `$DEVEL_PREFIX` | Non-empty for development packages (directory name of the devel source tree). |
+| `$SOURCE_DATE_EPOCH` | The build's start time (seconds since the epoch), unless set already. Tools that follow [reproducible-builds.org](https://reproducible-builds.org/specs/source-date-epoch/) use it; Python's byte-compiling (pip, `compileall`, its own install) then writes hash-based `.pyc` files, which stay valid in a package unpacked from its tarball (zero file times). |
 
 #### Source archives (`sources:` field)
 
@@ -3508,7 +3514,7 @@ For each package in topological order:
 1. **Hash** — Compute the content-addressable hash from recipe, source commit, and dependency hashes.
 2. **Fetch** — Ask the remote store for `TARS/<arch>/store/<h2>/<hash>/*.tar.gz`. If found, download it. With signed reuse (the default) it is kept only if a verified signed manifest lists that hash with a matching sha256; otherwise it is discarded and the package is built.
 3. **Unpack or build** — If a cached tarball was downloaded, unpack it into `$INSTALLROOT` and skip compilation. Otherwise run the full Bash build script.
-4. **Pack** — After a successful from-source build (and any `POST_INSTALL` hooks), bits makes the package's pkg-config, CMake and `bin/*-config` files use relative paths, records which files need relocating and the file list for merged views, then packs `$INSTALLROOT` into `TARS/<arch>/store/<h2>/<hash>/<pkg>-<ver>-<rev>.<arch>.tar.gz`. Packing is **deterministic** (sorted members, owner/group 0, fixed mtime, pinned compressor `gzip -n` or `$BITS_TAR_COMPRESSOR`) so that two nodes building the same hash produce the same bytes. This needs **GNU tar** (`gtar` or a GNU `tar`); without it (e.g. macOS without `brew install gnu-tar`) bits warns and the tarball may not be byte-reproducible.
+4. **Pack** — After a successful from-source build (and any `POST_INSTALL` hooks), bits makes the package's pkg-config, CMake and `bin/*-config` files use relative paths, records which files need relocating and the file list for merged views, then packs `$INSTALLROOT` into `TARS/<arch>/store/<h2>/<hash>/<pkg>-<ver>-<rev>.<arch>.tar.gz`. Packing is **deterministic** (sorted members, owner/group 0, fixed mtime, pinned compressor `gzip -n` or `$BITS_TAR_COMPRESSOR`) so that two nodes building the same hash produce the same bytes. A package unpacked from it locally keeps the archive's file times (zero); `bits cvmfs publish` stamps the build time on the published files. This needs **GNU tar** (`gtar` or a GNU `tar`); without it (e.g. macOS without `brew install gnu-tar`) bits warns and the tarball may not be byte-reproducible.
 5. **Upload** — Bits uploads the tarball to the write store (the `rsync` and `s3://` backends also upload the package symlink and dist trees). Packages recalled from a store, `local` revisions, and packages whose `redistributable:` forbids binary redistribution are not uploaded.
 
 ### Revision numbering

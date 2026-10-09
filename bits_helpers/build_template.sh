@@ -117,6 +117,12 @@ export PATH=$WORK_DIR/wrapper-scripts:$PATH
 export PKG_NAME="$PKGNAME"
 export PKG_VERSION="$PKGVERSION"
 export PKG_BUILDNUM="$PKGREVISION"
+# The build time for tools that honour SOURCE_DATE_EPOCH (reproducible-builds.org),
+# unless the caller set one. Python's byte-compiling (pip, compileall, its own
+# install) then writes hash-based .pyc files, checked against the source's
+# content, not its time: they stay valid in a package unpacked from its
+# tarball, whose file times are zero (see Archive creation).
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$BITS_START_TIMESTAMP}"
 
 # _VERREV: version-revision segment for install paths.
 # When force_revision is set to "" via defaults-*.sh PKGREVISION is empty, so

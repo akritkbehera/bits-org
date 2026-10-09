@@ -628,6 +628,47 @@ class TestPublishOneLayout(unittest.TestCase):
             with self.assertRaises(cp.AlreadyPublished):
                 cp.publish_one(dict(spec, hash="H"), pctx)
 
+    def test_published_files_carry_the_build_time(self):
+        # The store tarball's file times are zero (reproducible); the published
+        # tree and modulefile get the time the build recorded the package.
+        import subprocess
+        import tarfile
+        if "GNU tar" not in subprocess.run(["tar", "--version"], capture_output=True,
+                                           text=True).stdout:
+            self.skipTest("publish packs with GNU tar --hard-dereference (not bsdtar)")
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        t = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, t, True)
+        src = os.path.join(t, "src"); root = os.path.join(src, "el9", "zlib", "1.3-1")
+        os.makedirs(os.path.join(root, "etc", "modulefiles"))
+        with open(os.path.join(root, "etc", "modulefiles", "zlib"), "w") as fh:
+            fh.write("#%Module1.0\n")
+        with open(os.path.join(root, ".meta.json"), "w") as fh:
+            fh.write("{}")
+        tar = os.path.join(t, "zlib-1.3-1.el9.tar.gz")
+        subprocess.run(["tar", "--mtime=@0", "-czf", tar, "-C", src, "el9"], check=True)
+        ctx = {"repo": "r", "tars_root": t, "arch": "el9", "tmpl_prefix": "",
+               "templates": {"prefix": "/cvmfs/r", "path": "{prefix}/{pkg}/{version}",
+                             "modules": "{prefix}/Modules/{pkg}"},
+               "prefix_fallback": "/cvmfs/r", "tmp_dir": t,
+               "build_time": "2026-01-02T00:00:00Z"}
+        spec = {"package": "zlib", "version": "1.3", "revision": "1",
+                "completed_at": "2026-10-08T14:08:00Z"}
+        times = {}
+        def publish(c, p, tarfn, label, **k):
+            with tarfile.open(tarfn) as tf:
+                times[label] = {m.mtime for m in tf.getmembers()}
+            return "J"
+        with mock.patch.object(cp, "tar_path", lambda s, r, a: tar), \
+             mock.patch.object(cp, "_publish_tar", publish):
+            cp.publish_one(spec, ctx)
+        self.assertEqual(times, {"zlib@1.3-1(pkg)": {1791468480},
+                                 "zlib@1.3-1(modules)": {1791468480}})
+        # No completed_at: the build's (manifest created_at); neither: now.
+        self.assertEqual(cp._publish_mtime({}, ctx), 1767312000)
+        before = int(__import__("time").time())
+        self.assertGreaterEqual(cp._publish_mtime({"completed_at": "bad"}, {}), before)
+
 
 def cp_tar_path(spec, ctx):
     import bits_helpers.cvmfs_publish as cp

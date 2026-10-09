@@ -966,6 +966,22 @@ def build_view_tar(links, root, tmp_dir=None):
     return tar
 
 
+def _publish_mtime(spec, ctx):
+    """The time (seconds since the epoch) stamped on a package's published files:
+    when the build recorded the package (manifest completed_at), else when the
+    build's manifest was created, else now. The store tarball's own file times
+    are zero (reproducible archives), which CVMFS would show as 1970."""
+    import calendar
+    import time
+    for value in (spec.get("completed_at"), ctx.get("build_time")):
+        if value:
+            try:
+                return calendar.timegm(time.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ"))
+            except ValueError:
+                pass
+    return int(time.time())
+
+
 def publish_one(spec, ctx):
     """Full producer pipeline for ONE package, staged OR ingest path. Mirrors the CI loop
     body: locate tar -> untar -> resolve path -> relocate -> relativise -> tar ->
@@ -1086,11 +1102,13 @@ def publish_one(spec, ctx):
         relativise_symlinks(pkgroot)
         sanitize(pkgroot)
         _fp = tree_fingerprint(pkgroot)   # content of the tree that goes into the tar
+        mtime = _publish_mtime(spec, ctx)   # the time its published files get
 
         if not skip_pkg:
             _tfd, pkg_tar = tempfile.mkstemp(suffix=".tar", dir=ctx.get("tmp_dir") or None)
             os.close(_tfd)
             subprocess.run(["tar", "-cf", pkg_tar, "--hard-dereference",
+                            "--mtime=@%d" % mtime,
                             "-C", pkgroot, "."], check=True)
             _lbl = "%s@%s(pkg)" % (pkg, vdir)
             jid = _publish_tar(ctx, path, pkg_tar, _lbl, fp=_fp,
@@ -1126,6 +1144,7 @@ def publish_one(spec, ctx):
                 try:
                     shutil.copy2(modfile, os.path.join(_mstage, vdir))
                     subprocess.run(["tar", "-cf", mod_tar, "--hard-dereference",
+                                    "--mtime=@%d" % mtime,
                                     "-C", _mstage, vdir], check=True)
                 finally:
                     _safe_rmtree(_mstage)
@@ -1352,7 +1371,7 @@ def main(argv=None):
         else "each package's own .meta.json (manifest has no cvmfs_templates)"))
     ctx = {"repo": a.repo, "tars_root": a.tars_root, "arch": a.arch,
            "tmpl_prefix": a.tmpl_prefix, "prefix_fallback": a.prefix_fallback or None,
-           "templates": templates,
+           "templates": templates, "build_time": _man.get("created_at"),
            "stratum0_url": a.stratum0_url, "prepub_url": a.prepub_url, "token": a.token,
            "platform": a.platform, "install_dir": a.install_dir, "user": a.user,
            "job_id_base": a.job_id_base, "swissknife": a.swissknife or None,
