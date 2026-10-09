@@ -40,13 +40,16 @@ def cleanup_git_log(referenceSources):
 
 
 def logged_scm(scm, package, referenceSources,
-               command, directory, prompt, logOutput=True):
+               command, directory, prompt, logOutput=True, fatal=True):
   """Run an SCM command, but produce an output file if it fails.
 
   This is useful in CI, so that we can pick up SCM failures and show them in
   the final produced log. For this reason, the file we write in this function
   must not contain any secrets. We only output the SCM command we ran, its exit
   code, and the package name, so this should be safe.
+
+  A failure is fatal, unless fatal=False: then it is a warning and None is
+  returned.
   """
   debug("%s %s for repository for %s...", scm.name, command[0], package)
   err, output = scm.exec(command, directory=directory, check=False, prompt=prompt)
@@ -69,9 +72,12 @@ def logged_scm(scm, package, referenceSources,
   _excerpt = " ".join((output or "").split())
   if len(_excerpt) > 300:
     _excerpt = "…" + _excerpt[-300:]
-  dieOnError(err, "Error during %s %s for reference repo for %s.%s" %
-             (scm.name.lower(), command[0], package,
-              ("\n  git: " + _excerpt) if _excerpt else ""))
+  msg = "Error during %s %s for reference repo for %s.%s" % (
+      scm.name.lower(), command[0], package, ("\n  git: " + _excerpt) if _excerpt else "")
+  if err and not fatal:
+    warning("%s", msg)
+    return None
+  dieOnError(err, msg)
   debug("Done %s %s for repository for %s", scm.name.lower(), command[0], package)
   return output
 
@@ -147,7 +153,11 @@ def updateReferenceRepo(referenceSources, p, spec,
   elif fetch:
     ref_match_rule = asList(spec.get("ref_match_rule", ["+refs/tags/*:refs/tags/*", "+refs/heads/*:refs/heads/*"]))
     cmd = scm.fetchCmd(spec["source"], *ref_match_rule)
-    logged_scm(scm, p, referenceSources, cmd, referenceRepo, allowGitPrompt)
+    # A mirror that cannot be updated (offline, server down) still has what it
+    # fetched before: use that, as --no-fetch-repos does, and say so.
+    if logged_scm(scm, p, referenceSources, cmd, referenceRepo, allowGitPrompt,
+                  fatal=False) is None:
+      warning("%s: could not fetch updates; using the commits its mirror already has.", p)
 
   return referenceRepo  # reference is read-write
 

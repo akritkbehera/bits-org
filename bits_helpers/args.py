@@ -560,7 +560,7 @@ def add_doctor_arguments(subparsers, ctx):
           "which packages have a pre-built tarball and which will need compilation.  "
           "Requires --remote-store (or a default store for the architecture).  "
           "Makes one HTTP HEAD request per package.  "
-          "For branch builds, re-run with 'bits status --fetch-repos --check-store' "
+          "For branch builds, re-run with 'bits status --check-store' "
           "for exact hashes."
       ),
   )
@@ -714,7 +714,7 @@ def add_status_arguments(subparsers, ctx):
           "--check-store), local_checkout (development package, will rebuild), "
           "local_checkout_unchanged (development package, nothing changed), "
           "build_from_source (will compile), or hash_unknown (git refs not cached; "
-          "re-run with --fetch-repos to resolve)."
+          "e.g. with --no-fetch-repos)."
       ),
   )
   # Options for the status subcommand
@@ -763,10 +763,15 @@ def add_status_arguments(subparsers, ctx):
       help="Force a rebuild status for the given package(s). May be repeated.",
   )
   status_parser.add_argument(
-      "-u", "--fetch-repos", dest="fetchRepos", action="store_true", default=False,
-      help=("Fetch / clone reference repositories to populate the ref cache. "
-            "Without this flag, only already-cached refs are used; packages "
-            "whose refs are not cached are reported as hash_unknown."),
+      "-u", "--fetch-repos", dest="fetchRepos", action="store_true", default=True,
+      help=("Fetch / clone reference repositories, so a branch resolves to its "
+            "current commit, as bits build does (the default)."),
+  )
+  status_parser.add_argument(
+      "--no-fetch-repos", dest="fetchRepos", action="store_false",
+      help=("Use only already-cached refs (offline): a branch is its commit in "
+            "the local mirror, and packages whose refs are not cached are "
+            "reported as hash_unknown."),
   )
   status_parser.add_argument(
       "--remote-store", dest="remoteStore", metavar="STORE", default="",
@@ -1476,8 +1481,12 @@ def add_build_arguments(subparsers, ctx):
                                   "bounded only by --builders. Explicit --resources / --resource-monitoring "
                                   "still work without this flag."))
   build_parser.add_argument("-u", "--fetch-repos", dest="fetchRepos", action="store_true",
-                            help=("Fetch updates to repositories in MIRRORDIR. Required but nonexistent "
-                                  "repositories are always cloned, even if this option is not given."))
+                            default=True,
+                            help=("Fetch updates to repositories in MIRRORDIR, so a branch (tag: main) "
+                                  "builds its current commit (the default)."))
+  build_parser.add_argument("--no-fetch-repos", dest="fetchRepos", action="store_false",
+                            help=("Do not fetch (offline): a branch builds the commit the local mirror "
+                                  "has. Required but nonexistent repositories are still cloned."))
 
   build_parser.add_argument("--no-local", dest="noDevel", metavar="PACKAGE", default=[], action="append",
                             help=("Do not pick up the following packages from a local checkout. "

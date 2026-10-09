@@ -845,7 +845,7 @@ $BITS_WORK_DIR/
 
 A checkout is reused (cache hit) when `.bits_provider_ok` already exists for the resolved commit hash. If the recipe's `tag` resolves to a new commit, a fresh checkout is made alongside the old one; no stale data is ever overwritten.
 
-**Staleness detection:** Once a provider has a cached checkout, bits refreshes its git mirror on every run (even without `-u`/`--fetch-repos`) so that tag advances in the upstream repository are always detected. This ensures that a team-wide recipe update published as a new tag is picked up on the next build without any manual cache purge.
+**Staleness detection:** Once a provider has a cached checkout, bits refreshes its git mirror on every run (even with `--no-fetch-repos`) so that tag advances in the upstream repository are always detected. This ensures that a team-wide recipe update published as a new tag is picked up on the next build without any manual cache purge.
 
 ### Effect on build hashes
 
@@ -997,7 +997,8 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--parallel-sources N` | Download up to *N* `sources:` URLs concurrently within a single package checkout. Default: 1 (sequential). |
 | `-e KEY=VALUE` | Extra environment variable binding (repeatable). |
 | `-z PREFIX`, `--devel-prefix PREFIX` | Version prefix for development packages. |
-| `-u`, `--fetch-repos` | Fetch/update source mirrors before building. |
+| `-u`, `--fetch-repos` | Fetch updates into the source mirrors before building, so a branch (`tag: main`) builds its current commit. The default; a mirror that cannot be fetched (offline) is used as it is, with a warning. |
+| `--no-fetch-repos` | Do not fetch: a branch builds the commit its mirror already has. Missing mirrors are still cloned. |
 | `--no-local PACKAGE` | Do not use a local checkout for PACKAGE (repeatable). |
 | `--force-tracked` | Do not pick up any package from a local checkout. |
 | `--force-rebuild PACKAGE` | Always rebuild PACKAGE from scratch (repeatable; same as `force_rebuild: true` in its recipe). |
@@ -1180,7 +1181,7 @@ bits doctor --check-store PACKAGE ...        # pre-build store availability repo
 Hash computation notes:
 
 - For tagged releases (the common CI case) the hash is exact — the tag string deterministically identifies the commit.
-- For branch builds without `--fetch-repos`, the commit hash is approximated with "0". If the store probe shows FAIL for all packages in a branch build, re-run via `bits status --fetch-repos --check-store` for accurate hashes.
+- doctor does not fetch, so for branch builds the commit hash is approximated with "0". If the store probe shows FAIL for all packages in a branch build, re-run via `bits status --check-store` for accurate hashes.
 - The store tarball path for an `https://` store follows the pattern: `{store}/TARS/{arch}/store/{hash[:2]}/{hash}/{pkg}-{ver}-{rev}.{arch}.tar.gz`.
 
 `--check-store` output example (text):
@@ -1283,7 +1284,7 @@ bits doctor --runner --json \
 
 ### bits status
 
-Show what `bits build` would do for each package in the dependency tree, without building anything. Each package is classified into one of the states below. Git refs are read from the local mirror cache; packages whose refs have not been cached yet are reported as `hash_unknown`. Pass `--fetch-repos` to populate the cache on first use.
+Show what `bits build` would do for each package in the dependency tree, without building anything. Each package is classified into one of the states below. The mirrors are fetched first, as `bits build` does, so a branch resolves to the commit a build would use; with `--no-fetch-repos` git refs are read from the local mirror cache only, and packages whose refs have not been cached yet are reported as `hash_unknown`.
 
 ```bash
 bits status [options] PACKAGE [PACKAGE...]
@@ -1302,7 +1303,8 @@ bits status [options] PACKAGE [PACKAGE...]
 | `--force-tracked` | off | Ignore all local checkouts. |
 | `--disable PACKAGE` | _(none)_ | Exclude a package from the dependency tree. |
 | `--force-rebuild PACKAGE` | _(none)_ | Report the named package as needing a rebuild regardless of its hash. |
-| `-u`, `--fetch-repos` | off | Clone / fetch reference repos to populate the git ref cache before computing hashes. Requires network access. |
+| `-u`, `--fetch-repos` | on | Clone / fetch reference repos to populate the git ref cache before computing hashes. Requires network access. |
+| `--no-fetch-repos` | off | Use only the refs already cached (offline). |
 | `--remote-store URL` | _(none)_ | Remote binary store URL. Only consulted when `--check-store` is given. |
 | `--no-remote-store` | off | Disable any remote store, even a configured default. |
 | `--check-store` | off | Probe the remote store to detect tarballs not mirrored locally. Adds a network round-trip per uncached package. |
@@ -1318,7 +1320,7 @@ bits status [options] PACKAGE [PACKAGE...]
 | `local_checkout` | A directory matching the package name exists in cwd; will be compiled from local sources. |
 | `local_checkout_unchanged` | Devel package whose content hash has not changed; rebuild would be skipped. |
 | `build_from_source` | No cached result found; will be compiled from scratch. |
-| `hash_unknown` | Git refs unavailable (mirror not yet populated); re-run with `--fetch-repos`. |
+| `hash_unknown` | Git refs unavailable (mirror not yet populated, e.g. with `--no-fetch-repos`). |
 
 **JSON output** (`--json`):
 

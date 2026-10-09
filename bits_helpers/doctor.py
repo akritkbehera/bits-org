@@ -416,7 +416,7 @@ def _probe_tarball_in_store(spec: dict, arch: str, store_url: str,
     """
     remote_hashes = spec.get("remote_hashes") or []
     if not remote_hashes:
-        return WARN, "hash not computed for %s (commit ref unknown; re-run with --fetch-repos)" % spec["package"]
+        return WARN, "hash not computed for %s (commit ref unknown; see 'bits status --check-store')" % spec["package"]
 
     pkg_arch = effective_arch(spec, arch)
     pkg      = spec["package"]
@@ -464,7 +464,7 @@ def _run_check_store_checks(args, specs: dict, own: set,
     """Probe the remote store for each package bits would build.
 
     Populates ``commit_hash`` (best-effort: tag string for tagged releases,
-    "0" for branch builds without ``--fetch-repos``) then calls ``storeHashes``
+    "0" for branch builds, as doctor does not fetch) then calls ``storeHashes``
     in topological order before probing each target package.
 
     Returns ``[(name, status, detail), ...]``.
@@ -482,7 +482,7 @@ def _run_check_store_checks(args, specs: dict, own: set,
 
     # Populate commit_hash for each spec that lacks one.
     # For tagged releases this is exact; for branch builds it is approximate
-    # (use --fetch-repos in 'bits status --check-store' for accurate hashes).
+    # (use 'bits status --check-store', which fetches, for accurate hashes).
     hash_approx = False
     for pkg, spec in specs.items():
         if "commit_hash" not in spec:
@@ -516,8 +516,8 @@ def _run_check_store_checks(args, specs: dict, own: set,
     if hash_approx:
         targets.insert(0, (
             "(note)", WARN,
-            "Some commit hashes are approximate (branch builds without "
-            "--fetch-repos). Re-run 'bits status --fetch-repos --check-store' "
+            "Some commit hashes are approximate (branch builds; doctor does "
+            "not fetch). Re-run 'bits status --check-store' "
             "for exact results.",
         ))
 

@@ -93,6 +93,22 @@ class WorkareaTestCase(unittest.TestCase):
     @patch("codecs.open")
     @patch("bits_helpers.git.git")
     @patch("bits_helpers.workarea.is_writeable", new=MagicMock(return_value=True))
+    def test_reference_sources_fetch_fails(self, mock_git, mock_open, mock_makedirs, mock_exists):
+        """An existing mirror that cannot be fetched (offline) is used as it is."""
+        mock_exists.return_value = True
+        mock_git.return_value = 128, "fatal: unable to access"
+        spec = MOCK_SPEC.copy()
+        with self.assertLogs(level="WARNING") as logs:
+            updateReferenceRepoSpec(referenceSources="sw/MIRROR", p="AliRoot",
+                                    spec=spec, fetch=True)
+        self.assertEqual(spec.get("reference"), "%s/sw/MIRROR/aliroot" % getcwd())
+        self.assertIn("using the commits its mirror already has", "\n".join(logs.output))
+
+    @patch("os.path.exists")
+    @patch("os.makedirs")
+    @patch("codecs.open")
+    @patch("bits_helpers.git.git")
+    @patch("bits_helpers.workarea.is_writeable", new=MagicMock(return_value=True))
     def test_reference_sources_updated_custom_refspec(self, mock_git, mock_open, mock_makedirs, mock_exists):
         """Check mirrors are updated with custom refspec when provided."""
         mock_exists.return_value = True

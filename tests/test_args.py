@@ -50,6 +50,12 @@ CORRECT_BEHAVIOR = [
   ((), "version"                                                                       , [("action", "version")]),
   ((), "clean"                                                                         , [("action", "clean"), ("workDir", "sw")]),
   ((), "build --force-unknown-architecture -j 10 zlib"                                 , [("action", "build"), ("jobs", 10), ("pkgname", ["zlib"])]),
+  # Mirrors are fetched by default, so a branch builds its current commit.
+  ((), "build --force-unknown-architecture zlib"                                       , [("fetchRepos", True)]),
+  ((), "build --force-unknown-architecture -u zlib"                                    , [("fetchRepos", True)]),
+  ((), "build --force-unknown-architecture --no-fetch-repos zlib"                      , [("fetchRepos", False)]),
+  ((), "status zlib"                                                                   , [("fetchRepos", True)]),
+  ((), "status --no-fetch-repos zlib"                                                  , [("fetchRepos", False)]),
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo"     , [("disable", ["gcc", "foo"])]),
   ((), "build --force-unknown-architecture -j 10 zlib --disable gcc --disable foo,bar" , [("disable", ["gcc", "foo", "bar"])]),
   ((), "init zlib --dist master"                                                       , [("dist", {"repo": "alisw/alidist", "ver": "master"})]),

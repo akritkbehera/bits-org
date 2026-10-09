@@ -19,7 +19,7 @@ from_remote_store         Tarball only in the remote store; will be downloaded
                           then unpacked (requires --check-store to detect).
 build_from_source         Nothing found; will compile from scratch.
 hash_unknown              Git refs unavailable; state cannot be determined
-                          accurately. Run with --fetch-repos to resolve.
+                          accurately (e.g. with --no-fetch-repos).
 """
 from __future__ import annotations
 
@@ -141,7 +141,7 @@ def _fetch_refs_with_clone(spec: dict, reference_sources: str,
                            package: str) -> None:
     """Populate spec["scm_refs"] by cloning / fetching the reference repo.
 
-    Only used when --fetch-repos is given; equivalent to what doBuild does.
+    The default (unless --no-fetch-repos); equivalent to what doBuild does.
     """
     try:
         updateReferenceRepoSpec(reference_sources, package, spec,
@@ -409,7 +409,7 @@ def doStatus(args, parser) -> None:
         config_dir        = args.configDir,
         work_dir          = work_dir,
         reference_sources = args.referenceSources,
-        fetch_repos       = getattr(args, "fetchRepos", False),
+        fetch_repos       = getattr(args, "fetchRepos", True),
         bits_providers    = getattr(args, "bits_providers", None),
         taps              = taps,
         provider_policy   = getattr(args, "provider_policy", {}),
@@ -424,7 +424,7 @@ def doStatus(args, parser) -> None:
         config_dir        = args.configDir,
         work_dir          = work_dir,
         reference_sources = args.referenceSources,
-        fetch_repos       = getattr(args, "fetchRepos", False),
+        fetch_repos       = getattr(args, "fetchRepos", True),
         taps              = taps,
         provider_policy   = getattr(args, "provider_policy", {}),
         overrides         = overrides,
@@ -564,14 +564,21 @@ def doStatus(args, parser) -> None:
     if branch_stream == branch_basename:
         branch_stream = ""
 
+    # Git refs: clone/fetch the mirrors, 8 at a time as bits build does, or
+    # (--no-fetch-repos) read what they have.
+    fetch_repos = getattr(args, "fetchRepos", True)
+    if fetch_repos:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda p: _fetch_refs_with_clone(specs[p], reference_sources, p),
+                          [p for p in buildOrder
+                           if "source" in specs[p] and not specs[p]["is_devel_pkg"]]))
+
     for p in buildOrder:
         spec = specs[p]
 
-        # Populate git refs (offline by default, or with clone/fetch if requested)
         if "source" in spec and not spec["is_devel_pkg"]:
-            if getattr(args, "fetchRepos", False):
-                _fetch_refs_with_clone(spec, reference_sources, p)
-            else:
+            if not fetch_repos:
                 _try_populate_refs(spec, reference_sources, p)
         elif spec["is_devel_pkg"]:
             # Devel packages: read refs from the local checkout directly
@@ -663,7 +670,7 @@ def doStatus(args, parser) -> None:
         warning(
             "Hash computation failed for %d package(s): %s\n"
             "These packages are listed as '%s'.\n"
-            "Re-run with --fetch-repos to populate the ref cache.",
+            "Re-run without --no-fetch-repos to populate the ref cache.",
             len(hash_error_pkgs), ", ".join(hash_error_pkgs), HASH_UNKNOWN,
         )
 

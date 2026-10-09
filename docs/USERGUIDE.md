@@ -258,7 +258,8 @@ Bits resolves the full transitive dependency graph of each requested package, co
 | `--build-nice` | Stagger concurrent builders across OS priority levels so CPU contention degrades gracefully — one build runs at full speed, the others are backed off, and the freed top slot is taken over as builds finish. Native builds use `nice`; `--docker` builds use `docker run --cpu-shares`. Opt-in; only affects `--parallel > 1`. Memory is still capped separately. |
 | `--build-nice-step N` | Priority spread between concurrent build slots for `--build-nice` (slot *k* → nice `min(k×N, 19)`). `N=1` is a gentle ladder; larger separates slots more. Default: 5. |
 | `--prefetch-workers N` | Background threads that fetch remote tarballs and sources ahead of the build loop. Default: auto (`min(builders, 4)`); `0` disables. |
-| `-u`, `--fetch-repos` | Update all source mirrors before building. |
+| `-u`, `--fetch-repos` | Update all source mirrors before building (the default), so a branch builds its current commit. |
+| `--no-fetch-repos` | Build what the mirrors already have (offline). |
 | `-w DIR`, `--work-dir DIR` | Work/output directory. Default: `sw`. |
 | `--remote-store URL` | Binary store to pull pre-built tarballs from. Append `::rw` to also upload to it. |
 | `--write-store URL` | Binary store to push newly-built tarballs to. Given alone (no `--remote-store`), it is also the store reused from, except where a default remote store applies (slc7/8/9, ubuntu x86-64, slc9_aarch64); use `--remote-store URL::rw` there. |
