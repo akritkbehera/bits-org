@@ -39,6 +39,7 @@ _INIT_RC_MAP = [
 # Canonical flag names that map directly to an rc key (long-form, normalised).
 _LONG_FLAG_TO_RC = {entry[0].lower(): entry[1] for entry in _INIT_RC_MAP}
 _LONG_FLAG_TO_RC.update({
+    "community":          "organisation",
     "remote_store":       "remote_store",
     "write_store":        "write_store",
     "work_dir":           "work_dir",
@@ -66,7 +67,7 @@ def _explicit_rc_keys(explicit_flags):
 # Where each persistable setting is recorded in the bits use profile.
 # (section, canonical flag, args attribute). --architecture is broadly accepted
 # so it goes to [common]; the rest to [build] (kept out of [common] so the module
-# commands q/enter are unaffected). organisation/providers have no build-time
+# commands q/enter are unaffected). community/providers have no build-time
 # flag and are handled via the environment (see _INIT_ENV_ONLY).
 _INIT_PROFILE_MAP = {
     "architecture":      ("common", "--architecture",      "architecture"),
@@ -77,7 +78,7 @@ _INIT_PROFILE_MAP = {
     "remote_store":      ("build",  "--remote-store",      "initRemoteStore"),
     "write_store":       ("build",  "--write-store",       "initWriteStore"),
 }
-_INIT_ENV_ONLY = {"organisation": ("BITS_ORGANISATION", "organisation"),
+_INIT_ENV_ONLY = {"organisation": ("BITS_COMMUNITY",    "organisation"),
                   "providers":    ("BITS_PROVIDERS",    "providers")}
 
 
@@ -87,8 +88,8 @@ def doInitConfig(args):
     every build. Only settings the user explicitly named are saved:
     ``--architecture`` goes to the ``[common]`` section, the rest to ``[build]``.
 
-    ``organisation``/``providers`` have no build-time flag; for those the user is
-    pointed at ``$BITS_ORGANISATION`` / ``$BITS_PROVIDERS``. With --dry-run the
+    ``organisation`` (the community) and ``providers`` have no build-time flag; for
+    those the user is pointed at ``$BITS_COMMUNITY`` / ``$BITS_PROVIDERS``. With --dry-run the
     resulting profile is printed without writing.
     """
     from bits_helpers import bits_use
@@ -132,7 +133,7 @@ def doInitConfig(args):
     if saved_to:
         banner("Saved to the bits use profile (%s).", bits_use._src_label(saved_to))
     else:
-        info("Nothing saved (organisation/providers use environment variables).")
+        info("Nothing saved (community/providers use environment variables).")
 
 
 def _checkout_recipes_only(args):

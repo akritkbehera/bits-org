@@ -667,7 +667,7 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
   (the default, ``.``, always exists).  The lookup order for which community
   recipe repo to clone is:
 
-  1. **``$BITS_ORGANISATION``** — if set to e.g. ``LHCB``, bits looks for
+  1. **``$BITS_COMMUNITY``** — if set to e.g. ``LHCB``, bits looks for
      ``lhcb.bits.sh`` in the bits-providers checkout.
   2. **``default.bits.sh``** — legacy fallback; current bits-providers no longer
      ships one, so with no organisation nothing is bootstrapped.
@@ -703,7 +703,7 @@ def bootstrap_default_config(args, work_dir: str) -> Optional[str]:
     return None
 
   # ── 2. Resolve candidate recipe file ──────────────────────────────────
-  # Prefer <organisation>.bits.sh when $BITS_ORGANISATION is set; default.bits.sh
+  # Prefer <organisation>.bits.sh when $BITS_COMMUNITY is set; default.bits.sh
   # is a legacy fallback (no longer in bits-providers). The organisation is given
   # uppercase (e.g. "ALICE", "LHCB"), the bits-providers filenames are lowercase
   # (alice.bits.sh, lhcb.bits.sh).

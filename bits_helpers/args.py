@@ -681,8 +681,8 @@ def add_init_arguments(subparsers, ctx):
       description="With no PACKAGE, 'bits init' records the supplied options as a "
                   "'bits use' profile (./.bitsuse or a ~/.bits/use record) so you do not "
                   "repeat them on every build, then exits. --architecture goes to [common], "
-                  "the rest to [build]. organisation/providers have no build flag — set "
-                  "$BITS_ORGANISATION / $BITS_PROVIDERS for those.")
+                  "the rest to [build]. community/providers have no build flag — set "
+                  "$BITS_COMMUNITY / $BITS_PROVIDERS for those.")
   init_cfg.add_argument("--providers", dest="providers", default=None, metavar="URL",
                         help="URL of the bits-providers repository. Has no build-time flag; "
                              "set the BITS_PROVIDERS environment variable instead.")
@@ -692,9 +692,10 @@ def add_init_arguments(subparsers, ctx):
   init_cfg.add_argument("--write-store", dest="initWriteStore", default=None, metavar="URL",
                         help="Binary store to upload newly-built tarballs to (saved as "
                              "'--write-store' in the [build] profile).")
-  init_cfg.add_argument("--organisation", dest="organisation", default=None, metavar="NAME",
-                        help="Organisation selecting the registry/provider 'home' repo. Has no "
-                             "build-time flag; set the BITS_ORGANISATION environment variable "
+  init_cfg.add_argument("--community", "--organisation", dest="organisation", default=None,
+                        metavar="NAME",
+                        help="Community selecting the registry/provider 'home' repo. Has no "
+                             "build-time flag; set the BITS_COMMUNITY environment variable "
                              "instead (the aliBuild wrapper sets it).")
 
   # version takes no options; the architecture is auto-detected for display.
@@ -1907,11 +1908,11 @@ def doParseArgs():
 
   cvmfs_path_parser = add_cvmfs_path_arguments(subparsers, ctx)
 
-  # $BITS_ORGANISATION (the aliBuild wrapper exports it) selects the registry/
-  # provider "home" so build/etc. — not just init — pick it up. An explicit
-  # --organisation still wins via normal argparse precedence. Injected as a
-  # default on the actions that consume it.
-  _org_env = os.environ.get("BITS_ORGANISATION")
+  # $BITS_COMMUNITY (the aliBuild wrapper exports it; $BITS_ORGANISATION, its
+  # former name, still works) selects the registry/provider "home" so build/etc.
+  # — not just init — pick it up. An explicit --community still wins via normal
+  # argparse precedence. Injected as a default on the actions that consume it.
+  _org_env = os.environ.get("BITS_COMMUNITY") or os.environ.get("BITS_ORGANISATION")
   if _org_env:
     _org_parsers = [build_parser, clean_parser, cleanup_parser, deps_parser,
                     doctor_parser, init_parser, verify_parser, status_parser]

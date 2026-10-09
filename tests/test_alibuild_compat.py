@@ -23,7 +23,7 @@ from bits_helpers.args import doParseArgs
 # Exactly what bits/aliBuild exports before exec'ing bits.
 _ALIBUILD_ENV = {
     "BITS_BRANDING":        "aliBuild",
-    "BITS_ORGANISATION":    "ALICE",
+    "BITS_COMMUNITY":       "ALICE",
     "BITS_PKG_PREFIX":      "VO_ALICE",
     "BITS_LEGACY_INITDOTSH": "1",
     "BITS_REPO_DIR":        "alidist",
@@ -52,7 +52,7 @@ class AliBuildMinimalWrapperTest(unittest.TestCase):
         self._env = patch.dict(os.environ, _ALIBUILD_ENV, clear=False)
         self._env.start()
         # These would otherwise mask the aliBuild defaults under test.
-        for k in ("BITS_PATH", "BITS_PROVIDERS"):
+        for k in ("BITS_PATH", "BITS_PROVIDERS", "BITS_ORGANISATION"):
             os.environ.pop(k, None)
 
     def tearDown(self):
@@ -68,10 +68,19 @@ class AliBuildMinimalWrapperTest(unittest.TestCase):
         args = _parse(["build", "--force-unknown-architecture", "zlib"])
         self.assertEqual(args.configDir, "alidist")
 
-    def test_organisation_from_env(self):
-        # $BITS_ORGANISATION selects the registry/provider home for build too.
+    def test_community_from_env(self):
+        # $BITS_COMMUNITY selects the registry/provider home for build too.
         args = _parse(["build", "--force-unknown-architecture", "zlib"])
         self.assertEqual(getattr(args, "organisation", None), "ALICE")
+        # Its former name still works; the new one wins.
+        with patch.dict(os.environ, {"BITS_ORGANISATION": "LHCB"}):
+            os.environ.pop("BITS_COMMUNITY")
+            self.assertEqual(_parse(["build", "--force-unknown-architecture", "zlib"]).organisation,
+                             "LHCB")
+            os.environ["BITS_COMMUNITY"] = "SHIP"
+            self.assertEqual(_parse(["build", "--force-unknown-architecture", "zlib"]).organisation,
+                             "SHIP")
+        self.assertEqual(_parse(["init", "--community", "lhcb"]).organisation, "lhcb")
 
     def test_alibuild_defaults_to_no_provider_bootstrap(self):
         # Legacy aliBuild path: recipes come from a local alidist checkout, so the
