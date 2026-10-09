@@ -137,7 +137,7 @@ def defaults_store_url(defaults_meta):
 
 def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
                         branch_basename="", branch_stream="", devel=None,
-                        devel_version=None) -> None:
+                        devel_version=None, default_expand_recipe=False) -> None:
   """Resolve what storeHashes() hashes for *spec*: tag and commit, version,
   sources, patches, variables and recipe text. `bits build` and `bits status`
   both use it, so that they compute the same package identity.
@@ -182,7 +182,7 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
 
   spec.setdefault("variables", OrderedDict(spec.get("variables", {})))
   variables = spec["variables"]
-  if "Python" in spec.get("requires", []):
+  if "Python" in spec.get("requires", []) or spec["package"] == "Python":
     # Find the Python package spec safely
     python_version_str = ""
     py_spec = specs.get("Python")
@@ -204,21 +204,20 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
         "python_major_minor_str": f"{major}{minor}",
     })
   for k, v in variables.items():
-    variables[k] = resolve_spec_data(spec, v, defaults, branch_basename, branch_stream)
+    variables[k] = resolve_spec_data(spec, v if isinstance(v, str) else str(v),
+                                       args.defaults, branch_basename, branch_stream)
   if "source" in spec:
     spec["source"] = resolve_spec_data(spec, spec["source"], defaults, branch_basename, branch_stream)
   if "sources" in spec:
     spec["sources"] = [resolve_spec_data(spec, src, defaults, branch_basename, branch_stream) for src in spec["sources"]]
   if "patches" in spec:
     spec["patches"] = [resolve_spec_data(spec, p, defaults, branch_basename, branch_stream) for p in spec["patches"]]
-  # Variables defined in the active --defaults profile's `variables:` block are
-  # available to every recipe body.  When a recipe does not itself opt into
-  # expansion (no `variables:` / `expand_recipe: true`) we expand it in SOFT
-  # mode: only known variables are substituted and any other %(...)s / bare %
-  # is left untouched, so profile-wide variables never clobber or break a
-  # recipe that happens to contain a literal %(...)s or shell `%`.
+  # Defaults can opt every recipe into strict expansion with
+  # `expand_recipe: true`. Recipe-local variables/flag do the same for one
+  # recipe; otherwise profile variables are applied in soft mode.
   default_vars = default_vars or None
-  recipe_opts_in = bool(variables or spec.get("expand_recipe", False))
+  recipe_opts_in = bool(variables or spec.get("expand_recipe", False)
+                         or default_expand_recipe)
   if recipe_opts_in or default_vars:
     spec["recipe"] = resolve_spec_data(spec, spec["recipe"], defaults,
                                        branch_basename, branch_stream,
@@ -3818,7 +3817,8 @@ def doBuild(args, parser):
       spec, specs, args.defaults, defaultsMeta.get("variables"), args.configDir,
       branch_basename, branch_stream, devel=_devel,
       devel_version=(args.develPrefix if "develPrefix" in args
-                     and args.develPrefix != "ali-master" else None))
+                     and args.develPrefix != "ali-master" else None),
+      default_expand_recipe=defaultsMeta.get("expand_recipe", False))
 
   # Decide what is the main package we are building and at what commit.
   #

@@ -2573,6 +2573,7 @@ All sections are optional. `commits` maps a git `tag:` to the **pinned commit SH
 | `incremental_recipe` | Bash snippet for fast incremental (development) rebuilds. |
 | `relocate_paths` | Paths to rewrite when relocating an installation. |
 | `variables` | Custom key-value pairs for `%(name)s` substitution in `version`, `tag`, `source`, `sources`, `patches` and the recipe body. Setting it (or `expand_recipe: true`) makes an unknown `%(name)s` in the body an error; otherwise only known variables are replaced there. |
+| `expand_recipe` | Set to `true` in a defaults profile to enable strict `%(name)s` expansion for every recipe body under that profile. Unknown placeholders are errors. A recipe can also set this flag locally. |
 | `from` | Recipe inheritance: names a recipe directory (relative to the recipes root) whose recipe with the same file name is the parent. The child's header keys replace the parent's and its body is placed before the parent's; `merge_policy:` (`remove`, `inherit`, `merge` key lists) adjusts this. |
 | `architecture` | Set to `share` to mark a package as architecture-independent (see [§19](#19-architecture-independent-shared-packages)). The older spelling `shared` is no longer recognised. |
 | `own_hash` | Set to `true` for a package whose output does not depend on the community/build-type defaults — the compiler toolchain — so one build is reused across them. See [Shared toolchains](#shared-toolchains-own_hash) below. |
