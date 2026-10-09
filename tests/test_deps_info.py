@@ -43,11 +43,8 @@ class TestDepsInfo(unittest.TestCase):
 
     def test_mapping_in_build_order(self):
         graph = create_deps_info("c", _specs(), _ARGS)
-        self.assertEqual(graph, {"defaults-release": [],
-                                 "a": ["defaults-release"],
-                                 "b": ["defaults-release", "a"],
-                                 "c": ["defaults-release", "b"]})
-        self.assertEqual(list(graph), ["defaults-release", "a", "b", "c"])
+        self.assertEqual(graph, {"a": [], "b": ["a"], "c": ["b"]})
+        self.assertEqual(list(graph), ["a", "b", "c"])
 
     def test_same_edges_as_bits_deps_outmake(self):
         from bits_helpers.deps import deps_makefile
@@ -75,7 +72,7 @@ class TestGraphInMeta(unittest.TestCase):
     def test_recorded_as_last_field(self):
         rec = self._record()
         self.assertEqual(list(rec)[-1], "dependency_graph")
-        self.assertEqual(rec["dependency_graph"]["c"], ["defaults-release", "b"])
+        self.assertEqual(rec["dependency_graph"]["c"], ["b"])
 
     def test_dependencies_block_untouched(self):
         deps = self._record()["dependencies"]

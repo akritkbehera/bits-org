@@ -205,7 +205,7 @@ def prepare_hash_inputs(spec, specs, defaults, default_vars, config_dir,
     })
   for k, v in variables.items():
     variables[k] = resolve_spec_data(spec, v if isinstance(v, str) else str(v),
-                                       args.defaults, branch_basename, branch_stream)
+                                       defaults, branch_basename, branch_stream)
   if "source" in spec:
     spec["source"] = resolve_spec_data(spec, spec["source"], defaults, branch_basename, branch_stream)
   if "sources" in spec:
@@ -1224,6 +1224,21 @@ def create_provenance_info(package, specs, args):
     },
     "dependency_graph": deps_graph(specs, package, runtime_only=True),
   })
+
+
+def create_deps_info(package, specs, args):
+  """Return the runtime dependency graph in dependency-first build order.
+
+  Uses the same edge selection as ``bits deps --outmake --runtime``. The
+  virtual ``defaults-release`` node is omitted, matching ``deps_graph`` and
+  the graph stored in package metadata.
+  """
+  from bits_helpers.deps import _makefile_order, deps_graph
+
+  graph = deps_graph(specs, package, runtime_only=True)
+  order = _makefile_order(graph)
+  position = {name: index for index, name in enumerate(order)}
+  return {name: sorted(graph[name], key=position.__getitem__) for name in order}
 
 
 # High-signal patterns that usually pinpoint the proximate cause of a build
