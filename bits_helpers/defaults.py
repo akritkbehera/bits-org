@@ -228,6 +228,13 @@ def readDefaults(configDir, defaults, error, architecture):
   if "release" in defaults and "release" not in valid_defaults_exempt:
     valid_defaults_exempt.append("release")
   defaultsMeta["_valid_defaults_exempt"] = valid_defaults_exempt
+  # The CVMFS layout, when the recipe repository keeps it in cvmfs.yaml.
+  from bits_helpers.cvmfs_layout import apply_layout_file
+  try:
+    apply_layout_file(defaultsMeta, configDir)
+  except ValueError as exc:
+    error(str(exc))
+    sys.exit(1)
   defaultsMeta["_missing_defaults"] = missing_defaults
   defaultsMeta["_defaults_dirs"] = defaults_dirs
   defaultsMeta["_override_dirs"] = override_dirs

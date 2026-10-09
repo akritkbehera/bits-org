@@ -9,6 +9,8 @@ Needs a real modulecmd (Environment Modules): on PATH, or $BITS_TEST_MODULECMD.
 """
 
 import os
+import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +18,20 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARCH = "x86_64-el9-gcc14-opt"
+
+
+def _host_os():
+  """This host's OS token as bits' hostCvmfsArch reads it (el<N>, ubuntu<NNNN>)."""
+  try:
+    with open("/etc/os-release") as f:
+      kv = dict(l.rstrip("\n").split("=", 1) for l in f if "=" in l)
+  except OSError:
+    return ""
+  kv = {k: v.strip('"') for k, v in kv.items()}
+  m = re.match(r"^platform:(el[0-9]+)$", kv.get("PLATFORM_ID", ""))
+  if m:
+    return m.group(1)
+  return "ubuntu" + kv.get("VERSION_ID", "").replace(".", "") if kv.get("ID") == "ubuntu" else ""
 
 
 def _modulecmd():
@@ -175,6 +191,80 @@ class CvmfsModulesTest(unittest.TestCase):
     self.assertNotEqual(r.returncode, 0)
     self.assertIn("B/2-1 was not found", r.stderr)
 
+
+  # cvmfs.yaml in the recipe repository: the trees without $BITS_CVMFS_PREFIX.
+  _LAYOUT = ('# CVMFS layout\nprefix:  "%s"   # the group root\n'
+             "cvmfs_modules_template: '{prefix}/{arch}/Modules/modulefiles/{pkg}'\n")
+
+  def _layout(self, text=None, where=None):
+    _write(os.path.join(where or self.work, "cvmfs.yaml"), text or self._LAYOUT % self.cvmfs)
+    self.env.pop("BITS_CVMFS_PREFIX")
+
+  def test_layout_file(self):
+    self._layout()
+    r = self._bits("q")
+    self.assertEqual(r.returncode, 0, r.stderr)
+    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"])
+    self.assertEqual(self._printenv("B")["B"], os.path.join(self.cvmfs, ARCH, "Packages", "B", "2-1"))
+
+  def test_layout_file_beside_the_work_dir(self):
+    # bits run from a subdirectory finds ../sw, and cvmfs.yaml beside it.
+    self._layout()
+    sub = os.path.join(self.work, "sub")
+    os.makedirs(sub)
+    r = subprocess.run([os.path.join(self.inst, "bits"), "-a", ARCH, "q", "^B/"], cwd=sub,
+                       env=self.env, capture_output=True, text=True)
+    self.assertEqual(r.stdout.split(), ["B/2-1"], r.stderr)
+
+  def test_prefix_variable_wins_over_layout_file(self):
+    self._layout()
+    r = self._bits("q", BITS_CVMFS_PREFIX="")         # empty: CVMFS modules off
+    self.assertEqual(r.stdout.split(), ["A/1-1"])
+
+  def test_layout_file_unusable_template(self):
+    self._layout('prefix: %s\ncvmfs_modules_template: "{prefix}/{release}/{arch}/M/{pkg}"\n'
+                 % self.cvmfs)
+    r = self._bits("q")
+    self.assertEqual(r.stdout.split(), ["A/1-1"])
+    self.assertIn("no CVMFS modules", r.stderr)
+
+  def test_layout_file_without_a_uses_the_local_arch(self):
+    os.makedirs(os.path.join(self.sw, "MODULES", ARCH))   # bits picks ARCH as the local arch
+    self._layout()
+    r = subprocess.run([os.path.join(self.inst, "bits"), "q"], cwd=self.work,
+                       env=self.env, capture_output=True, text=True)
+    self.assertEqual(r.stdout.split(), ["A/1-1", "B/2-1", "C/3-1", "E/5-1", "gcc/14-1"], r.stderr)
+
+  def test_layout_file_picks_this_hosts_arch(self):
+    # No -a and no tree for the local arch: the trees published for this
+    # host's CPU and OS, if for one compiler. A CVMFS root of its own.
+    cpu, osname = platform.machine(), _host_os()
+    if not osname:
+      self.skipTest("bits picks a published arch on el<N> and Ubuntu hosts only")
+    root = os.path.join(self.tmp, "cvmfs2")
+    self._layout(self._LAYOUT % root)
+    host = "%s-%s-gcc14" % (cpu, osname)
+    for arch, mod in ((host + "-opt", "B/2-1"), (host, "gcc/14-1"), ("x86_64-el1-gcc9-opt", "D/1-1")):
+      mroot = os.path.join(root, arch, "Modules", "modulefiles")
+      _write(os.path.join(mroot, "BASE", "1.0"), _CVMFS_BASE)
+      _write(os.path.join(mroot, mod), _modulefile(*mod.split("/")))
+    q = lambda: subprocess.run([os.path.join(self.inst, "bits"), "q"], cwd=self.work,
+                               env=self.env, capture_output=True, text=True)
+    r = q()
+    self.assertEqual(r.stdout.split(), ["B/2-1", "gcc/14-1"], r.stderr)
+    # Two compilers for this host: none is picked, the note lists them.
+    _write(os.path.join(root, "%s-%s-gcc15-opt" % (cpu, osname), "Modules", "modulefiles",
+                        "BASE", "1.0"), _CVMFS_BASE)
+    r = q()
+    self.assertEqual(r.stdout.split(), [])
+    self.assertIn("%s-%s-gcc15-opt" % (cpu, osname), r.stderr)
+    self.assertIn("bits -a <arch> q", r.stderr)
+
+  def test_layout_file_quiet_without_published_trees(self):
+    # No /cvmfs here (e.g. a laptop): no CVMFS modules and no note.
+    self._layout(self._LAYOUT % os.path.join(self.tmp, "nothing"))
+    r = self._bits("q")
+    self.assertEqual((r.stdout.split(), r.stderr), (["A/1-1"], ""))
 
 if __name__ == "__main__":
   unittest.main()

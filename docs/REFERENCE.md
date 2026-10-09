@@ -1724,6 +1724,15 @@ trees can be loaded together; `unload` uses the tree each module was loaded from
 CVMFS trees are not put on `MODULEPATH`: inside `bits enter`, a `module load` by hand
 sees only the local modules. `--dev` works with local modules only.
 
+Without `BITS_CVMFS_PREFIX` (unset; set but empty turns CVMFS modules off), a recipe
+repository's [`cvmfs.yaml`](#the-cvmfs-layout-file-cvmfsyaml) gives the trees: in the
+current directory, or beside the work directory (`sw/`). They are the directory of its
+`cvmfs_modules_template` (`{prefix}/{arch}/Modules/modulefiles/{pkg}`, say), with the
+`<arch>` order above. Without `-a` and with no tree for the local architecture,
+`<arch>` is the one published for this host's CPU and OS (`el<N>` or `ubuntu<NNNN>`, as the CVMFS entry point picks its view) when there
+is exactly one compiler for it; otherwise bits uses none and says which there are, so
+`bits -a <arch> q` picks one.
+
 ---
 
 ### bits modulecmd
@@ -1933,6 +1942,36 @@ bits cvmfs platforms|show|summary     # inspect a deployed tree (read-only)
 bits cvmfs stage   …                  # producer-side staging (was `bits cvmfs-stage`)
 bits cvmfs publish …                  # producer-side publish of a build manifest (was `bits cvmfs-publish`)
 ```
+
+`bits cvmfs platforms|show|summary` inspect the tree under `--cvmfs`, by default the
+`prefix:` of `./cvmfs.yaml`.
+
+#### The CVMFS layout file: cvmfs.yaml
+
+A recipe repository may keep its CVMFS layout in a `cvmfs.yaml` in its top directory
+(the recipe directory, `-c`/`--config-dir`, by default the current directory), the same
+keys as under `system:` in its defaults: `prefix`,
+`cvmfs_user_prefix`, `cvmfs_packages_template`, `cvmfs_releases_template`,
+`cvmfs_modules_template`, `cvmfs_shared_path_template`, `cvmfs_views_template` and
+`cvmfs_view_exclude`. A key the defaults set wins, so a profile can still change one
+(e.g. a nightly's releases and views templates). The prefix bits-console injects
+still bounds it: a declared prefix must be that one or below it. The layout never enters a package hash. Without the file, the defaults
+alone give the layout, as before. Besides builds and publishing, `bits q`, `enter`
+and `load` use it for the group's modules (from the current directory, or beside the
+work directory), and `bits cvmfs platforms|show|summary` for their root (from the
+current directory).
+
+```yaml
+prefix:                     /cvmfs/bits.cern.ch/lcg
+cvmfs_user_prefix:          "{prefix}/user"
+cvmfs_packages_template:    "{prefix}/{arch}/Packages/{pkg}/{tag}"
+cvmfs_modules_template:     "{prefix}/{arch}/Modules/modulefiles/{pkg}"
+cvmfs_shared_path_template: "{prefix}/noarch/{pkg}/{tag}"
+cvmfs_releases_template:    "{prefix}/releases/{release}/{family}{pkg}/{version}/{arch}"
+cvmfs_views_template:       "{prefix}/views/{release}/{arch}"
+```
+
+The shell reads `prefix` and `cvmfs_modules_template` as plain `key: value` lines.
 
 `bits cvmfs publish` places every package of the build with the build's own CVMFS
 templates (recorded in its manifest). A group that sets `cvmfs_packages_template`
@@ -3276,7 +3315,7 @@ For each built dependency `DEP`, bits also sets `${DEP_ROOT}` to its absolute in
 | `BITS_LEGACY_REGISTRY` | _(unset)_ | `1` selects the legacy `alisw/<distro>-builder` images (the `aliBuild` wrapper sets it). |
 | `BITS_LEGACY_INITDOTSH` | _(unset)_ | `1` selects the legacy build-time `init.sh` (same as `--legacy-initdotsh`); the `aliBuild` wrapper sets it. |
 | `BITS_PROVIDERS` | `https://github.com/bitsorg/bits-providers` (empty under the `aliBuild` wrapper) | URL of the repository-provider set; an `@<tag>` suffix pins a snapshot. Environment only (no build flag). |
-| `BITS_CVMFS_PREFIX` | _(unset)_ | A community's CVMFS prefix (e.g. `/cvmfs/bits.cern.ch/key4hep`): `bits q`, `enter`, `load`, `printenv`, `unload` and `setenv` also use its modules for the architecture, after the local ones (see [bits query](#bits-query--list--avail)). The bits entry point on CVMFS sets it for a community. |
+| `BITS_CVMFS_PREFIX` | _(unset)_ | A community's CVMFS prefix (e.g. `/cvmfs/bits.cern.ch/key4hep`): `bits q`, `enter`, `load`, `printenv`, `unload` and `setenv` also use its modules for the architecture, after the local ones (see [bits query](#bits-query--list--avail)). The bits entry point on CVMFS sets it for a community. Unset, a recipe repository's `cvmfs.yaml` gives the trees; empty turns them off. |
 | `BITS_REUSE_FROM` | _(unset)_ | Default of `--reuse-from` for `bits build` (e.g. `cvmfs`); the bits entry point on CVMFS sets it for a community. Any `--reuse-from`, from the command line or a `bits use` profile, wins, and an empty one turns reuse off. When the recipes declare no CVMFS layout, or the modules tree it names does not exist, the default is skipped with a warning instead of stopping the build; an explicit `--reuse-policy` wins over its `::relaxed`/`::strict` suffix. |
 | `REMOTE_STORE`, `WRITE_STORE` | _(unset)_ | Read and write store URLs when no flag is given; `BITS_REMOTE_STORE`/`BITS_WRITE_STORE` override them (see [§21](#21-remote-binary-store-backends)). |
 | `BITS_S3_STORE` | `https://s3.cern.ch/lcgapp-bits-testing` | Default store for `bits publish`, `certify`, `sign`, `bits store` and `compliance`. |

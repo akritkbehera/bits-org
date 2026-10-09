@@ -414,5 +414,66 @@ class ReuseModulePathFromTemplatesTest(unittest.TestCase):
         self.assertIsNone(reuse_module_path_from_templates(None, "el9"))
 
 
+
+class LayoutFileTest(unittest.TestCase):
+    """cvmfs.yaml: the layout in a file of its own, under the defaults' system: keys."""
+
+    def setUp(self):
+        import tempfile, shutil
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def _write(self, name, text):
+        with open(os.path.join(self.dir, name), "w") as fh:
+            fh.write(text)
+
+    LAYOUT = ('prefix: "/cvmfs/r/g"          # the group root\n'
+              'cvmfs_packages_template: "{prefix}/{arch}/Packages/{pkg}/{tag}"\n'
+              'cvmfs_modules_template:  "{prefix}/{arch}/Modules/modulefiles/{pkg}"\n'
+              'cvmfs_releases_template: "{prefix}/releases/{release}/{pkg}/{version}/{arch}"\n'
+              'cvmfs_views_template:    "{prefix}/views/{release}/{arch}"\n')
+
+    def test_no_file_changes_nothing(self):
+        from bits_helpers.cvmfs_layout import apply_layout_file
+        meta = {"system": {"prefix": "/cvmfs/x"}}
+        self.assertEqual(apply_layout_file(meta, self.dir), {})
+        self.assertEqual(meta, {"system": {"prefix": "/cvmfs/x"}})
+
+    def test_defaults_win_over_the_file(self):
+        from bits_helpers.cvmfs_layout import apply_layout_file
+        self._write("cvmfs.yaml", self.LAYOUT)
+        meta = {"system": {"cvmfs_views_template": "{prefix}/views/dev3/{day}/{arch}"},
+                "cvmfs_path_template": "{prefix}/legacy/{pkg}"}
+        apply_layout_file(meta, self.dir)
+        t = RT(meta)
+        self.assertEqual(t["prefix"], "/cvmfs/r/g")
+        self.assertEqual(t["packages"], "{prefix}/{arch}/Packages/{pkg}/{tag}")
+        self.assertEqual(t["modules"], "{prefix}/{arch}/Modules/modulefiles/{pkg}")
+        self.assertEqual(t["views"], "{prefix}/views/dev3/{day}/{arch}")   # the profile's
+        self.assertEqual(t["path"], "{prefix}/legacy/{pkg}")   # the defaults' (legacy name)
+
+    def test_bad_files_are_errors(self):
+        from bits_helpers.cvmfs_layout import read_layout_file
+        for text, msg in (("prefx: /cvmfs/x\n", "unknown key(s) prefx"),
+                          ("- /cvmfs/x\n", "expected `key: value` lines"),
+                          ("prefix: [\n", "cvmfs.yaml"),
+                          ("prefix: 5\n", "prefix must be a string"),
+                          ("cvmfs_view_exclude: foo\n", "must be a list of strings")):
+            self._write("cvmfs.yaml", text)
+            with self.assertRaises(ValueError) as cm:
+                read_layout_file(self.dir)
+            self.assertIn(msg, str(cm.exception))
+
+    def test_read_defaults_takes_it(self):
+        from bits_helpers.defaults import readDefaults
+        self._write("defaults-release.sh", "package: defaults-release\nversion: v1\n---\n")
+        self._write("cvmfs.yaml", self.LAYOUT)
+        meta, _ = readDefaults(self.dir, ["release"], lambda *_: None, "slc9_x86-64")
+        self.assertEqual(RT(meta)["modules"], "{prefix}/{arch}/Modules/modulefiles/{pkg}")
+        self._write("cvmfs.yaml", "prefx: /cvmfs/x\n")
+        with self.assertRaises(SystemExit):
+            readDefaults(self.dir, ["release"], lambda *_: None, "slc9_x86-64")
+
+
 if __name__ == "__main__":
     unittest.main()

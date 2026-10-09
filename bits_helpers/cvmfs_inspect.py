@@ -305,8 +305,9 @@ def main(argv=None):
     # Shared options live on a parent parser so they work AFTER the subcommand
     # too (`bits cvmfs platforms --cvmfs ROOT`), not only before it.
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--cvmfs", required=True,
-                        help="root holding <arch>/Packages/<pkg>/<verrev>/.meta.json")
+    common.add_argument("--cvmfs",
+                        help="root holding <arch>/Packages/<pkg>/<verrev>/.meta.json "
+                             "(default: prefix: in ./cvmfs.yaml)")
     common.add_argument("--json", action="store_true", help="machine-readable output")
 
     ap = argparse.ArgumentParser(
@@ -327,6 +328,15 @@ def main(argv=None):
                         help="per-platform package + build_id summary")
     ss.add_argument("--arch", help="platform (default: first found)")
     a = ap.parse_args(argv)
+    if not a.cvmfs:
+        from bits_helpers.cvmfs_layout import read_layout_file
+        try:
+            a.cvmfs = read_layout_file(".").get("prefix")
+        except ValueError as exc:
+            ap.error(str(exc))
+        if not a.cvmfs:
+            ap.error("--cvmfs is required here (no cvmfs.yaml with a prefix: "
+                     "in the current directory)")
     return {"platforms": _cmd_platforms, "show": _cmd_show,
             "summary": _cmd_summary}[a.cmd](a)
 

@@ -2037,7 +2037,9 @@ def _defaults_architecture_template(args):
                            lambda *a, **k: None, args.architecture)
     val = meta.get("architecture")
     return val if isinstance(val, str) and val.strip() else None
-  except Exception:
+  except (Exception, SystemExit):
+    # readDefaults exits on a malformed defaults set or cvmfs.yaml; doBuild
+    # re-reads them and reports it.
     return None
 
 ARCHITECTURE_TABLE = """\

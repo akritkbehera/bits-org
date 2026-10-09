@@ -293,6 +293,69 @@ function normModules() {
   echo "${result[*]}"
 }
 
+function layoutValue() {
+  # layoutValue FILE KEY: the value of a top-level `KEY: value` line of a
+  # cvmfs.yaml (unquoted, without a trailing comment), empty if none.
+  awk -v k="$2" 'index($0, k ":") == 1 {
+      v = substr($0, length(k) + 2)
+      sub(/^[ \t]+/, "", v); sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v)
+      if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
+      print v; exit }' "$1"
+}
+
+function publishedArchs() {
+  # publishedArchs TREE: the archs that have a module tree, TREE being its path
+  # with {arch} in place of the arch.
+  local pre=${1%%"{arch}"*} post=${1#*"{arch}"} d
+  for d in "$pre"*; do [[ -d "$d$post" ]] && echo "${d#"$pre"}"; done
+}
+
+function hostCvmfsArch() {
+  # hostCvmfsArch TREE: the published build arch (without -opt/-dbg) for this
+  # host's CPU and OS, when exactly one matches; as the CVMFS entry point picks
+  # its view: the CPU token, and el<N> (or slc/alma/rhel/rocky/centos<N>) or
+  # ubuntu<NNNN> from /etc/os-release.
+  local cpu os a b bases=()
+  cpu=$(uname -m)
+  os=$( . /etc/os-release 2> /dev/null
+        if [[ ${PLATFORM_ID:-} =~ ^platform:(el[0-9]+)$ ]]; then echo "${BASH_REMATCH[1]}"
+        elif [[ ${ID:-} == ubuntu ]]; then echo "ubuntu${VERSION_ID//./}"
+        fi )
+  [[ -n "$os" ]] || return 0
+  while read -r a; do
+    [[ "$a" == *"$cpu"* || "$a" == *"${cpu/_/-}"* ]] || continue
+    case $os in
+      el*) [[ "$a" =~ (^|[-_])(el|slc|alma|rhel|rocky|centos)${os#el}([-_]|$) ]] || continue ;;
+      *)   [[ "$a" =~ (^|[-_])$os([-_]|$) ]] || continue ;;
+    esac
+    b=${a%-opt}; b=${b%-dbg}
+    [[ " ${bases[*]} " == *" $b "* ]] || bases+=("$b")
+  done < <(publishedArchs "$1")
+  (( ${#bases[@]} == 1 )) && echo "${bases[0]}"
+  return 0
+}
+
+function isModuleAction() {
+  case "$ACTION" in q|query|enter|printenv|load|setenv) return 0 ;; esac
+  return 1
+}
+
+function cvmfsTrees() {
+  # cvmfsTrees TREE ARCH: add to CVMFS_TREES the trees (TREE with {arch}) of
+  # ARCH, of ARCH without its -opt/-dbg, then of that with -opt and -dbg.
+  local a b t
+  b=${2%-opt}; b=${b%-dbg}
+  for a in "$2" "$b" "$b-opt" "$b-dbg"; do
+    t=${1//"{arch}"/"$a"}
+    [[ -d "$t" ]] || continue
+    # Physical, as BASE/1.0 resolves its BASEDIR (file normalize): the same
+    # paths whether BASE is loaded in the same run or was loaded before.
+    t=$(cd "$t" && pwd -P)
+    [[ " ${CVMFS_TREES[*]} " == *" $t "* ]] || CVMFS_TREES+=("$t")
+  done
+  return 0
+}
+
 function listCvmfsModules() {
   # Emit <pkg>/<version> for every modulefile in the CVMFS module trees (no
   # BASE), via the serving-catalog fast path when it applies, else find.
@@ -692,25 +755,56 @@ export MODULEPATH="$WORK_DIR/MODULES/$ARCHITECTURE${_bits_overlays:+":$_bits_ove
 unset _bits_overlays _ov
 MODULEPATH=$(echo "$MODULEPATH" | sed -e 's/::*/:/g; s/^://; s/:$//')
 
-# The CVMFS module trees of a community ($BITS_CVMFS_PREFIX, which the CVMFS
-# entry point sets): <prefix>/<arch>/Modules/modulefiles for each deployed arch
-# that is $ARCHITECTURE but for a trailing -opt/-dbg, in this order: the exact
-# one, the one without build type (own_hash packages, the toolchain), -opt,
-# -dbg. They come after the local MODULEPATH and stay off it: each tree is
-# used on its own (groupModulecmd), as its BASE/1.0 sets BASEDIR for it alone.
+# The CVMFS module trees of a community: with $BITS_CVMFS_PREFIX (which the
+# CVMFS entry point sets; empty turns them off), <prefix>/<arch>/Modules/modulefiles;
+# else, with a cvmfs.yaml in the recipe repository (here, or beside the work
+# dir), the directory of its cvmfs_modules_template. For each deployed arch that
+# is $ARCHITECTURE but for a trailing -opt/-dbg, in this order: the exact one,
+# the one without build type (own_hash packages, the toolchain), -opt, -dbg.
+# With cvmfs.yaml, no -a and no tree for $ARCHITECTURE, the arch is the one
+# published for this host's CPU and OS, if there is exactly one (a compiler);
+# else a note lists those published. They
+# come after the local MODULEPATH and stay off it: each tree is used on its own
+# (groupModulecmd), as its BASE/1.0 sets BASEDIR for it alone.
 CVMFS_TREES=()
-if [[ -n "${BITS_CVMFS_PREFIX:-}" ]]; then
-  _b=${ARCHITECTURE%-opt}; _b=${_b%-dbg}
-  for _a in "$ARCHITECTURE" "$_b" "$_b-opt" "$_b-dbg"; do
-    _t="${BITS_CVMFS_PREFIX%/}/$_a/Modules/modulefiles"
-    [[ -d "$_t" ]] || continue
-    # Physical, as BASE/1.0 resolves its BASEDIR (file normalize): the same
-    # paths whether BASE is loaded in the same run or was loaded before.
-    _t=$(cd "$_t" && pwd -P)
-    [[ " ${CVMFS_TREES[*]} " != *" $_t "* ]] && CVMFS_TREES+=("$_t")
+_tree=; _layout=
+if [[ -n "${BITS_CVMFS_PREFIX+set}" ]]; then
+  [[ -n "$BITS_CVMFS_PREFIX" ]] && _tree="${BITS_CVMFS_PREFIX%/}/{arch}/Modules/modulefiles"
+else
+  for _layout in "$PWD/cvmfs.yaml" "$(dirname "$WORK_DIR")/cvmfs.yaml" ""; do
+    [[ -f "$_layout" ]] && break
   done
-  unset _a _b _t
+  if [[ -n "$_layout" ]]; then
+    _p=$(layoutValue "$_layout" prefix)
+    _tree=$(layoutValue "$_layout" cvmfs_modules_template)
+    _tree=${_tree:-"{prefix}/{platform}/Modules/modulefiles/{pkg}"}
+    _tree=${_tree//"{prefix}"/"${_p%/}"}; _tree=${_tree//"{platform}"/"{arch}"}
+    # Usable: a prefix, and <dir>/{pkg} with {arch} once in <dir>, its only slot.
+    _d=${_tree%"/{pkg}"}; _r=${_d//"{arch}"/}
+    if [[ -z "$_p" || "$_d" == "$_tree" || "$_r" == "$_d" || "$_r" == *"{"* ||
+          "${_d#*"{arch}"}" == *"{arch}"* ]]; then
+      _tree=
+      isModuleAction && printf "${EY}NOTE: %s: no prefix, or a cvmfs_modules_template other than <dir with {arch}>/{pkg}: no CVMFS modules${EZ}\n" "$_layout" >&2
+    else
+      _tree=$_d
+    fi
+  fi
 fi
+if [[ -n "$_tree" ]]; then
+  cvmfsTrees "$_tree" "$ARCHITECTURE"
+  # cvmfs.yaml, no -a, and nothing for the local arch: the one for this host.
+  if [[ -n "$_layout" && -z "$_ARCH_GIVEN" && ${#CVMFS_TREES[@]} == 0 ]]; then
+    _a=$(hostCvmfsArch "$_tree")
+    [[ -z "$_a" ]] || cvmfsTrees "$_tree" "$_a-opt"
+  fi
+  if [[ -n "$_layout" && ${#CVMFS_TREES[@]} == 0 ]] && isModuleAction; then
+    _p=$(publishedArchs "$_tree" | tr '\n' ' ' | sed 's/ $//')
+    _a=$ARCHITECTURE; [[ -n "$_ARCH_GIVEN" ]] || _a="this host"
+    [[ -z "$_p" ]] || printf "${EY}NOTE: no CVMFS module tree %s (%s) for %s; published: %s. Choose one: bits -a <arch> %s${EZ}\n" \
+      "$_tree" "$_layout" "$_a" "$_p" "$ACTION" >&2
+  fi
+fi
+unset _a _d _r _p _tree _layout
 IGNORE_ERR="Unable to locate a modulefile for 'Toolchain/"
 # -q (which unsets VERBOSE) silences environment-modules' "Loading <pkg>" /
 # "Loading requirement:" progress lines so setenv/printenv/load/enter output can

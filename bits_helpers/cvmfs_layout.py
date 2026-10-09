@@ -320,6 +320,61 @@ def swap_repository(path, repository):
     return re.sub(r"^/cvmfs/[^/]+(?=/|$)", "/cvmfs/" + repository, path)
 
 
+# cvmfs.yaml: a recipe repository's CVMFS layout in a file of its own, the same
+# keys as under system: in its defaults. A key the defaults set wins (e.g. a
+# nightly profile's releases and views templates).
+LAYOUT_FILE = "cvmfs.yaml"
+LAYOUT_KEYS = ("prefix", "cvmfs_user_prefix", "cvmfs_packages_template",
+               "cvmfs_releases_template", "cvmfs_modules_template",
+               "cvmfs_shared_path_template", "cvmfs_views_template",
+               "cvmfs_view_exclude")
+_LAYOUT_ALIASES = {"prefix": "cvmfs_prefix", "cvmfs_releases_template": "cvmfs_path_template"}
+
+
+def read_layout_file(directory):
+    """The layout in <directory>/cvmfs.yaml as a dict: {} without the file.
+    Raises ValueError on a file that is not a mapping of known keys."""
+    path = os.path.join(directory or ".", LAYOUT_FILE)
+    if not os.path.isfile(path):
+        return {}
+    import yaml
+    with open(path) as fh:
+        try:
+            data = yaml.safe_load(fh)
+        except yaml.YAMLError as exc:
+            raise ValueError("%s: %s" % (path, exc))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("%s: expected `key: value` lines" % path)
+    unknown = sorted(str(k) for k in data if k not in LAYOUT_KEYS)
+    if unknown:
+        raise ValueError("%s: unknown key(s) %s; known: %s"
+                         % (path, ", ".join(unknown), ", ".join(LAYOUT_KEYS)))
+    for key, value in data.items():
+        ok = (isinstance(value, list) and all(isinstance(v, str) for v in value)
+              if key == "cvmfs_view_exclude" else isinstance(value, str))
+        if not ok:
+            raise ValueError("%s: %s must be a %s" % (
+                path, key, "list of strings" if key == "cvmfs_view_exclude" else "string"))
+    return data
+
+
+def apply_layout_file(defaults_meta, directory):
+    """Add the layout of <directory>/cvmfs.yaml to the defaults' system: keys,
+    except those the defaults set themselves (system: or top level, or an
+    alias). Returns the layout read ({} without the file)."""
+    layout = read_layout_file(directory)
+    if layout:
+        system = defaults_meta.get("system") or {}
+        for key, value in layout.items():
+            names = (key, _LAYOUT_ALIASES.get(key))
+            if not any(n and (n in system or n in defaults_meta) for n in names):
+                system[key] = value
+        defaults_meta["system"] = system
+    return layout
+
+
 def resolve_cvmfs_templates(defaults_meta, injected_prefix=None):
     """Resolve the group's CVMFS publish-path templates from the defaults.
 

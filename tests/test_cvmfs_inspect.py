@@ -48,6 +48,22 @@ class CvmfsInspectTest(unittest.TestCase):
         with open(os.path.join(d, ".meta.json"), "w") as fh:
             json.dump(meta, fh)
 
+    def test_cvmfs_root_from_layout_file(self):
+        # No --cvmfs: the prefix of ./cvmfs.yaml; neither is an error.
+        import contextlib, io
+        cwd = os.getcwd()
+        work = tempfile.mkdtemp()
+        self.addCleanup(lambda: (os.chdir(cwd), __import__("shutil").rmtree(work, True)))
+        os.chdir(work)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as err:
+            I.main(["platforms"])
+        self.assertIn("--cvmfs is required", err.getvalue())
+        with open("cvmfs.yaml", "w") as fh:
+            fh.write("prefix: %s\n" % self.root)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertIn(I.main(["platforms", "--json"]), (0, None))
+        self.assertIn("aarch64-el9-gcc14-opt", out.getvalue())
+
     def test_list_platforms(self):
         self.assertEqual(I.list_platforms(self.root),
                          ["aarch64-el9-gcc14-opt", "x86_64-el9-gcc14-opt"])
