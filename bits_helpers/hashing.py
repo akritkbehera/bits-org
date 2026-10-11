@@ -11,6 +11,7 @@ import re
 import time
 from collections import OrderedDict
 
+from bits_helpers.build_epoch import BUILD_EPOCH
 from bits_helpers.log import debug
 from bits_helpers.utilities import Hasher
 
@@ -172,6 +173,11 @@ def storeHashes(package, specs, considerRelocation):
   # Empty string is used when no family is set, preserving backward
   # compatibility with existing tarballs.
   h_all(spec.get("pkg_family", ""))
+
+  # What bits itself puts into a build (bits_helpers/build_epoch.py). Only when
+  # set, so the hashes from before it existed stay the same at 0.
+  if BUILD_EPOCH:
+    h_all("build_epoch:%d" % BUILD_EPOCH)
 
   # commit_hash could be a commit hash (if we're not building a tag, but
   # instead e.g. a branch or particular commit specified by its hash), or it

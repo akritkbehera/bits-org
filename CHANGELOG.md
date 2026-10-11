@@ -3,6 +3,7 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Feature]** `BUILD_EPOCH` (`bits_helpers/build_epoch.py`): bumping it rebuilds every package once, for changes to how bits builds that the package hashes do not see. At 0 (now) it is not hashed, so no hash changed. A test fails when the build template, `init.sh` generation or relocation scripts change, until their checksum is updated and the epoch considered.
 - **[Improvement]** A release's merged view collects every build published into it: a later build's packages are added to the view's (recorded in its `.meta.json`), replacing their own earlier versions, and the view is rebuilt and replaced, so `externals` and `generators` can be published as one LCG release without a metapackage. Needs cvmfs-prepub with `POST /api/v1/published/files` and `replace_on_conflict`.
 - **[Fix]** `bits q`, `enter`, `load`, `printenv` and `setenv` find packages installed under a `package_family` (`sw/<arch>/<family>/<pkg>/<version>`): they are listed, their modulefiles point at them, and `--dev` sources their `init.sh`.
 - **[Fix]** `bits <command> --help`, `bits version` and `bits architecture` no longer create an empty `sw/`; the work directory is created when a command runs, in its `-C` directory.

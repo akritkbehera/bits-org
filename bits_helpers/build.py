@@ -1196,10 +1196,12 @@ def create_provenance_info(package, specs, args):
   else:
     _provenance = "loose" if _closure_untracked() else "pure"
   from bits_helpers.deps import deps_graph
+  from bits_helpers.build_epoch import BUILD_EPOCH
 
   return json.dumps({
     "comment": args.annotate.get(package),
     "bits_version": __version__,
+    "build_epoch": BUILD_EPOCH,
     "dist": {
       "commit": os.environ["BITS_DIST_HASH"],
     },

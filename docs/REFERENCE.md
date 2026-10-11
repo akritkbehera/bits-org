@@ -3569,6 +3569,8 @@ TARS/share/store/<hash[0:2]>/<hash>/<pkg>-<version>-<revision>.share.tar.gz
 
 The hash is a 40-character SHA-1 of the recipe text (comments stripped), package name, version and family, the source commit, `sources:` and patches, `env`/path settings, hooks, and the hashes of its dependencies (which cover theirs in turn); on macOS also the relocation paths. Changing anything in this set produces a different hash and therefore a different cache entry.
 
+The bits code that runs a build is not in the hash: a change to how bits builds (the build environment, the generated `init.sh`, what relocation bakes in) leaves every hash as it was, so packages built before and after it would be mixed. `BUILD_EPOCH` in `bits_helpers/build_epoch.py` covers that: bumping it changes every hash, and every package rebuilds once (and is published under a new revision). At 0 it is not hashed. Builds record it in `.meta.json` and the build manifest (`build_epoch`). `tests/test_build_epoch.py` holds a checksum of `build_template.sh`, `initdotsh.py`, `relativize-configs.sh`, `relocate-me.sh` and `view-list.sh`; changing one fails the test until the checksum is updated, in the commit that also decides whether to bump `BUILD_EPOCH` (a bump also updates the golden hashes in `tests/test_build.py`). `build.py`, which fills in the build script and its environment, changes too often for a checksum: a change there that alters builds bumps the epoch by review.
+
 ### Dependency-set symlink trees
 
 After each successful build, bits creates three symlink trees under `TARS/<arch>/` that group together everything needed to reproduce or run the package:

@@ -48,6 +48,7 @@ fields as additive and key off ``schema_version``.
       "schema_version":    int,         # this implementation writes 4
       "bits_version":      str,         # bits package version (or "unknown")
       "bits_dist_hash":    str,         # BITS_DIST_HASH env var
+      "build_epoch":       int,         # bits_helpers/build_epoch.py at build time
       "created_at":        ISO-8601,
       "updated_at":        ISO-8601,
       "status":            "in_progress" | "complete" | "failed",
@@ -157,6 +158,7 @@ try:
 except ImportError:
     __version__ = None
 
+from bits_helpers.build_epoch import BUILD_EPOCH
 from bits_helpers.log import debug, warning
 
 
@@ -353,6 +355,7 @@ class BuildManifest:
         self._data = {
             "schema_version":     self.SCHEMA_VERSION,
             "bits_version":       __version__ or "unknown",
+            "build_epoch":        BUILD_EPOCH,
             "bits_dist_hash":     os.environ.get("BITS_DIST_HASH", ""),
             "created_at":         _now_iso(),
             "updated_at":         _now_iso(),
