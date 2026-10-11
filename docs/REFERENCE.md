@@ -2055,9 +2055,25 @@ view with `view:`: `false` keeps the package out, `exclude: [share/doc, lib/*.a]
 drops paths, `include: [etc/root]` adds paths beyond the default directories.
 `view:` is presentation only: it is not hashed (no rebuild), and the rules of the
 build that creates the view (recorded in its manifest) apply. The view's
-`.meta.json` holds a fingerprint of its links and setup scripts. A view already
-published is kept; with `--replace-on-conflict` it is replaced when its
-fingerprint differs (a view published without one is kept).
+`.meta.json` holds a fingerprint of its links, setup scripts and members, and
+the members: every package in the view, with its published path.
+
+A view collects every build published into its release and arch, like copying
+each build over the last: a second build (e.g. `generators` after `externals`)
+adds its packages to those already there, a package it brings again replaces its
+earlier version, and its packages win a collision. bits reads the members and
+their `.bits-view.json` through prepub (`POST /api/v1/published/files`),
+rebuilds the whole view and replaces it when it differs (prepub must allow
+replacing, `replace_on_conflict` on the node; `--replace-on-conflict` is not
+needed). The build published last wins, so republishing an earlier build
+brings its packages to the front again. A member whose file list cannot be
+read keeps the view as it is and fails the merged view; with
+`--replace-on-conflict` it is left out instead. A view published before members
+were recorded, or with a prepub that cannot read them, is kept; with
+`--replace-on-conflict` it is replaced by this build's packages alone (its
+members recorded from then on). Two builds publishing into one view at the same
+time can still drop each other's packages from it (each rebuilds from the
+members it read): publish them one after the other.
 
 The deprecated hyphenated names (`store-stats`, `cvmfs-stage`, `cvmfs-publish`) still
 work for one release and warn, as do `bits cleanup` (→ `bits prune`) and `bits lcg-view`

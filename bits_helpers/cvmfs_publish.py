@@ -544,13 +544,13 @@ def package_path(spec, ctx):
     return _spec_path(spec, ctx, "path")
 
 
-def published_state(ctx, path):
-    """Ask prepub whether *path* is published: {"exists": bool, "hash": str}, or
-    None when prepub cannot tell (older prepub, no stratum0) — then publish."""
+def _prepub_post(ctx, endpoint, payload):
+    """POST *payload* (JSON) to prepub's *endpoint*, signed like a submission.
+    The response, or None when prepub cannot be reached."""
     import hashlib
     from bits_helpers import prepub as _pp
-    url = "%s/api/v1/published" % ctx["prepub_url"].rstrip("/")
-    body = json.dumps({"repo": ctx["repo"], "path": path}).encode()
+    url = "%s%s" % (ctx["prepub_url"].rstrip("/"), endpoint)
+    body = json.dumps(payload).encode()
     headers = _pp._auth_headers(ctx["token"], "POST", _pp._signed_uri(url),
                                 body_hash=hashlib.sha256(body).hexdigest(),
                                 bearer_auth=ctx.get("bearer_auth", False),
@@ -559,10 +559,19 @@ def published_state(ctx, path):
     session = _pp._make_session(ctx.get("no_verify_tls", False),
                                 signed=not ctx.get("bearer_auth", False))
     try:
-        resp = session.post(url, data=body, headers=headers, timeout=120)
+        return session.post(url, data=body, headers=headers, timeout=120)
     except Exception as exc:
-        sys.stderr.write("[publish] cannot ask prepub whether %s is published (%s); "
-                         "publishing it\n" % (path, exc))
+        sys.stderr.write("[publish] cannot reach prepub at %s (%s)\n" % (endpoint, exc))
+        return None
+
+
+def published_state(ctx, path):
+    """Ask prepub whether *path* is published: {"exists": bool, "hash": str}, or
+    None when prepub cannot tell (older prepub, no stratum0) — then publish."""
+    resp = _prepub_post(ctx, "/api/v1/published", {"repo": ctx["repo"], "path": path})
+    if resp is None:
+        sys.stderr.write("[publish] cannot ask prepub whether %s is published; "
+                         "publishing it\n" % path)
         return None
     if resp.status_code == 200:
         return resp.json() or {}
@@ -572,6 +581,41 @@ def published_state(ctx, path):
         sys.stderr.write("[publish] published check for %s: HTTP %s; publishing it\n"
                          % (path, resp.status_code))
     return None
+
+
+PUBLISHED_FILES_BATCH = 200   # prepub answers at most 512 paths per request
+
+
+def published_files(ctx, paths):
+    """The published content of .meta.json / .bits-view.json files, read through
+    prepub (POST /api/v1/published/files): {path: parsed JSON, or None when
+    not published or unreadable}. None when prepub cannot read them (older
+    prepub, no stratum0, an error): the caller then cannot rely on them."""
+    out, todo = {}, list(dict.fromkeys(paths))
+    batch = PUBLISHED_FILES_BATCH
+    while todo:
+        part = todo[:batch]
+        resp = _prepub_post(ctx, "/api/v1/published/files",
+                            {"repo": ctx["repo"], "paths": part})
+        if resp is not None and resp.status_code == 413 and batch > 1:
+            batch = max(1, batch // 2)   # too many bytes at once: smaller batches
+            continue
+        if resp is None or resp.status_code != 200:
+            if resp is not None and resp.status_code not in (404, 405, 501):
+                sys.stderr.write("[publish] reading published metadata: HTTP %s\n"
+                                 % resp.status_code)
+            return None
+        try:
+            files = resp.json().get("files")
+        except (ValueError, AttributeError):
+            files = None
+        if not isinstance(files, dict):
+            sys.stderr.write("[publish] reading published metadata: unexpected answer\n")
+            return None
+        for p_ in part:
+            out[p_] = files.get(p_)
+        todo = todo[len(part):]
+    return out
 
 
 def fixed_dir(ctx, key):
@@ -706,6 +750,8 @@ def _package_tree(spec, ctx):
     """The package's view entries: its .bits-view.json (written by the build),
     from the local install tree when that holds this very build, else from the
     tarball; a tarball without one (built before) is listed in full."""
+    if "_tree" in spec:   # a member an earlier build published
+        return spec["_tree"]
     rev = spec.get("revision", "")
     vdir = spec.get("version", "") + ("-" + rev if rev else "")
     fam = spec.get("pkg_family", "")
@@ -870,7 +916,7 @@ def merged_view(ctx, specs, staging, view_path):
     owner, dirs, refused = {}, set(), set()
     res = {"linked": [], "conflicts": []}
     for spec, entries, roots in plans:
-        pkg_path = package_path(spec, ctx)
+        pkg_path = spec.get("_path") or package_path(spec, ctx)
         for vrel in entries:
             vrel = fold(vrel, spec["package"], roots)
             if owner.get(vrel) == spec["package"] or (vrel, spec["package"]) in refused:
@@ -1551,11 +1597,78 @@ def main(argv=None):
     return rc
 
 
+def _view_member(spec, ctx):
+    """What a merged view records of a package it links: enough to link it
+    again in a later build's view, from what is published."""
+    return {"package": spec["package"], "version": spec.get("version", ""),
+            "revision": spec.get("revision", ""), "hash": spec.get("hash", ""),
+            "path": spec.get("_path") or package_path(spec, ctx),
+            "view": spec.get("view", True)}
+
+
+def _prior_members(ctx, view_path, specs):
+    """The packages of the published merged view at *view_path* that this
+    build does not bring (a package it brings replaces its earlier version), as
+    member specs carrying their published tree, in the view's order.
+    Returns (members, None), or (None, why) when they cannot be known. Raises
+    SystemExit when a member's file list cannot be read: rebuilding the view
+    without it would drop it, so the view is kept, unless --replace-on-conflict
+    (then the member is left out, with a warning)."""
+    meta_path = view_path + "/.meta.json"
+    got = published_files(ctx, [meta_path])
+    if got is None:
+        return None, "prepub cannot read its members (POST /api/v1/published/files)"
+    meta = got.get(meta_path)
+    members = meta.get("members") if isinstance(meta, dict) else None
+    if not isinstance(members, list):
+        return None, "it was published before views recorded their members"
+    mine = {s_["package"] for s_ in specs}
+    exclude = set(ctx["templates"].get("view_exclude") or [])
+    prior, lists = [], []
+    for m in members:
+        if not (isinstance(m, dict) and isinstance(m.get("package"), str)
+                and isinstance(m.get("path"), str) and m["path"]):
+            sys.stderr.write("[publish] merged view %s: ignoring a malformed member %r\n"
+                             % (view_path, m))
+            continue
+        if m["package"] in mine:
+            continue
+        prior.append(m)
+        if m["package"] not in exclude and m.get("view", True) is not False:
+            lists.append(m["path"] + "/.bits-view.json")
+    read = published_files(ctx, lists) if lists else {}
+    if read is None:
+        raise SystemExit("%s: prepub cannot read its members' .bits-view.json; "
+                         "the view is kept" % view_path)
+    out = []
+    for m in prior:
+        key = m["path"] + "/.bits-view.json"
+        tree = {}   # left out of the view: nothing to list
+        if key in lists:
+            try:
+                tree = _list_tree(read.get(key)["entries"])
+            except (KeyError, TypeError, ValueError):
+                why = ("its member %s has no readable %s" % (m["package"], key))
+                if not ctx.get("replace_on_conflict"):
+                    raise SystemExit("%s: %s; the view is kept (--replace-on-conflict "
+                                     "leaves the member out)" % (view_path, why))
+                sys.stderr.write("[publish] merged view %s: %s; leaving it out\n"
+                                 % (view_path, why))
+                continue
+        out.append(dict(m, _path=m["path"], _tree=tree))
+    return out, None
+
+
 def _publish_merged_view(ctx, specs, emit):
     """The release's merged view (cvmfs_views_template), one per release and
-    arch. A new directory, so it publishes on any path; one already there is
-    kept, unless --replace-on-conflict and its fingerprint (in its .meta.json)
-    differs from this build's view. Returns the rc contribution."""
+    arch, made of every package published into it: like copying each build
+    over the last, the packages this build brings are added to those already
+    in the view (whose members its .meta.json records), replacing their own
+    earlier versions and winning collisions. The view is rebuilt from all of
+    them and replaced when it differs. A view published before members were
+    recorded is kept, unless --replace-on-conflict replaces it with this
+    build's. Returns the rc contribution."""
+    import hashlib
     import shutil
     view_path = fixed_dir(ctx, "views")
     if not view_path:
@@ -1564,15 +1677,28 @@ def _publish_merged_view(ctx, specs, emit):
         return 1
     state = published_state(ctx, view_path) if ctx["submit"] else None
     exists = bool(state and state.get("exists"))
-    if exists and not ctx.get("replace_on_conflict"):
-        emit(["SKIPPED merged view: already published at %s" % view_path])
-        return 0
+    prior = []
+    if exists:
+        try:
+            prior, why = _prior_members(ctx, view_path, specs)
+        except (SystemExit, Exception) as exc:
+            emit(["FAILED merged view: %s" % exc])
+            return 1
+        if prior is None:
+            if not ctx.get("replace_on_conflict"):
+                emit(["SKIPPED merged view: already published at %s, and %s; "
+                      "--replace-on-conflict replaces it with this build's" % (view_path, why)])
+                return 0
+            sys.stderr.write("[publish] merged view %s: %s; replacing it with this "
+                             "build's packages only\n" % (view_path, why))
+            prior = []
+    members = prior + list(specs)
     staging = tempfile.mkdtemp(prefix="mview-", dir=ctx["tmp_dir"])
     try:
         # mkdtemp makes it 0700, and the tar's "." entry gives the published
         # view root that mode: nobody but the owner could enter it.
         os.chmod(staging, 0o755)
-        res = merged_view(ctx, specs, staging, view_path)
+        res = merged_view(ctx, members, staging, view_path)
         for path, winner, loser in res["conflicts"]:
             sys.stderr.write("[publish] merged view: %s from %s, not %s\n"
                              % (path, winner, loser))
@@ -1582,7 +1708,10 @@ def _publish_merged_view(ctx, specs, emit):
         for dp, dns, _fns in os.walk(staging):
             for d in dns:
                 os.chmod(os.path.join(dp, d), 0o755)
-        fp = tree_fingerprint(staging)
+        recorded = [_view_member(m, ctx) for m in members]
+        # The members are part of it: a package that links nothing is still one.
+        fp = hashlib.sha256((tree_fingerprint(staging) + json.dumps(
+            recorded, sort_keys=True)).encode()).hexdigest()
         replace = False
         if exists:
             if state.get("hash") == fp:
@@ -1598,7 +1727,8 @@ def _publish_merged_view(ctx, specs, emit):
                 return 1
             replace = True
         with open(os.path.join(staging, ".meta.json"), "w") as f:
-            json.dump({"package": {"package": "merged-view", "hash": fp}}, f)
+            json.dump({"package": {"package": "merged-view", "hash": fp},
+                       "members": recorded}, f, indent=1)
         os.chmod(os.path.join(staging, ".meta.json"), 0o644)
         # No .cvmfscatalog here: both publish paths ingest with create-catalog-on-
         # root (-c / -C true), which adds the marker itself; a second one fails.
@@ -1606,8 +1736,10 @@ def _publish_merged_view(ctx, specs, emit):
         os.close(fd)
         subprocess.run(["tar", "-cf", tar, "-C", staging, "."], check=True)
         label = "merged-view@%s" % view_path
-        sys.stderr.write("[publish] merged view %s: %d links, %d conflicts\n"
-                         % (view_path, len(res["linked"]), len(res["conflicts"])))
+        sys.stderr.write("[publish] merged view %s: %d packages (%d from earlier "
+                         "builds), %d links, %d conflicts\n"
+                         % (view_path, len(members), len(prior), len(res["linked"]),
+                            len(res["conflicts"])))
         jid = _publish_tar(ctx, view_path, tar, label, identity=view_path,
                            identity_hash=fp, replace=replace)
         emit(["PUBLISHED %s %s" % (jid, label)])

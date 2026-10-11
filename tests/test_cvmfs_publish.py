@@ -1287,9 +1287,13 @@ class TestPackagesAndReleaseView(unittest.TestCase):
                 modes.update((m.name, m.mode) for m in tf.getmembers())
                 return tf.getnames()
         modes = {}
-        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True}):
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True}), \
+             mock.patch.object(cp, "published_files", lambda c, p: None):
             self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
-        self.assertEqual(lines, ["SKIPPED merged view: already published at g/views/LCG_110/el9-gcc15-opt"])
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith(
+            "SKIPPED merged view: already published at g/views/LCG_110/el9-gcc15-opt, and "
+            "prepub cannot read its members"), lines)
         lines.clear()
         with mock.patch.object(cp, "published_state", lambda c, p: {"exists": False}), \
              mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, fp=None, **k:
@@ -1342,6 +1346,7 @@ class TestPackagesAndReleaseView(unittest.TestCase):
                 sent.append(dict(k, meta=meta))
                 return "JM"
             with mock.patch.object(cp, "published_state", lambda c, p: state), \
+                 mock.patch.object(cp, "published_files", lambda c, p: {x: None for x in p}), \
                  mock.patch.object(cp, "prepub_replace_allowed", lambda c: allowed), \
                  mock.patch.object(cp, "_publish_tar", pub):
                 rc = cp._publish_merged_view(ctx, [self.SPEC], lines.extend)
@@ -1365,6 +1370,161 @@ class TestPackagesAndReleaseView(unittest.TestCase):
         rc, sent, lines = run({"exists": True, "hash": "other"}, allowed=False)
         self.assertEqual((rc, sent), (1, []))
         self.assertIn("does not allow", lines[0])
+
+    def test_merged_view_adds_this_build_to_the_published_one(self):
+        """Publishing a second build into a release's view is like copying it
+        over the first: the earlier packages stay (linked from what they
+        published), this build's are added, and a package it brings again
+        replaces its earlier version."""
+        import tarfile
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm, replace_on_conflict=False)
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        zlib = dict(self.SPEC, package="zlib", version="1.3", revision="2", hash="z2")
+        gen = dict(self.SPEC, package="pythia8", hash="p")
+        self._tarball(ctx, zlib, ["lib/libz.so"])
+        self._tarball(ctx, gen, ["bin/pythia8-config", "lib/libpythia8.so"])
+        boost_path = "g/el9-gcc15-opt/boost/1.88-1"
+        published = {
+            vp + "/.meta.json": {"package": {"hash": "old"}, "members": [
+                {"package": "boost", "version": "1.88", "revision": "1",
+                 "hash": "b", "path": boost_path, "view": True},
+                {"package": "zlib", "version": "1.3", "revision": "1",
+                 "hash": "z1", "path": "g/el9-gcc15-opt/zlib/1.3-1", "view": True}]},
+            boost_path + "/.bits-view.json": {"entries": [
+                ["include/boost/any.hpp", "file", ""], ["lib/libboost_system.so", "file", ""],
+                ["bin/pythia8-config", "file", ""]]},
+        }
+        published[vp + "/.meta.json"]["members"].append(
+            {"package": "hidden", "path": "g/el9-gcc15-opt/hidden/1-1", "view": False})
+        asked, sent, lines = [], [], []
+
+        def files(c, paths):
+            asked.extend(paths)
+            return {p_: published.get(p_) for p_ in paths}
+
+        def pub(c, p, t, lbl, **k):
+            with tarfile.open(t) as tf:
+                links = {m.name[2:]: m.linkname for m in tf.getmembers() if m.issym()}
+                meta = json.load(tf.extractfile("./.meta.json"))
+            sent.append(dict(k, links=links, meta=meta))
+            return "JM"
+
+        def run(state):
+            del sent[:], lines[:]
+            with mock.patch.object(cp, "published_state", lambda c, p: state), \
+                 mock.patch.object(cp, "published_files", files), \
+                 mock.patch.object(cp, "prepub_replace_allowed", lambda c: True), \
+                 mock.patch.object(cp, "_publish_tar", pub):
+                return cp._publish_merged_view(ctx, [zlib, gen], lines.extend)
+
+        self.assertEqual(run({"exists": True, "hash": "old"}), 0)
+        # zlib comes with this build: only boost's list is read.
+        self.assertEqual(asked, [vp + "/.meta.json", boost_path + "/.bits-view.json"])
+        out = sent[0]
+        self.assertTrue(out["replace"])   # no --replace-on-conflict needed
+        res = lambda rel: os.path.normpath(os.path.join(vp, os.path.dirname(rel), out["links"][rel]))
+        self.assertEqual(res("lib/libboost_system.so"), boost_path + "/lib/libboost_system.so")
+        self.assertEqual(res("include/boost"), boost_path + "/include/boost")   # folded
+        self.assertEqual(res("lib/libz.so"), "g/el9-gcc15-opt/zlib/1.3-2/lib/libz.so")
+        # This build wins a collision with an earlier one.
+        self.assertEqual(res("bin/pythia8-config"), "g/el9-gcc15-opt/pythia8/6.36-2/bin/pythia8-config")
+        self.assertEqual([(m["package"], m["revision"]) for m in out["meta"]["members"]],
+                         [("boost", "1"), ("hidden", ""), ("zlib", "2"), ("pythia8", "2")])
+        self.assertEqual(out["meta"]["package"]["hash"], out["identity_hash"])
+        # Published again with the same build: unchanged, nothing sent.
+        fp = out["identity_hash"]
+        published[vp + "/.meta.json"] = out["meta"]
+        del asked[:]
+        self.assertEqual(run({"exists": True, "hash": fp}), 0)
+        self.assertEqual(asked, [vp + "/.meta.json", boost_path + "/.bits-view.json"])
+        self.assertEqual((sent, lines), ([], ["SKIPPED merged view: %s is unchanged" % vp]))
+
+    def test_merged_view_keeps_a_member_it_cannot_list(self):
+        import contextlib
+        import io
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        ctx = self._ctx(templates=tm, replace_on_conflict=False)
+        self._tarball(ctx, self.SPEC, ["bin/root"])
+        vp = "g/views/LCG_110/el9-gcc15-opt"
+        meta = {"package": {"hash": "old"}, "members": [
+            {"package": "boost", "path": "g/el9-gcc15-opt/boost/1.88-1"}]}
+        lines = []
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "old"}), \
+             mock.patch.object(cp, "published_files",
+                               lambda c, p: {x: (meta if x.endswith(".meta.json") else None) for x in p}), \
+             mock.patch.object(cp, "_publish_tar", _boom):
+            self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 1)
+        self.assertIn("boost has no readable g/el9-gcc15-opt/boost/1.88-1/.bits-view.json", lines[0])
+        # Asked to replace: the view is rebuilt without it.
+        ctx["replace_on_conflict"], lines, sent = True, [], []
+        with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "old"}), \
+             mock.patch.object(cp, "published_files",
+                               lambda c, p: {x: (meta if x.endswith(".meta.json") else None) for x in p}), \
+             mock.patch.object(cp, "prepub_replace_allowed", lambda c: True), \
+             mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, **k: sent.append(t) or "JM"), \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
+        self.assertIn("leaving it out", err.getvalue())
+        self.assertEqual(len(sent), 1)
+
+    def test_merged_view_without_members_is_replaced_only_when_asked(self):
+        import contextlib
+        import io
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        tm = dict(self.TM, views="{prefix}/views/LCG_110/{arch}")
+        for flag, want in ((False, "SKIPPED"), (True, "PUBLISHED")):
+            ctx = self._ctx(templates=tm, replace_on_conflict=flag)
+            self._tarball(ctx, self.SPEC, ["bin/root"])
+            lines = []
+            with mock.patch.object(cp, "published_state", lambda c, p: {"exists": True, "hash": "old"}), \
+                 mock.patch.object(cp, "published_files", lambda c, p: {x: {"package": {}} for x in p}), \
+                 mock.patch.object(cp, "prepub_replace_allowed", lambda c: True), \
+                 mock.patch.object(cp, "_publish_tar", lambda c, p, t, lbl, **k: "JM"), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cp._publish_merged_view(ctx, [self.SPEC], lines.extend), 0)
+            self.assertTrue(lines[0].startswith(want), lines)
+            if not flag:
+                self.assertIn("before views recorded their members", lines[0])
+
+    def test_published_files_batches_and_halves_on_413(self):
+        from unittest import mock
+        import bits_helpers.cvmfs_publish as cp
+        ctx = self._ctx()
+        calls = []
+
+        class R:
+            def __init__(self, code, files=None):
+                self.status_code, self._files = code, files
+
+            def json(self):
+                return {"files": self._files}
+
+        def post(c, endpoint, payload):
+            calls.append(len(payload["paths"]))
+            if len(payload["paths"]) > 2:
+                return R(413)
+            return R(200, {p_: {"n": p_} for p_ in payload["paths"]})
+        paths = ["p%d/.bits-view.json" % i for i in range(5)] + ["p0/.bits-view.json"]
+        with mock.patch.object(cp, "_prepub_post", post), \
+             mock.patch.object(cp, "PUBLISHED_FILES_BATCH", 4):
+            got = cp.published_files(ctx, paths)
+        self.assertEqual(calls, [4, 2, 2, 1])
+        self.assertEqual(sorted(got), sorted(set(paths)))
+        self.assertEqual(got["p3/.bits-view.json"], {"n": "p3/.bits-view.json"})
+        # A single file too large even alone: nothing can be relied on.
+        with mock.patch.object(cp, "_prepub_post", lambda c, e, p: R(413)):
+            self.assertIsNone(cp.published_files(ctx, paths))
+        # An unexpected answer, or an older prepub: the same.
+        with mock.patch.object(cp, "_prepub_post", lambda c, e, p: R(200, ["x"])):
+            self.assertIsNone(cp.published_files(ctx, paths))
+        with mock.patch.object(cp, "_prepub_post", lambda c, e, p: R(404)):
+            self.assertIsNone(cp.published_files(ctx, paths))
 
     def test_base_module_published_when_missing(self):
         fake = lambda s, c: [("J", "x(pkg)")]
