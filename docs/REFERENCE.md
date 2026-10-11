@@ -1943,6 +1943,7 @@ bits store ls|rm --stale-boms [--manifests-dir DIR]  # BOMs the store no longer 
 bits cvmfs platforms|show|summary     # inspect a deployed tree (read-only)
 bits cvmfs stage   …                  # producer-side staging (was `bits cvmfs-stage`)
 bits cvmfs publish …                  # producer-side publish of a build manifest (was `bits cvmfs-publish`)
+bits cvmfs release --pipeline ID …    # make a release (links + merged view) from one build, any time
 ```
 
 `bits cvmfs platforms|show|summary` inspect the tree under `--cvmfs`, by default the
@@ -1994,8 +1995,9 @@ templates (recorded in its manifest). A group that sets `cvmfs_packages_template
 (e.g. `{prefix}/{arch}/{family}{pkg}/{tag}`) publishes each package once at that
 path: one already published by the same build hash is skipped, one published by a
 different build is refused. Its `cvmfs_releases_template` is then the **release
-view**, created only with `--release-view` (bits-console: *Create release view*),
-and only after every package published: one relative symlink per package, sent
+view** (the release links), created only with `--release-view` (bits-console:
+*Create release view*) or by `bits cvmfs release`, and only after every package
+published: one relative symlink per package, sent
 via prepub's ingest path so it merges into a release directory other platforms
 already use (without ingest, only a new release directory works). Such a publish
 also adds, once per arch, a `BASE/1.0` modulefile in the modules directory that
@@ -2040,11 +2042,13 @@ Before uploading on the ingest path, bits asks prepub for its per-package size l
 (`max_tar_size`) and refuses a larger tar with a message naming both sizes,
 instead of failing with a bare connection reset.
 
-A group that also sets `cvmfs_views_template` (e.g. `{prefix}/views/{release}/{arch}`)
+A group that sets `cvmfs_views_template` (e.g. `{prefix}/views/{release}/{arch}`)
 gets, with each release, a **merged view** like an LCG view: `bin lib lib64 include
 share cmake python libexec man` of every package merged into one tree of relative
 symlinks to the published packages (the dependent package wins a collision; each
-is logged). A subdirectory only one package fills, with nothing of it excluded, is
+is logged). The view links into the packages, not through the release links, so a
+group can have views without `cvmfs_releases_template`; each is made when its
+template is set. A subdirectory only one package fills, with nothing of it excluded, is
 linked whole (e.g. `include/boost`); the top-level directories, `lib*/pkgconfig`
 and `lib*/python*/site-packages` stay real directories. The view also has
 `setup.sh` (locates itself under bash/zsh) and `setup.csh`.
@@ -2054,26 +2058,52 @@ built before that, from the tarball itself. A recipe shapes its own part of the
 view with `view:`: `false` keeps the package out, `exclude: [share/doc, lib/*.a]`
 drops paths, `include: [etc/root]` adds paths beyond the default directories.
 `view:` is presentation only: it is not hashed (no rebuild), and the rules of the
-build that creates the view (recorded in its manifest) apply. The view's
-`.meta.json` holds a fingerprint of its links, setup scripts and members, and
-the members: every package in the view, with its published path.
+build that creates the view (recorded in its manifest) apply.
 
-A view collects every build published into its release and arch, like copying
-each build over the last: a second build (e.g. `generators` after `externals`)
-adds its packages to those already there, a package it brings again replaces its
-earlier version, and its packages win a collision. bits reads the members and
-their `.bits-view.json` through prepub (`POST /api/v1/published/files`),
-rebuilds the whole view and replaces it when it differs (prepub must allow
-replacing, `replace_on_conflict` on the node; `--replace-on-conflict` is not
-needed). The build published last wins, so republishing an earlier build
-brings its packages to the front again. A member whose file list cannot be
-read keeps the view as it is and fails the merged view; with
-`--replace-on-conflict` it is left out instead. A view published before members
-were recorded, or with a prepub that cannot read them, is kept; with
-`--replace-on-conflict` it is replaced by this build's packages alone (its
-members recorded from then on). Two builds publishing into one view at the same
-time can still drop each other's packages from it (each rebuilds from the
-members it read): publish them one after the other.
+A release is **one build**, normally of a top-level package that requires the
+whole release (e.g. an `LCG` metapackage requiring externals and generators): its
+view holds that build's packages and nothing else. The view's `.meta.json` records
+a fingerprint of its links, setup scripts and members, the members (every package,
+with its published path), the top-level packages and the build id. A view that
+differs is replaced (prepub must allow replacing: `replace_on_conflict` on the
+node; `--replace-on-conflict` is not needed), one that is unchanged is not sent
+again, and one made from other top-level packages is replaced only with
+`--force-view` (also when prepub cannot say whose view it is). Packages are put in
+dependency order, ties by name, so the same build gives the same view whether it
+is made at build time or later. Replacing deletes the old view and publishes the new one in the
+next revision, so for one revision there is none; running the release again
+restores a view lost there. Release links are only added: an existing link is
+kept, so a release keeps the revision it was first published with.
+`--wait` waits for every job, the packages before the release, so the release
+never links a package that did not land.
+
+**`bits cvmfs release`** makes the release of a build that was published without
+it, or makes it again, from the S3 store alone (no work directory):
+
+```bash
+bits cvmfs release --pipeline 15952964 --repo bits.cern.ch --remote-store b3://bits-store \
+    --prepub-url https://prepub.example --trust-manifest URL[,URL]
+```
+
+| Option | Meaning |
+|---|---|
+| `--pipeline ID` | The CI pipeline that made the build; its BOMs are found through `BUILDS/by-pipeline/<ID>/` in the store |
+| `--build-id ID` | Or: the build id (`MANIFESTS/<ID>/`); with `--pipeline` too, that pipeline's build of that id (a pipeline that built several platforms needs it) |
+| `--remote-store URL` | The S3 store (`b3://`) with the BOMs and tarballs (`$BITS_REMOTE_STORE`) |
+| `--trust-manifest URLS` | Signed manifests that must attest every package (its hash and sha256); without it certification is not checked |
+| `--arch ARCH` | The build's architecture, when its top-level package is noarch (otherwise the one most of its packages have) |
+| `--work-dir DIR` | Where fetched tarballs go (default: a temporary directory, removed afterwards) |
+| `--tmpl-prefix`, `--prefix-fallback`, `--platform`, `--install-dir`, `--user` | As for `bits cvmfs publish`; used both to see what is on CVMFS already and to publish |
+| other options | Passed to `bits cvmfs publish` (e.g. `--publish-path`, `--direct-s3`, `--force-view`) |
+
+It reads the build's BOMs (one per effective architecture: the build's, its
+toolchain's, noarch), which carry the build's `cvmfs_templates`, its requested
+packages and per package its `view:` rules and `requires`. Packages not yet on
+CVMFS are fetched from the store (exactly the tarball the BOM names), their sha256
+checked against the BOM;
+then `bits cvmfs publish --release-view --wait` publishes them and makes the
+release links and the view. BOMs written before they carried templates cannot be
+released this way: publish the build again with a current bits.
 
 The deprecated hyphenated names (`store-stats`, `cvmfs-stage`, `cvmfs-publish`) still
 work for one release and warn, as do `bits cleanup` (→ `bits prune`) and `bits lcg-view`

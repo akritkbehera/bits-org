@@ -347,9 +347,11 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             # license/redistributable are the compliance metadata: the BOM (and
             # the signed manifest merged from it) must know what may be laid
             # into a public CVMFS tree and what attribution a NOTICE file needs.
+            # view/requires: what a release made later from this BOM alone (bits
+            # cvmfs release) needs: the view rules and the dependency order.
             _keep = ("package", "version", "revision", "effective_architecture",
                      "hash", "commit_hash", "pkg_family", "built_by", "completed_at",
-                     "license", "redistributable")
+                     "license", "redistributable", "view", "requires")
             packages = []
             for e, tar in published:
                 m = {k: e[k] for k in _keep if k in e}
@@ -394,6 +396,12 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             _pipeline_id = os.environ.get("CI_PIPELINE_ID", "").strip()
             if _pipeline_id:
                 _provenance["source_pipeline_id"] = _pipeline_id
+            # The build's CVMFS layout (release name, package paths) and what it
+            # was asked to build: a release is made from these later, from the
+            # BOM alone, without the build's work directory.
+            for _fld in ("cvmfs_templates", "requested_packages"):
+                if manifest_doc.get(_fld):
+                    _provenance[_fld] = manifest_doc[_fld]
             bom = []                    # [(effective_arch, bom_dict), ...]
             _stem = leaf[:-len(".json")]
             # One temp dir for ALL per-arch BOMs, removed when done (the
@@ -427,6 +435,19 @@ def _publish_from_manifest(architecture, work_dir, store_url, parser, manifest=N
             finally:
                 import shutil as _shutil
                 _shutil.rmtree(_bomdir, ignore_errors=True)
+            # Found again by the pipeline that made it: bits cvmfs release --pipeline.
+            # One file per build (a pipeline may build several platforms), outside
+            # MANIFESTS/ so the tools that read every BOM there do not see it.
+            if _bom_failed is None and _pipeline_id:
+                _index = "BUILDS/by-pipeline/%s/%s.json" % (_pipeline_id, build_id)
+                try:
+                    w.s3.put_object(Bucket=w.writeStore, Key=_index, Body=_json.dumps({
+                        "build_id": build_id,
+                        "keys": ["MANIFESTS/%s/%s.%s.json" % (build_id, _stem, _a)
+                                 for _a, _d in bom]}, indent=1).encode())
+                except Exception as exc:
+                    warning("could not record %s (bits cvmfs release --pipeline "
+                            "will not find this build): %s", _index, exc)
             if _bom_failed is not None:
                 error("BOM upload failed for architecture %s — aborting the "
                       "publish (no certification MR will be opened; already-"

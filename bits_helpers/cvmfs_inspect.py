@@ -301,6 +301,9 @@ def main(argv=None):
     if argv and argv[0] == "publish":
         from bits_helpers.cvmfs_publish import main as _publish_main
         return _publish_main(argv[1:])
+    if argv and argv[0] == "release":
+        from bits_helpers.cvmfs_release import main as _release_main
+        return _release_main(argv[1:])
 
     # Shared options live on a parent parser so they work AFTER the subcommand
     # too (`bits cvmfs platforms --cvmfs ROOT`), not only before it.
@@ -313,7 +316,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="bits cvmfs",
         description="Inspect a deployed CVMFS bits tree.",
-        epilog="producer-side ops (own --help): stage, publish "
+        epilog="producer-side ops (own --help): stage, publish, release "
                "(e.g. `bits cvmfs stage --help`).")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("platforms", parents=[common],

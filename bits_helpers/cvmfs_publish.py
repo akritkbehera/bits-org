@@ -750,8 +750,6 @@ def _package_tree(spec, ctx):
     """The package's view entries: its .bits-view.json (written by the build),
     from the local install tree when that holds this very build, else from the
     tarball; a tarball without one (built before) is listed in full."""
-    if "_tree" in spec:   # a member an earlier build published
-        return spec["_tree"]
     rev = spec.get("revision", "")
     vdir = spec.get("version", "") + ("-" + rev if rev else "")
     fam = spec.get("pkg_family", "")
@@ -916,7 +914,7 @@ def merged_view(ctx, specs, staging, view_path):
     owner, dirs, refused = {}, set(), set()
     res = {"linked": [], "conflicts": []}
     for spec, entries, roots in plans:
-        pkg_path = spec.get("_path") or package_path(spec, ctx)
+        pkg_path = package_path(spec, ctx)
         for vrel in entries:
             vrel = fold(vrel, spec["package"], roots)
             if owner.get(vrel) == spec["package"] or (vrel, spec["package"]) in refused:
@@ -1342,8 +1340,9 @@ def main(argv=None):
                          "job. Both order biggest-first and run concurrently at "
                          "N>1; ingest ignores the cvmfs-stage flags below.")
     ap.add_argument("--replace-on-conflict", action="store_true",
-                    help="REPLACE a package, or the merged view, that another "
-                         "build published at its path: when the published hash "
+                    help="REPLACE a package that another "
+                         "build published at its path (a merged view that differs "
+                         "is replaced without it): when the published hash "
                          "differs from this build's, prepub deletes the old "
                          "subtree and commits this one (prior revisions keep "
                          "objects until GC). The same hash is skipped as usual. "
@@ -1358,10 +1357,19 @@ def main(argv=None):
                          "order (today's behaviour). Staged path only: N>1 needs "
                          "--no-stats-db + --no-prepare-lock (concurrent prepares).")
     ap.add_argument("--release-view", action="store_true",
-                    help="also create the release view: one relative symlink per "
-                         "package at its releases-template path, pointing at the "
-                         "package (needs cvmfs_packages_template). Published only "
-                         "when every package published.")
+                    help="also make the release: the release links (one symlink "
+                         "per package at its cvmfs_releases_template path) and the "
+                         "merged view (cvmfs_views_template), each when the build "
+                         "has that template, from this build's packages alone. "
+                         "Only when every package published.")
+    ap.add_argument("--force-view", action="store_true",
+                    help="with --release-view: replace a merged view that was made "
+                         "from other top-level packages")
+    ap.add_argument("--wait", action="store_true",
+                    help="wait for every submitted job to be published (packages "
+                         "before the release); a job that fails fails the command")
+    ap.add_argument("--wait-timeout", type=int, default=3600,
+                    help="seconds to wait for each job with --wait (default 3600)")
     ap.add_argument("--dry-run", action="store_true",
                     help="stage but do NOT submit — prints DRYRUN(prefix|hashC), "
                          "so the catalog hash can be checked without a graft")
@@ -1452,15 +1460,21 @@ def main(argv=None):
 
     if a.release_view and a.one:
         ap.error("--release-view publishes a whole release; it cannot be combined with --one")
+    # The release: its links and its merged view are independent of each other
+    # (the view links into the packages, not through the links), each made when
+    # the build has its template.
+    rel_links = rel_view = False
     if a.release_view:
         tm = templates or {}
-        why = ("the group has no cvmfs_packages_template and cvmfs_releases_template"
-               if not (tm.get("packages") and tm.get("path") and tm["path"] != tm["packages"])
+        why = ("the group has no cvmfs_packages_template" if not tm.get("packages")
                else "the build has no release (the main line)" if not tm.get("release")
                else "")
-        if why:
-            sys.stderr.write("[publish] no release view: %s\n" % why)
-            a.release_view = False
+        rel_links = not why and bool(tm.get("path")) and tm["path"] != tm["packages"]
+        rel_view = not why and bool(tm.get("views"))
+        if not (rel_links or rel_view):
+            sys.stderr.write("[publish] no release: %s\n" % (
+                why or "the group has neither cvmfs_releases_template nor "
+                       "cvmfs_views_template"))
     in_view = []   # specs the release view links to (published now or before)
 
     def _run_one(spec):
@@ -1480,13 +1494,22 @@ def main(argv=None):
         except (SystemExit, Exception) as exc:
             return 1, ["FAILED %s: %s" % (spec.get("package"), exc)]
 
+    submitted = []   # (job id, label) this run sent, for --wait
+
     def _emit(out):
         # Emit one package's lines atomically (whole list at once, from the main
         # thread) so nothing interleaves, but stream per package so a serial run
         # shows progress and does not lose finished work if killed mid-run.
         for ln in out:
             (sys.stderr if ln.startswith("FAILED") else sys.stdout).write(ln + "\n")
+            parts = ln.split(None, 2)
+            if len(parts) == 3 and parts[0] == "PUBLISHED" and parts[1]:
+                submitted.append((parts[1], parts[2]))
         sys.stdout.flush(); sys.stderr.flush()
+
+    wait = a.wait and ctx["submit"]
+    if wait:
+        _wait = lambda: _wait_for(dict(ctx, wait_timeout=a.wait_timeout), submitted, _emit)
 
     rc = 0
     if a.workers > 1:
@@ -1565,109 +1588,73 @@ def main(argv=None):
               ["FAILED %d modulefile link(s) in %s: %s" % (len(links), mroot, err)])
         rc |= 0 if err is None else 1
 
-    # The release view goes in only over a complete set of packages.
-    if a.release_view:
+    # The release goes in only over a complete set of packages, and with --wait
+    # only once they are published, so it never links what never landed.
+    if (rel_links or rel_view) and not rc and wait:
+        rc |= _wait()
+    if rel_links or rel_view:
         if rc:
-            _emit(["FAILED release view: not created, some packages failed"])
+            _emit(["FAILED release: not created, some packages failed"])
         elif in_view:
-            root = view_root(ctx)
-            # The release root is shared (earlier builds, other platforms) and
-            # ingest only adds: send only the links that are not there yet.
-            links = []
-            for s_ in in_view:
-                vpath = _spec_path(s_, ctx, "view")
-                if not vpath:
-                    continue
-                st = published_state(ctx, vpath) if ctx["submit"] else None
-                if not (st and st.get("exists")):
-                    links.append((vpath, package_path(s_, ctx)))
-            label = "release-view@%s" % root
-            jid, err = (publish_links(ctx, root, links, label) if links
-                        else (None, None))
-            if not links:   # complete already: the merged view still follows
-                _emit(["SKIPPED %s: every link is already published" % label])
-            elif err is None:   # (a dry run publishes with an empty job id)
-                _emit(["PUBLISHED %s %s" % (jid, label)])
-            else:
-                rc = 1
-                _emit(["FAILED release view (%s)" % err])
-            if err is None and ctx["templates"].get("views"):
-                order = {id(sp): i for i, sp in enumerate(publishable)}
-                rc |= _publish_merged_view(ctx, sorted(in_view, key=lambda sp: order[id(sp)]), _emit)
+            ordered_view = dependency_order(in_view)
+            if rel_links:
+                rc |= _publish_release_links(ctx, ordered_view, _emit)
+            if rel_view:
+                rc |= _publish_merged_view(ctx, ordered_view, _emit,
+                                           top_level=_man.get("requested_packages"),
+                                           force=a.force_view)
+    if wait:
+        rc |= _wait()
     return rc
 
 
+def dependency_order(packages):
+    """*packages* with each one after the packages it requires (by name, within
+    the set), ties broken by name: the same set gives the same order whichever
+    order it came in (the build's, or its BOMs')."""
+    by_name = {p["package"]: p for p in packages}
+    done, out = set(), []
+
+    def visit(p, seen):
+        if p["package"] in done or p["package"] in seen:
+            return
+        seen = seen | {p["package"]}
+        for dep in sorted(p.get("requires") or []):
+            if dep in by_name:
+                visit(by_name[dep], seen)
+        done.add(p["package"])
+        out.append(p)
+    for name in sorted(by_name):
+        visit(by_name[name], frozenset())
+    return out
+
+
 def _view_member(spec, ctx):
-    """What a merged view records of a package it links: enough to link it
-    again in a later build's view, from what is published."""
+    """What a merged view records of a package it links."""
     return {"package": spec["package"], "version": spec.get("version", ""),
             "revision": spec.get("revision", ""), "hash": spec.get("hash", ""),
-            "path": spec.get("_path") or package_path(spec, ctx),
-            "view": spec.get("view", True)}
+            "path": package_path(spec, ctx), "view": spec.get("view", True)}
 
 
-def _prior_members(ctx, view_path, specs):
-    """The packages of the published merged view at *view_path* that this
-    build does not bring (a package it brings replaces its earlier version), as
-    member specs carrying their published tree, in the view's order.
-    Returns (members, None), or (None, why) when they cannot be known. Raises
-    SystemExit when a member's file list cannot be read: rebuilding the view
-    without it would drop it, so the view is kept, unless --replace-on-conflict
-    (then the member is left out, with a warning)."""
+def _view_owner(ctx, view_path):
+    """The top-level packages the published view at *view_path* records, or
+    None when it records none or cannot be read."""
     meta_path = view_path + "/.meta.json"
     got = published_files(ctx, [meta_path])
     if got is None:
-        return None, "prepub cannot read its members (POST /api/v1/published/files)"
+        raise SystemExit("cannot read %s through prepub to see which build it "
+                         "was made from; --force-view replaces it" % meta_path)
     meta = got.get(meta_path)
-    members = meta.get("members") if isinstance(meta, dict) else None
-    if not isinstance(members, list):
-        return None, "it was published before views recorded their members"
-    mine = {s_["package"] for s_ in specs}
-    exclude = set(ctx["templates"].get("view_exclude") or [])
-    prior, lists = [], []
-    for m in members:
-        if not (isinstance(m, dict) and isinstance(m.get("package"), str)
-                and isinstance(m.get("path"), str) and m["path"]):
-            sys.stderr.write("[publish] merged view %s: ignoring a malformed member %r\n"
-                             % (view_path, m))
-            continue
-        if m["package"] in mine:
-            continue
-        prior.append(m)
-        if m["package"] not in exclude and m.get("view", True) is not False:
-            lists.append(m["path"] + "/.bits-view.json")
-    read = published_files(ctx, lists) if lists else {}
-    if read is None:
-        raise SystemExit("%s: prepub cannot read its members' .bits-view.json; "
-                         "the view is kept" % view_path)
-    out = []
-    for m in prior:
-        key = m["path"] + "/.bits-view.json"
-        tree = {}   # left out of the view: nothing to list
-        if key in lists:
-            try:
-                tree = _list_tree(read.get(key)["entries"])
-            except (KeyError, TypeError, ValueError):
-                why = ("its member %s has no readable %s" % (m["package"], key))
-                if not ctx.get("replace_on_conflict"):
-                    raise SystemExit("%s: %s; the view is kept (--replace-on-conflict "
-                                     "leaves the member out)" % (view_path, why))
-                sys.stderr.write("[publish] merged view %s: %s; leaving it out\n"
-                                 % (view_path, why))
-                continue
-        out.append(dict(m, _path=m["path"], _tree=tree))
-    return out, None
+    owner = meta.get("top_level") if isinstance(meta, dict) else None
+    return sorted(owner) if isinstance(owner, list) and owner else None
 
 
-def _publish_merged_view(ctx, specs, emit):
+def _publish_merged_view(ctx, specs, emit, top_level=None, force=False):
     """The release's merged view (cvmfs_views_template), one per release and
-    arch, made of every package published into it: like copying each build
-    over the last, the packages this build brings are added to those already
-    in the view (whose members its .meta.json records), replacing their own
-    earlier versions and winning collisions. The view is rebuilt from all of
-    them and replaced when it differs. A view published before members were
-    recorded is kept, unless --replace-on-conflict replaces it with this
-    build's. Returns the rc contribution."""
+    arch, made from this build's packages alone (*specs*, in dependency order:
+    the later package wins a collision). A published view that differs is
+    replaced: making the view is the request. One recorded for other top-level
+    packages is replaced only with *force*. Returns the rc contribution."""
     import hashlib
     import shutil
     view_path = fixed_dir(ctx, "views")
@@ -1675,30 +1662,19 @@ def _publish_merged_view(ctx, specs, emit):
         emit(["FAILED merged view: cvmfs_views_template %r is not a fixed directory"
               % ctx["templates"]["views"]])
         return 1
+    top_level = sorted(top_level or [])
     state = published_state(ctx, view_path) if ctx["submit"] else None
     exists = bool(state and state.get("exists"))
-    prior = []
-    if exists:
-        try:
-            prior, why = _prior_members(ctx, view_path, specs)
-        except (SystemExit, Exception) as exc:
-            emit(["FAILED merged view: %s" % exc])
-            return 1
-        if prior is None:
-            if not ctx.get("replace_on_conflict"):
-                emit(["SKIPPED merged view: already published at %s, and %s; "
-                      "--replace-on-conflict replaces it with this build's" % (view_path, why)])
-                return 0
-            sys.stderr.write("[publish] merged view %s: %s; replacing it with this "
-                             "build's packages only\n" % (view_path, why))
-            prior = []
-    members = prior + list(specs)
+    if exists and not state.get("hash"):
+        emit(["SKIPPED merged view: %s was published without a fingerprint "
+              "and cannot be replaced" % view_path])
+        return 0
     staging = tempfile.mkdtemp(prefix="mview-", dir=ctx["tmp_dir"])
     try:
         # mkdtemp makes it 0700, and the tar's "." entry gives the published
         # view root that mode: nobody but the owner could enter it.
         os.chmod(staging, 0o755)
-        res = merged_view(ctx, members, staging, view_path)
+        res = merged_view(ctx, specs, staging, view_path)
         for path, winner, loser in res["conflicts"]:
             sys.stderr.write("[publish] merged view: %s from %s, not %s\n"
                              % (path, winner, loser))
@@ -1708,7 +1684,7 @@ def _publish_merged_view(ctx, specs, emit):
         for dp, dns, _fns in os.walk(staging):
             for d in dns:
                 os.chmod(os.path.join(dp, d), 0o755)
-        recorded = [_view_member(m, ctx) for m in members]
+        recorded = sorted((_view_member(m, ctx) for m in specs), key=lambda m: m["package"])
         # The members are part of it: a package that links nothing is still one.
         fp = hashlib.sha256((tree_fingerprint(staging) + json.dumps(
             recorded, sort_keys=True)).encode()).hexdigest()
@@ -1717,10 +1693,12 @@ def _publish_merged_view(ctx, specs, emit):
             if state.get("hash") == fp:
                 emit(["SKIPPED merged view: %s is unchanged" % view_path])
                 return 0
-            if not state.get("hash"):
-                emit(["SKIPPED merged view: %s was published without a fingerprint "
-                      "and cannot be replaced" % view_path])
-                return 0
+            owner = _view_owner(ctx, view_path) if not force else None
+            if owner and top_level and owner != top_level:
+                emit(["FAILED merged view: %s was made from %s, not %s; "
+                      "--force-view replaces it" % (view_path, ", ".join(owner),
+                                                    ", ".join(top_level))])
+                return 1
             if not prepub_replace_allowed(ctx):
                 emit(["FAILED merged view: %s differs, and this prepub does not allow "
                       "replacing (replace_on_conflict on the node)" % view_path])
@@ -1728,6 +1706,7 @@ def _publish_merged_view(ctx, specs, emit):
             replace = True
         with open(os.path.join(staging, ".meta.json"), "w") as f:
             json.dump({"package": {"package": "merged-view", "hash": fp},
+                       "top_level": top_level, "build_id": ctx.get("build_id", ""),
                        "members": recorded}, f, indent=1)
         os.chmod(os.path.join(staging, ".meta.json"), 0o644)
         # No .cvmfscatalog here: both publish paths ingest with create-catalog-on-
@@ -1736,10 +1715,8 @@ def _publish_merged_view(ctx, specs, emit):
         os.close(fd)
         subprocess.run(["tar", "-cf", tar, "-C", staging, "."], check=True)
         label = "merged-view@%s" % view_path
-        sys.stderr.write("[publish] merged view %s: %d packages (%d from earlier "
-                         "builds), %d links, %d conflicts\n"
-                         % (view_path, len(members), len(prior), len(res["linked"]),
-                            len(res["conflicts"])))
+        sys.stderr.write("[publish] merged view %s: %d packages, %d links, %d conflicts\n"
+                         % (view_path, len(specs), len(res["linked"]), len(res["conflicts"])))
         jid = _publish_tar(ctx, view_path, tar, label, identity=view_path,
                            identity_hash=fp, replace=replace)
         emit(["PUBLISHED %s %s" % (jid, label)])
@@ -1749,6 +1726,52 @@ def _publish_merged_view(ctx, specs, emit):
         return 1
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def _publish_release_links(ctx, specs, emit):
+    """The release links (cvmfs_releases_template): one symlink per package at
+    its releases path. The release root is shared (earlier builds, other
+    platforms) and ingest only adds, so only the missing links are sent; an
+    existing link is kept as it is. Returns the rc contribution."""
+    root = view_root(ctx)
+    links = []
+    for s_ in specs:
+        vpath = _spec_path(s_, ctx, "view")
+        if not vpath:
+            continue
+        st = published_state(ctx, vpath) if ctx["submit"] else None
+        if not (st and st.get("exists")):
+            links.append((vpath, package_path(s_, ctx)))
+    label = "release-view@%s" % root
+    if not links:
+        emit(["SKIPPED %s: every link is already published" % label])
+        return 0
+    jid, err = publish_links(ctx, root, links, label)
+    if err is None:   # (a dry run publishes with an empty job id)
+        emit(["PUBLISHED %s %s" % (jid, label)])
+        return 0
+    emit(["FAILED release view (%s)" % err])
+    return 1
+
+
+def _wait_for(ctx, jobs, emit):
+    """Poll each (job id, label) to a final state. Returns the rc contribution."""
+    from bits_helpers.prepub import poll_job
+    rc = 0
+    for jid, label in jobs:
+        try:
+            state = poll_job(ctx["prepub_url"], ctx["token"], jid,
+                             timeout=ctx.get("wait_timeout", 3600),
+                             bearer_auth=ctx.get("bearer_auth", False),
+                             no_verify_tls=ctx.get("no_verify_tls", False))
+        except (SystemExit, Exception) as exc:
+            why = str(exc) if str(exc) not in ("", "0", "1") else "see the log above"
+            state = "not published (failed, aborted or timed out: %s)" % why
+        if state != "published":
+            emit(["FAILED %s: job %s %s" % (label, jid, state)])
+            rc = 1
+    del jobs[:]
+    return rc
 
 
 if __name__ == "__main__":

@@ -155,6 +155,27 @@ class TestPublishFromManifest(unittest.TestCase):
         self.assertTrue(top["tarball"])
         self.assertTrue(top["tarball_sha256"].startswith("sha256:"))
 
+    def test_bom_carries_what_a_release_needs(self):
+        """A release is made later from the BOM alone: the build's templates,
+        what it was asked to build, per package its view rules and requires;
+        and the pipeline that made it finds it through an index."""
+        self.manifest["cvmfs_templates"] = {"packages": "{prefix}/{arch}/Packages/{pkg}/{tag}",
+                                            "release": "LCG_110"}
+        self.manifest["requested_packages"] = ["Top"]
+        self.manifest["packages"][0].update(view={"exclude": ["share/doc"]}, requires=["zlib"])
+        with open(self.man_path, "w") as fh:
+            json.dump(self.manifest, fh)
+        with patch.dict(os.environ, {"CI_PIPELINE_ID": "4242"}):
+            w = self._run()
+        _, key, bom = w.s3.uploads[-1]
+        self.assertEqual(bom["cvmfs_templates"]["release"], "LCG_110")
+        self.assertEqual(bom["requested_packages"], ["Top"])
+        self.assertEqual(bom["source_pipeline_id"], "4242")
+        top = bom["packages"][0]
+        self.assertEqual((top["view"], top["requires"]), ({"exclude": ["share/doc"]}, ["zlib"]))
+        index = json.loads(w.s3.texts["BUILDS/by-pipeline/4242/%s.json" % bom["build_id"]])
+        self.assertEqual(index, {"build_id": bom["build_id"], "keys": [key]})
+
     def test_release_compliance_files_uploaded(self):
         # NOTICE + LICENSE-SOURCE-OFFER.txt land next to the release's BOMs;
         # the NOTICE lists the distributed package and the excluded one.
