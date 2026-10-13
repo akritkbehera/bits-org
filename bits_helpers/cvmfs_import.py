@@ -334,13 +334,31 @@ def harvest_trusted(module_root, install_base):
         if not os.path.isdir(pkg_dir):
             continue
         for verrev in sorted(os.listdir(pkg_dir)):
+            # Ignore editor swap files and other hidden sidecars. A module
+            # directory may contain files such as `.1.0.swp`; attempting to
+            # decode one as a Tcl modulefile aborts the entire reuse import.
+            if verrev.startswith("."):
+                continue
             mfile = os.path.join(pkg_dir, verrev)
             if not os.path.isfile(mfile):
                 continue
             with open(mfile) as fh:
                 rendered = strip_base_dep(rewrite_module_anchor(fh.read(), install_base))
             module_id = "%s/%s" % (pkg, verrev)
-            meta = _read_meta(os.path.join(install_base, pkg, verrev, ".meta.json")) or {}
+            # Package installs may be grouped by pkg_family, e.g.
+            # <install_base>/external/gcc/<verrev>. Modulefiles only expose
+            # the package name, so try the flat layout first, then each family
+            # directory and use the first matching metadata file.
+            meta_path = os.path.join(install_base, pkg, verrev, ".meta.json")
+            if not os.path.isfile(meta_path):
+                for family in sorted(os.listdir(install_base)) \
+                        if os.path.isdir(install_base) else ():
+                    candidate = os.path.join(
+                        install_base, family, pkg, verrev, ".meta.json")
+                    if os.path.isfile(candidate):
+                        meta_path = candidate
+                        break
+            meta = _read_meta(meta_path) or {}
             pkg_info = meta.get("package") if isinstance(meta.get("package"), dict) else {}
             hashes[module_id] = pkg_info.get("hash", "")
             build_id = build_id or meta.get("build_id", "")

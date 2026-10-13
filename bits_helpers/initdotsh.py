@@ -110,12 +110,15 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     # a harmless no-op segment (<base>/./<pkg> == <base>/<pkg>). Save/restore so
     # locally-built deps keep the local WORK_DIR.
     dep_spec = specs[d]
+    family = dep_spec.get("pkg_family", "")
+    family_seg = (quote(family) + "/") if family else ""
     verrev = dep_spec["reuse_module_id"].split("/", 1)[1]
     return [
       '_bits_swd="${WORK_DIR:-}"; _bits_sap="${BITS_ARCH_PREFIX:-}"',
       'WORK_DIR="%s"; BITS_ARCH_PREFIX="."' % reuse_cvmfs_base,
-      '[ -n "${%s_REVISION}" ] || . "%s/%s/%s/etc/profile.d/init.sh"'
-      % (pkg_to_shell_id(d), reuse_cvmfs_base, dep_spec["package"], verrev),
+      '[ -n "${%s_REVISION}" ] || . "%s/%s%s/%s/etc/profile.d/init.sh"'
+      % (pkg_to_shell_id(d), reuse_cvmfs_base, family_seg,
+         dep_spec["package"], verrev),
       'WORK_DIR="${_bits_swd}"; BITS_ARCH_PREFIX="${_bits_sap}"; '
       'unset _bits_swd _bits_sap',
     ]

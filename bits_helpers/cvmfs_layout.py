@@ -137,11 +137,14 @@ def resolve_cvmfs_layout(defaults_meta, architecture):
     """
     if not defaults_meta:
         return None
-    cvmfs_dir = defaults_meta.get("cvmfs_dir")
-    install_dir = defaults_meta.get("install_dir")
-    module_dir = defaults_meta.get("module_dir")
-    shared_dir = defaults_meta.get("shared_dir")
-    views_dir = defaults_meta.get("views_dir")
+    # Layout options are declared under `system:` in defaults-release.sh.
+    # Accept top-level values too for compatibility with older profiles.
+    system = defaults_meta.get("system", {}) or {}
+    cvmfs_dir = system.get("cvmfs_dir", defaults_meta.get("cvmfs_dir"))
+    install_dir = system.get("install_dir", defaults_meta.get("install_dir"))
+    module_dir = system.get("module_dir", defaults_meta.get("module_dir"))
+    shared_dir = system.get("shared_dir", defaults_meta.get("shared_dir"))
+    views_dir = system.get("views_dir", defaults_meta.get("views_dir"))
     if not (cvmfs_dir or install_dir or module_dir or shared_dir or views_dir):
         return None
 
