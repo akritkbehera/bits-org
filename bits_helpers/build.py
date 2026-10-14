@@ -2012,11 +2012,9 @@ def build_one_package(p, ctx):
   debug("Hashes for recipe %s are %s (remote); %s (local)", p,
         ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
 
-  # 4b: if the reuse overlay satisfies this package, set it up from modules
-  # instead of building. Its consumers 'module load' it (generate_initdotsh);
-  # it is neither built nor materialized locally, so we skip the whole
-  # build/unpack path here (this is what avoids the legacy tarball synthesis +
-  # relocate-me.sh). Strict = same remote hash (byte-identical, publishable);
+  # 4b: select reused packages from the module overlay. Consumers source init.sh
+  # from the deployment, or a private local copy when --symlinks is enabled.
+  # Both paths skip building/unpacking. Strict = same remote hash (publishable);
   # relaxed = any version in the one-release overlay. defaults-*, --build-local
   # and development packages are never grafted.
   if (cfg.reuse_overlay and not spec["is_devel_pkg"]
@@ -2043,6 +2041,20 @@ def build_one_package(p, ctx):
         spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
         spec["cachedTarball"] = ""
         spec.setdefault("deps_hash", "")
+        if cfg.symlinks:
+          from bits_helpers.reuse_symlinks import stage_reused_package
+          _runtime_work = workDir
+          if args.docker:
+            _runtime_work = (cfg.cvmfs_prefix or
+                             (workDir if args.containerUseWorkDir else "/container/bits/sw"))
+          try:
+            _local_reuse = stage_reused_package(
+                spec, cfg.reuse_cvmfs_base, workDir, args.architecture,
+                runtime_work_dir=_runtime_work)
+          except (OSError, ValueError) as exc:
+            dieOnError(True, "Cannot stage reused package %s: %s" % (p, exc))
+          spec["reuse_symlinked"] = True
+          info("Reuse symlinks: %s", _local_reuse)
         info("Reuse: %s from CVMFS overlay as module %s (not built)", p, _mid)
         if getattr(args, "manifest", None) is not None:
           args.manifest.add_package(spec, "already_installed",
@@ -2677,6 +2689,22 @@ def build_one_package(p, ctx):
   # Packages base (an absolute /cvmfs path, identical on host and in the
   # container once /cvmfs is mounted).
   _reuse_cvmfs_base = cfg.reuse_cvmfs_base
+  _reuse_relocations = {}
+  _reuse_relocations_text = ""
+  if cfg.symlinks:
+    from bits_helpers.reuse_symlinks import serialize_relocation_table
+    for _reused_spec in specs.values():
+      if _reused_spec.get("reuse_symlinked"):
+        _reuse_relocations.update(_reused_spec.get("reuse_reference_paths", {}))
+    if _reuse_relocations:
+      # Exact package mappings above preserve families and effective arches.
+      # The fallback maps other paths under the deployment's Packages root.
+      _reuse_relocations[_reuse_cvmfs_base.rstrip("/")] = join(
+          abspath(init_workDir), args.architecture)
+    try:
+      _reuse_relocations_text = serialize_relocation_table(_reuse_relocations)
+    except ValueError as exc:
+      dieOnError(True, str(exc))
   makedirs(scriptDir, exist_ok=True)
   # Remember where the resource monitor will write this package's trace so we
   # can aggregate build stats once the run finishes (P3).
@@ -2711,6 +2739,7 @@ def build_one_package(p, ctx):
   # actual build script
   bits_dir = dirname(dirname(realpath(__file__)))
   buildEnvironment = [
+    ("BITS_REUSE_RELOCATIONS", _reuse_relocations_text),
     ("ARCHITECTURE", raw_architecture),
     ("EFFECTIVE_ARCHITECTURE", effective_arch(spec, args.architecture)),
     ("BUILD_REQUIRES", " ".join(spec["build_requires"])),
@@ -2843,7 +2872,11 @@ def build_one_package(p, ctx):
       jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
       # Mount /cvmfs read-only when reusing deployed components, so a reused
       # dep's init.sh (and its files under /cvmfs) resolve inside the container.
-      cvmfsMount=("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base else ""),
+      cvmfsMount=(("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base else "") +
+                  ("-v %s " % quote("%s:%s:ro" % (cfg.reuse_cvmfs_base, cfg.reuse_cvmfs_base))
+                   if cfg.symlinks and cfg.reuse_cvmfs_base
+                   and cfg.reuse_cvmfs_base.rstrip("/") != "/cvmfs"
+                   and not cfg.reuse_cvmfs_base.startswith("/cvmfs/") else "")),
       platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
       roSources=_ro_sources,
       image=quote(args.dockerImage),
@@ -3222,6 +3255,8 @@ def doBuild(args, parser):
   args.reuseOverlay = None
   args.reuseBuildId = None
   args.reuseCvmfsBase = None
+  dieOnError(getattr(args, "symlinks", False) and not args.reuseFrom,
+             "--symlinks requires --reuse-from (or BITS_REUSE_FROM).")
   if args.reuseFrom:
     info("Reuse-from modules: %s", args.reuseFrom)
     _install_base = _cvmfs.get("install_path") if _cvmfs else None

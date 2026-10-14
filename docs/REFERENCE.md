@@ -977,6 +977,7 @@ bits build [options] PACKAGE [PACKAGE ...]
 | `--reuse-from PATH\|cvmfs` | Reuse components already deployed on CVMFS, found through their published modulefiles at this absolute modules-tree path (unlike `--remote-store`, which is a tarball store). The literal `cvmfs` takes the location from the defaults `system:` layout (`module_dir` under `cvmfs_dir`) or, failing that, from `cvmfs_modules_template`. A trailing `::relaxed` or `::strict` also sets the reuse policy (e.g. `cvmfs::relaxed`); it must agree with `--reuse-policy` if both are given. Defaults to `$BITS_REUSE_FROM`. See [Reusing deployed components](#relaxed-cvmfs-reuse). |
 | `--reuse-policy {strict,relaxed}` | How a `--reuse-from` component is matched. `strict` (default): only on an exact content-hash match; the result is publishable. `relaxed`: any deployed build of the **same version** (revision and hash may differ), for fast local development on top of e.g. an LCG release, so only the top of the stack is built. Relaxed builds have *loose* provenance and cannot be published: combining them with `--write-store` is refused. Falls back to the defaults `reuse_policy:` value. |
 | `--build-local PKG[,PKG…]` | Packages to always build locally even when they could be reused (e.g. one you need patched), instead of taking them from `--reuse-from`. |
+| `--symlinks` | With `--reuse-from`, stage selected packages under the local work directory using symlinks and a private relocated `init.sh`. Consumers use local dependency paths. Off by default; the source installation must remain accessible. |
 | `-a ARCH`, `--architecture ARCH` | Target architecture. Default: auto-detected, or the `architecture:` template from defaults (see [The `architecture:` template](#architecture-string-and-the-architecture-template)). An explicit value here overrides the template. |
 | `--force-unknown-architecture` | Proceed even if architecture is unrecognised. |
 | `--day DAY` | Value of the `{day}` nightly CVMFS path slot (e.g. `Fri`). Default: the UTC weekday, filled in only when a template uses `{day}`; `''` collapses the slot. Layout only — never hashed. See [bits store / bits cvmfs](#bits-store--bits-cvmfs-admin--ci-groups). |
@@ -3822,6 +3823,40 @@ bits build --reuse-from cvmfs::relaxed \
 Reused components are logged as **Reuse: … (not built)**; only the requested top
 package is **Compiling**. Use `--build-local PKG[,PKG…]` to force specific
 packages to build locally anyway (e.g. one you need patched).
+
+Add `--symlinks` to stage each selected dependency at
+`<work-dir>/<effective-arch>/<family>/<package>/<version-revision>`. Payload
+entries such as `bin`, `lib`, and `include` link to the deployed package.
+Following CMS `REFERENCE_PACKAGE_POST`, bits copies all of `etc/profile.d`
+when it contains `init.sh`, `etc/scram.d`, and `tools` when `tools/selected`
+exists. For SCRAM projects it also copies `.SCRAM` and `config`, makes them
+writable, and runs `config/SCRAM/projectAreaRename.pl` before replacing
+reference paths. Copied regular files are made writable; symlinks inside copied
+directories remain symlinks. `init.sh` retains bits' local architecture setup. Builds
+source this local copy, so environment-derived dependency paths are inside the
+work directory and can be rewritten by the consumer's normal relocation step.
+The deployment is never modified. Existing local installations are not
+overwritten; repeated staging of the same source and initialization is accepted.
+
+```bash
+bits build -c cms.bits -a el9_amd64_gcc14 -w temp \
+  --reuse-from /path/to/sw/MODULES/el9_amd64_gcc14 --symlinks Python
+```
+
+This requires access to the source installation while using the links. A user
+moving a consumer elsewhere must provide its compatible dependencies in the
+destination layout. The option does not rewrite config files in linked packages
+(`.pc`, `.la`, `*-config`). Instead, after POST_INSTALL it rewrites reference paths
+in the newly built consumer's regular text files, like CMS `relocateReference`.
+Exact dependency roots retain their local family and effective architecture;
+reference work-directory prefixes recorded by the reused packages are also
+mapped to the local work directory. This runs before `.bits-relocate` is collected
+and before packing, so later relocation can rewrite the resulting local paths.
+Relocation uses CMS's `find`/`xargs`/`grep`/`perl` pattern: it substitutes each
+literal prefix globally, without restricting matches to path boundaries or
+special config extensions. It skips symlinks and binary files. Rewriting a leaked `BUILD/...` path does not
+provide the missing build directory; such references still need a recipe fix.
+Without `--symlinks`, reuse continues to source the deployment directly.
 
 **Policy.** `--reuse-policy strict` (default) reuses a component only on an exact
 content-hash match, so the build stays reproducible and publishable.

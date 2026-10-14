@@ -27,6 +27,8 @@ COVERED = (
   "bits_helpers/build_template.sh",
   "bits_helpers/initdotsh.py",
   "bits_helpers/relativize-configs.sh",
+  "bits_helpers/relocate-references.sh",
+  "bits_helpers/reuse_symlinks.py",
   "bits_helpers/relocate-me.sh",
   "bits_helpers/view-list.sh",
 )
@@ -35,7 +37,9 @@ COVERED = (
 # the container settings. A change there that alters builds bumps BUILD_EPOCH
 # by review, not by this check.
 
-COVERED_SHA256 = "44af202488de34288811754d2eefc5beb5c1cd805b6afb4dccd79386846a5f3c"
+# --symlinks is opt-in; leave the epoch unchanged to preserve strict reuse of
+# existing deployments. The staging and post-install helpers are covered here.
+COVERED_SHA256 = "bab7719b4231a68b9be80abe58168c2deb97e2bb44a052f8517a7995d4ab4d7d"
 
 
 def covered_sha256(root=None):
