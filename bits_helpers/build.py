@@ -3270,14 +3270,21 @@ def doBuild(args, parser):
                "install_dir / cvmfs_dir in the defaults system: layout, or point "
                "--reuse-from at a .../Modules/modulefiles tree.")
     from bits_helpers.cvmfs_import import import_trusted_release
-    _res = import_trusted_release(args.reuseFrom, _install_base, args.architecture,
-                                  os.path.join(workDir, "MODULES"))
+    try:
+      _res = import_trusted_release(args.reuseFrom, _install_base, args.architecture,
+                                    os.path.join(workDir, "MODULES"))
+    except (OSError, ValueError) as exc:
+      dieOnError(True, "Cannot import --reuse-from modulefiles: %s" % exc)
     if _res.get("build_id"):
       args.reuseOverlay = _res["overlay_path"]   # host path, for reading
       args.reuseBuildId = _res["build_id"]
       args.reuseCvmfsBase = _install_base         # CVMFS Packages base for init.sh
       info("Reuse overlay: %d module(s) -> %s",
            len(_res["written"]), args.reuseOverlay)
+      if _res.get("excluded"):
+        warning("Reuse overlay: excluded %d module(s) with incomplete dependency "
+                "closures (missing: %s).", len(_res["excluded"]),
+                ", ".join(_res.get("dangling", [])))
     else:
       warning("Reuse overlay: release under %s is not closed (missing: %s); "
               "no modules imported.", args.reuseFrom,

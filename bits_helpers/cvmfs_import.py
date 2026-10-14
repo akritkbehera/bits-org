@@ -24,6 +24,8 @@ names can be remapped through the lcg.bits alias table at generation time, and
 so they form the release graph used for the closure/`build_id` check.
 """
 
+import re
+
 # Module subcommands that declare a runtime dependency (the cascade that
 # produces the "Loading requirement:" output).
 _DEP_DIRECTIVES = ("prereq", "prereq-all", "depends-on")
@@ -313,6 +315,12 @@ def _module_load_deps(text):
     return deps
 
 
+_MODULEFILE_MARKER = re.compile(
+    r"(?m)^\s*(?:#%Module|module-whatis\b|module\s+(?:load|use)\b|"
+    r"(?:prepend-path|append-path|remove-path)\b|"
+    r"proc\s+ModulesHelp\b|set\s+(?:version|PKG_ROOT)\b)")
+
+
 def harvest_trusted(module_root, install_base):
     """Harvest a bits-built deployment into a re-anchored corpus.
 
@@ -342,8 +350,20 @@ def harvest_trusted(module_root, install_base):
             mfile = os.path.join(pkg_dir, verrev)
             if not os.path.isfile(mfile):
                 continue
-            with open(mfile) as fh:
-                rendered = strip_base_dep(rewrite_module_anchor(fh.read(), install_base))
+            try:
+                with open(mfile, "rb") as fh:
+                    raw = fh.read()
+                # A module tree may contain bytecode, editor artifacts, or
+                # unrelated payload files. They are not Tcl modulefiles; skip
+                # them instead of aborting the entire reuse import on decode.
+                if b"\0" in raw:
+                    continue
+                text = raw.decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if not _MODULEFILE_MARKER.search(text):
+                continue
+            rendered = strip_base_dep(rewrite_module_anchor(text, install_base))
             module_id = "%s/%s" % (pkg, verrev)
             # Package installs may be grouped by pkg_family, e.g.
             # <install_base>/external/gcc/<verrev>. Modulefiles only expose
@@ -369,6 +389,11 @@ def harvest_trusted(module_root, install_base):
                 "rendered": rendered,
                 "base_prefix": install_base,
             }
+    if not corpus:
+        raise ValueError(
+            "No text modulefiles found directly under %s; --reuse-from must point "
+            "to the Modules/modulefiles tree, not a package/deployment root."
+            % module_root)
     return corpus, hashes, build_id
 
 
@@ -383,14 +408,22 @@ def import_trusted_release(module_root, install_base, arch, out_root, label="reu
     import os
     corpus, hashes, dep_build_id = harvest_trusted(module_root, install_base)
     dangling = closure_check(corpus)
-    if dangling and not force:
+    # Reuse only modules whose declared module dependencies can also be
+    # satisfied from this deployment. An unrelated open branch must not reject
+    # otherwise reusable packages. --force retains the historical behavior of
+    # importing the entire corpus, including open branches.
+    importable = corpus if force else _closed_subcorpus(corpus)
+    if not importable:
         return {"build_id": None, "written": [], "dangling": dangling,
                 "overlay_path": None}
-    build_id = dep_build_id or compute_corpus_build_id(corpus, label)
-    written = write_overlay(corpus, build_id, arch, out_root, package_hashes=hashes)
+    build_id = dep_build_id or compute_corpus_build_id(importable, label)
+    importable_hashes = {mid: hashes.get(mid, "") for mid in importable}
+    written = write_overlay(importable, build_id, arch, out_root,
+                            package_hashes=importable_hashes)
     # Return the overlay path so callers need not reconstruct <out_root>/<id>/<arch>.
     return {"build_id": build_id, "written": written, "dangling": dangling,
-            "overlay_path": os.path.join(out_root, build_id, arch)}
+            "overlay_path": os.path.join(out_root, build_id, arch),
+            "excluded": sorted(set(corpus) - set(importable))}
 
 
 def overlay_reuse_module(overlay_path, package, want_hash=None, want_version=None):
@@ -469,6 +502,23 @@ def closure_check(corpus):
             if dep not in keys:
                 dangling.add(dep)
     return sorted(dangling)
+
+
+def _closed_subcorpus(corpus):
+    """Keep modules whose complete dependency closure is present.
+
+    A deployment can contain independent module families. An incomplete
+    module must not prevent unrelated, self-contained modules from being
+    reused. Prune incomplete modules to a fixed point so dependants of a
+    pruned module are pruned too.
+    """
+    kept = set(corpus)
+    while True:
+        remove = {mid for mid in kept
+                  if any(dep not in kept for dep in corpus[mid].get("deps", ()))}
+        if not remove:
+            return {mid: entry for mid, entry in corpus.items() if mid in kept}
+        kept.difference_update(remove)
 
 
 def compute_corpus_build_id(corpus, label):

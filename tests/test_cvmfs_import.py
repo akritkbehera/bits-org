@@ -124,6 +124,11 @@ class HarvestTrustedTest(_unittest.TestCase):
                 _json.dump({"build_id": "rel-XYZ",
                             "package": {"hash": h, "version": verrev.split("-")[0],
                                         "revision": "1"}}, fh)
+        # A non-text sidecar must be ignored rather than decoded as Tcl.
+        cache = _os.path.join(mroot, "__pycache__")
+        _os.makedirs(cache)
+        with open(_os.path.join(cache, "module.cpython-39.pyc"), "wb") as fh:
+            fh.write(b"\x6f\x0d\x0d\x0a\x00\xff\x80")
         return mroot, proot, arch
 
     def test_reanchor_hash_and_build_id(self):
@@ -138,6 +143,19 @@ class HarvestTrustedTest(_unittest.TestCase):
             self.assertIn("set PKG_ROOT %s/Boost/$version" % proot, boost)
             self.assertEqual(corpus["Boost/1.90.0-1"]["deps"],
                              ["CMake/3.30.6-1", "Python/3.13.11-1"])
+
+    def test_non_module_deployment_root_fails_with_expected_layout(self):
+        with _tempfile.TemporaryDirectory() as root:
+            cache = _os.path.join(root, "__pycache__")
+            _os.makedirs(cache)
+            with open(_os.path.join(cache, "module.cpython-39.pyc"), "wb") as fh:
+                fh.write(b"\x6f\x0d\x0d\x0a\x00\xff\x80")
+            common = _os.path.join(root, "common")
+            _os.makedirs(common)
+            with open(_os.path.join(common, "cms-tool"), "w") as fh:
+                fh.write("#!/bin/sh\necho hi\n")
+            with self.assertRaisesRegex(ValueError, "Modules/modulefiles tree"):
+                harvest_trusted(root, root)
 
     def test_import_trusted_writes_overlay(self):
         with _tempfile.TemporaryDirectory() as root, \
@@ -154,6 +172,33 @@ class HarvestTrustedTest(_unittest.TestCase):
             with open(_os.path.join(out, "rel-XYZ", arch, "Boost",
                                     ".1.90.0-1.meta.json")) as fh:
                 self.assertEqual(_json.load(fh)["hash"], "hB")
+
+    def test_open_unrelated_branch_does_not_block_closed_modules(self):
+        with _tempfile.TemporaryDirectory() as root, \
+             _tempfile.TemporaryDirectory() as out:
+            mroot, proot, arch = self._deploy(root)
+            # This module is outside the requested package graph and has a
+            # site-specific dependency not shipped in the deployment.
+            pkg = "Unrelated"
+            verrev = "1.0-1"
+            md = _os.path.join(mroot, pkg); _os.makedirs(md)
+            with open(_os.path.join(md, verrev), "w") as fh:
+                fh.write(_mf(pkg, verrev, ["site-tool/2.0"]))
+            pd = _os.path.join(proot, pkg, verrev); _os.makedirs(pd)
+            with open(_os.path.join(pd, ".meta.json"), "w") as fh:
+                _json.dump({"build_id": "rel-XYZ",
+                            "package": {"hash": "hU", "version": "1.0",
+                                        "revision": "1"}}, fh)
+
+            res = import_trusted_release(mroot, proot, arch, out)
+            self.assertEqual(res["build_id"], "rel-XYZ")
+            self.assertEqual(res["dangling"], ["site-tool/2.0"])
+            self.assertEqual(res["excluded"], ["Unrelated/1.0-1"])
+            self.assertIn("Boost/1.90.0-1", res["written"])
+            self.assertIn("CMake/3.30.6-1", res["written"])
+            self.assertIn("Python/3.13.11-1", res["written"])
+            self.assertFalse(_os.path.exists(_os.path.join(
+                res["overlay_path"], "Unrelated", verrev)))
 
 
 class OverlayReuseModuleTest(_unittest.TestCase):
