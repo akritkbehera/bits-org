@@ -21,6 +21,7 @@ INSTALLED = "installed"
 LOCAL_TARBALL = "local tarball"
 REMOTE = "from remote store"
 OVERLAY = "from reuse overlay"
+SYMLINK = "symlink from deployment"
 REMOTE_UNSIGNED = "build (in store, not signed)"
 BUILD = "build"
 DEVEL = "build (development package)"
@@ -72,7 +73,7 @@ def _installed(spec, work_dir, eff, rev, h):
 
 
 def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
-             overlay=None):
+             overlay=None, symlink=None):
   """Return (state, hash, revision) for *spec*, mirroring build_one_package.
 
   *trusted* is None (signed reuse off) or the verified hash map; *overlay* is a
@@ -82,6 +83,10 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
   eff = effective_arch(spec, arch)
   if spec.get("is_devel_pkg"):
     return DEVEL, spec["local_revision_hash"], ""
+  if symlink is not None:
+    match = symlink(spec)
+    if match:
+      return SYMLINK, match["hash"], match["revision"]
   if overlay is not None and overlay(spec):
     return OVERLAY, spec["remote_revision_hash"], ""
   forced = spec.get("force_revision") if "force_revision" in spec else None
@@ -162,10 +167,11 @@ def print_plan(rows, store_checked):
   for pkg, ver, state, note in rows:
     lines.append("  %-*s  %-*s  %s%s" % (w0, pkg, w1, ver, state, note))
   count = lambda s: sum(1 for r in rows if r[2] == s)
-  reused = count(INSTALLED) + count(LOCAL_TARBALL) + count(REMOTE) + count(OVERLAY)
+  reused = count(INSTALLED) + count(LOCAL_TARBALL) + count(REMOTE) + count(OVERLAY) + count(SYMLINK)
   summary = "%d reused (%d installed, %d local tarball, %d from remote store%s), %d to build" % (
       reused, count(INSTALLED), count(LOCAL_TARBALL), count(REMOTE),
-      (", %d from overlay" % count(OVERLAY)) if count(OVERLAY) else "", len(rows) - reused)
+      ((", %d from overlay" % count(OVERLAY)) if count(OVERLAY) else "") +
+      ((", %d symlinked" % count(SYMLINK)) if count(SYMLINK) else ""), len(rows) - reused)
   if not store_checked:
     summary += "; remote store not checked (only http(s):// and b3:// stores can be listed)"
   banner("Dry run: build plan (nothing built)\n%s\n\n%s", "\n".join(lines), summary)
@@ -181,6 +187,7 @@ def plan_build(build_order, specs, args, work_dir, sync_helper, raw_architecture
   can_list = store_can_list(sync_helper)
   trusted = trusted_index_fn() if (cfg.require_signed_reuse and can_list) else None
   overlay = _overlay_predicate(cfg)
+  from bits_helpers.reuse_symlinks import select_symlink_package
   rows = []
   for p in build_order:
     spec = specs[p]
@@ -189,7 +196,7 @@ def plan_build(build_order, specs, args, work_dir, sync_helper, raw_architecture
       raw_architecture.startswith("osx") and spec.get("architecture") != SHARED_ARCH))
     state, spec["hash"], spec["revision"] = classify(
         spec, args.architecture, work_dir, sync_helper, can_list, write_store, trusted,
-        overlay)
+        overlay, symlink=lambda spec: select_symlink_package(spec, cfg, args.architecture))
     debug("Plan %s: %s (hash %s, candidates %s)", p, state, spec["hash"],
           ", ".join(spec["remote_hashes"]))
     if state == DEVEL:

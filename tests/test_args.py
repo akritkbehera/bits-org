@@ -45,7 +45,9 @@ class FakeExit(Exception):
   pass
 
 CORRECT_BEHAVIOR = [
+  ((), "build --force-unknown-architecture gcc --symlinks --symlink-packages-from /deploy --symlink-policy relaxed", [("symlinks", True), ("symlinkPolicy", "relaxed"), ("symlinkPackagesFrom", "/deploy")]),
   ((), "build --force-unknown-architecture gcc --reuse-from /deployment/Modules/modulefiles --symlinks", [("symlinks", True)]),
+  ((), "build --force-unknown-architecture gcc --reuse-from /deployment/Modules/modulefiles --symlink-packages-from /local/Packages", [("symlinks", False), ("symlinkPackagesFrom", "/local/Packages")]),
   ((), "build --force-unknown-architecture gcc", [("symlinks", False)]),
   ((), "build --force-unknown-architecture zlib"                                       , [("action", "build"), ("workDir", "sw"), ("referenceSources", "sw/MIRROR")]),
   ((), "init"                                                                          , [("action", "init"), ("workDir", "sw"), ("referenceSources", "sw/MIRROR")]),

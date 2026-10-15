@@ -17,7 +17,116 @@ from bits_helpers.build import _BuildLoopCtx
 from bits_helpers.build import build_one_package
 from bits_helpers.build_config import BuildConfig
 from bits_helpers.initdotsh import generate_initdotsh
-from bits_helpers.reuse_symlinks import stage_reused_package
+from bits_helpers.reuse_symlinks import stage_reused_package, find_symlink_package
+
+
+class DeploymentSelectionTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "deploy"
+        self.work = Path(self.tmp.name) / "work"
+        self.arch = "el9_amd64_gcc14"
+        self.spec = dict(package="data-example", version="V00-03-00", force_revision="",
+                         pkg_family="cms", architecture="share", requires=[],
+                         hash="expected", remote_revision_hash="expected",
+                         local_revision_hash="local", remote_hashes=["expected"],
+                         local_hashes=["local"], is_devel_pkg=False)
+
+    def deploy(self, arch="share", family="cms", label="V00-03-00", hash_value="expected"):
+        source = self.root / arch / family / self.spec["package"] / label
+        (source / "etc/profile.d").mkdir(parents=True)
+        (source / "payload").mkdir()
+        (source / "payload/data").write_text("unchanged")
+        if hash_value is not None:
+            (source / ".build-hash").write_text(hash_value + "\n")
+        (source / "etc/profile.d/init.sh").write_text(
+            'export DATA_EXAMPLE_ROOT="%s"\nexport DATA_EXAMPLE_REVISION=""\n' % source)
+        return source
+
+    def test_shared_family_package_without_modulefiles_builds_by_symlinking(self):
+        source = self.deploy()
+        original = (source / "etc/profile.d/init.sh").read_bytes()
+        args = Namespace(defaults=["release"], architecture=self.arch, docker=False,
+                         symlinks=True, symlinkPackagesFrom=str(self.root), manifest=None)
+        cfg = BuildConfig.from_args(args)
+        self.assertIsNone(cfg.reuse_overlay)
+        spec = dict(self.spec)
+        ctx = _BuildLoopCtx(
+            args=args, cfg=cfg, specs={spec["package"]: spec}, workDir=str(self.work),
+            syncHelper=None, scheduler=None, mainPackage=spec["package"],
+            raw_architecture=self.arch, develPackageBranch="", defaultsMeta={},
+            buildTargets="", packages=[], prefetch_executor=None, cmake_prefix_env=False,
+            specs_for_checksum_phase=[], monitoredDirs={})
+        with patch("bits_helpers.build.storeHook"), patch("bits_helpers.build.storeHashes"), \
+             patch("bits_helpers.build.log_current_package"):
+            build_one_package(spec["package"], ctx)
+        local = self.work / "share/cms/data-example/V00-03-00"
+        self.assertTrue(spec["reuse_symlinked"])
+        self.assertEqual(spec["revision"], "")
+        self.assertNotIn("reuse_module_id", spec)
+        self.assertTrue((local / "payload").is_symlink())
+        self.assertEqual((local / "payload/data").read_text(), "unchanged")
+        consumer = generate_initdotsh("App", {"App": dict(package="App", requires=["data-example"]),
+                                              "data-example": spec}, self.arch, workDir=str(self.work))
+        output = subprocess.check_output(
+            ["bash", "-ec", consumer + '\nprintf "%s" "$DATA_EXAMPLE_ROOT"'], text=True)
+        self.assertEqual(output, str(local))
+        self.assertEqual((source / "etc/profile.d/init.sh").read_bytes(), original)
+
+    def test_strict_checks_hash_relaxed_uses_path(self):
+        source = self.deploy(hash_value="different")
+        self.assertIsNone(find_symlink_package(self.spec, self.root, self.arch))
+        self.assertEqual(find_symlink_package(self.spec, self.root, self.arch, "relaxed")["source"], str(source))
+        (source / ".build-hash").unlink()
+        self.assertIsNone(find_symlink_package(self.spec, self.root, self.arch))
+        self.assertIsNotNone(find_symlink_package(self.spec, self.root, self.arch, "relaxed"))
+        (source / ".build-hash").write_text("local\n")
+        self.assertIsNone(find_symlink_package(self.spec, self.root, self.arch))
+        self.assertEqual(find_symlink_package(self.spec, self.root, self.arch, "relaxed")["hash"], "local")
+
+    def test_architecture_and_version_are_required_in_both_policies(self):
+        self.deploy(arch="wrong-arch")
+        self.deploy(label="V00-03-01")
+        for policy in ("strict", "relaxed"):
+            self.assertIsNone(find_symlink_package(self.spec, self.root, self.arch, policy))
+
+    def test_arch_specific_and_flat_layouts_and_symlinked_package(self):
+        self.spec.pop("architecture")
+        self.spec["pkg_family"] = "external"
+        source = self.deploy(arch=self.arch, family="")
+        moved = source.with_name("payload-directory")
+        source.rename(moved)
+        source.symlink_to(moved, target_is_directory=True)
+        match = find_symlink_package(self.spec, self.root, self.arch)
+        self.assertEqual(match["source"], str(source))
+        local = Path(stage_reused_package(self.spec, match["install_base"], self.work,
+                                         self.arch, source_path=match["source"]))
+        self.assertEqual(local, self.work / self.arch / "external/data-example/V00-03-00")
+        self.assertEqual((local / "payload/data").read_text(), "unchanged")
+        self.spec["pkg_family"] = ""
+        self.assertIsNotNone(find_symlink_package(self.spec, self.root, self.arch))
+
+    def test_revision_policy_and_dry_run_match_selection(self):
+        from bits_helpers.plan import classify, SYMLINK
+        from bits_helpers.reuse_symlinks import select_symlink_package
+        source = self.deploy(label="V00-03-00-older", hash_value="different")
+        # An explicit empty revision must not accidentally match a suffixed one.
+        self.assertIsNone(find_symlink_package(self.spec, self.root, self.arch, "relaxed"))
+        self.spec.update(force_revision="expected", _revision_policy_hash_injected=True)
+        cfg = BuildConfig.from_args(Namespace(
+            symlinks=True, symlinkPackagesFrom=str(self.root), symlinkPolicy="relaxed"))
+        result = classify(self.spec, self.arch, str(self.work), None, False, False, None,
+                          symlink=lambda spec: select_symlink_package(spec, cfg, self.arch))
+        self.assertEqual(result, (SYMLINK, "different", "older"))
+        self.assertFalse(self.work.exists())
+        self.assertEqual(select_symlink_package(self.spec, cfg, self.arch)["source"], str(source))
+        blocked = BuildConfig.from_args(Namespace(
+            symlinks=True, symlinkPackagesFrom=str(self.root), buildLocal=[self.spec["package"]]))
+        self.assertIsNone(select_symlink_package(self.spec, blocked, self.arch))
+        for changes in ({"is_devel_pkg": True}, {"provides_repository": True},
+                        {"package": "defaults-release"}):
+            self.assertIsNone(select_symlink_package(dict(self.spec, **changes), cfg, self.arch))
 
 
 class ReuseSymlinksTest(unittest.TestCase):
@@ -272,3 +381,5 @@ class ReuseSymlinksTest(unittest.TestCase):
                                           self.arch, workDir=str(self.work),
                                           reuse_cvmfs_base=str(self.base))
                 self.assertEqual(str(self.base) in init, not enabled)
+                if self.work.exists():
+                    shutil.rmtree(self.work)

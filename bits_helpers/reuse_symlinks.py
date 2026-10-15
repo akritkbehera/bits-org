@@ -16,7 +16,76 @@ import subprocess
 import tempfile
 
 from bits_helpers.arch import effective_arch
+from bits_helpers.log import debug
 from bits_helpers.utilities import pkg_to_shell_id
+from bits_helpers.utilities import is_virtual_package
+
+
+def find_symlink_package(spec, deployment_root, architecture, policy="strict"):
+    """Find a package in ROOT/<effective-arch>/[family/]package/version[-revision].
+
+    Only inspect the requested architecture and version. Strict selection also
+    checks .build-hash against the computed remote identity. An explicit
+    force_revision (including an empty one) pins the directory label; an
+    automatically injected hash label still permits other revisions of the same
+    version. Prefer the expected label, then use deterministic directory order.
+    """
+    if policy not in ("strict", "relaxed"):
+        raise ValueError("Unknown symlink policy: %s" % policy)
+    package, version = spec["package"], spec["version"]
+    arch, family = effective_arch(spec, architecture), spec.get("pkg_family", "")
+    for segment in (package, version, arch, family):
+        if segment and (segment in (".", "..") or "/" in segment or "\\" in segment):
+            raise ValueError("Invalid symlink package path segment: %r" % segment)
+    base = Path(deployment_root).absolute() / arch
+    parents = [base / family / package] if family else []
+    parents.append(base / package)
+    # Deployment roots represent published packages. Match their remote identity
+    # only; the local hash has an extra local marker and is not a valid deployed
+    # artifact identity for strict reuse.
+    expected_hash = spec.get("remote_revision_hash")
+    pinned = "force_revision" in spec and not spec.get("_revision_policy_hash_injected")
+    revision = spec.get("force_revision", spec.get("revision", ""))
+    expected = version + ("-" + str(revision) if revision else "")
+    for parent in parents:
+        if not parent.is_dir():
+            continue
+        for path in sorted(parent.iterdir(), key=lambda p: (p.name != expected, p.name)):
+            if pinned and path.name != expected:
+                continue
+            if path.name != version and not path.name.startswith(version + "-"):
+                continue
+            if not path.is_dir():
+                continue
+            if not (path / "etc/profile.d/init.sh").is_file():
+                debug("Symlink candidate %s skipped: missing etc/profile.d/init.sh", path)
+                continue
+            try:
+                source_hash = (path / ".build-hash").read_text().strip()
+            except (OSError, UnicodeError):
+                source_hash = ""
+            if policy == "strict" and (not expected_hash or source_hash != expected_hash):
+                debug("Symlink candidate %s skipped: .build-hash=%s, expected %s", path,
+                      source_hash or "<missing>", expected_hash or "<missing remote hash>")
+                continue
+            return {"source": str(path), "install_base": str(base),
+                    "revision": path.name[len(version) + 1:] if path.name != version else "",
+                    "hash": source_hash or spec.get("remote_revision_hash", "")}
+    return None
+
+
+def select_symlink_package(spec, cfg, architecture):
+    """The same eligibility and lookup for builds and read-only plans."""
+    root = getattr(cfg, "symlink_packages_from", None)
+    if not (getattr(cfg, "symlinks", False) and root):
+        return None
+    build_local = cfg.build_local or []
+    if isinstance(build_local, str):
+        build_local = build_local.split(",")
+    if (spec.get("is_devel_pkg") or is_virtual_package(spec)
+            or spec["package"].startswith("defaults-") or spec["package"] in build_local):
+        return None
+    return find_symlink_package(spec, root, architecture, cfg.symlink_policy)
 
 
 def _run_checked(command):
@@ -104,8 +173,11 @@ def _install_stage(staged, destination, source):
 
 
 def stage_reused_package(spec, install_base, work_dir, architecture,
-                         runtime_work_dir=None):
-    """Stage one selected module under work_dir without writing to its source.
+                         runtime_work_dir=None, source_path=None):
+    """Stage a selected package under work_dir without writing to its source.
+
+    Direct deployment selection supplies source_path. Legacy module selection
+    supplies reuse_module_id and an architecture-specific install_base.
 
     Directories containing private files are real directories; the other entries
     are symlinks. No relocation program is run on a linked tree, since it could
@@ -116,18 +188,22 @@ def stage_reused_package(spec, install_base, work_dir, architecture,
     work = Path(work_dir).absolute()
     runtime = Path(runtime_work_dir or work).absolute()
     arch = effective_arch(spec, architecture)
-    package, verrev = spec["reuse_module_id"].split("/", 1)
+    if source_path is not None:
+        package, verrev = spec["package"], Path(source_path).name
+    else:
+        package, verrev = spec["reuse_module_id"].split("/", 1)
     family = spec.get("pkg_family", "")
     for segment in (package, verrev, arch, family):
         if segment and (segment in (".", "..") or "/" in segment):
             raise ValueError("Invalid reused package path segment: %r" % segment)
     suffix = Path(family) / package / verrev if family else Path(package) / verrev
-    candidates = [base / suffix, base / package / verrev]
+    candidates = ([Path(source_path)] if source_path is not None
+                  else [base / suffix, base / package / verrev])
     source = next((p for p in candidates
                    if (p / "etc/profile.d/init.sh").is_file()), None)
     if source is None:
         raise ValueError("--symlinks needs the deployed init.sh for %s under %s"
-                         % (spec["reuse_module_id"], base))
+                         % (package + "/" + verrev, base))
     destination = work / arch / suffix
     local_root = runtime / arch / suffix
     parent = destination.parent
@@ -142,6 +218,8 @@ def stage_reused_package(spec, install_base, work_dir, architecture,
     # Longest first: the flat deployment and the local family layout may differ.
     replacements = {str(source): str(local_root),
                     str(base): str(runtime / arch)}
+    if source_path is not None:
+        replacements[str(base.parent)] = str(runtime)
     # Older init.sh files default WORK_DIR to their original build workdir.
     # Read the literal PKG_DIR without executing the deployment's shell code.
     pkginfo = source / "etc/profile.d/.bits-pkginfo"

@@ -1195,6 +1195,9 @@ def create_provenance_info(package, specs, args):
     _provenance = "own_hash"
   else:
     _provenance = "loose" if _closure_untracked() else "pure"
+  if (getattr(args, "symlinks", False) and getattr(args, "symlinkPackagesFrom", None)
+      and getattr(args, "symlinkPolicy", "strict") == "relaxed"):
+    _provenance = "loose"
   from bits_helpers.deps import deps_graph
   from bits_helpers.build_epoch import BUILD_EPOCH
 
@@ -1220,6 +1223,7 @@ def create_provenance_info(package, specs, args):
     # never hashed — declared under system:, which is not part of any pkg hash).
     "cvmfs_templates": getattr(args, "cvmfsTemplates", None),
     "reuse_policy": getattr(args, "reusePolicy", "strict") or "strict",
+    "symlink_policy": getattr(args, "symlinkPolicy", "strict"),
     "provenance": _provenance,
     # Dependencies this package linked but excluded from its identity hash.
     "untracked_requires": _untracked,
@@ -2012,6 +2016,35 @@ def build_one_package(p, ctx):
   debug("Hashes for recipe %s are %s (remote); %s (local)", p,
         ", ".join(spec["remote_hashes"]), ", ".join(spec["local_hashes"]))
 
+  # Direct deployment selection needs neither a modulefile nor an overlay.
+  # Resolve the effective architecture (including share) before looking up
+  # the package, and retain the selected revision even when it is empty.
+  from bits_helpers.reuse_symlinks import select_symlink_package, stage_reused_package
+  try:
+    _linked = select_symlink_package(spec, cfg, args.architecture)
+    if _linked:
+      _runtime_work = workDir
+      if args.docker:
+        _runtime_work = (cfg.cvmfs_prefix or
+                         (workDir if args.containerUseWorkDir else "/container/bits/sw"))
+      _local_reuse = stage_reused_package(
+          spec, _linked["install_base"], workDir, args.architecture,
+          runtime_work_dir=_runtime_work, source_path=_linked["source"])
+      spec["revision"] = _linked["revision"]
+      spec["hash"] = _linked["hash"]
+      spec["reuse_symlinked"] = True
+      spec["symlink_source"] = _linked["source"]
+      spec["cachedTarball"] = ""
+      spec.setdefault("deps_hash", "")
+      info("Symlink: %s from %s (%s policy) -> %s", p, _linked["source"],
+           cfg.symlink_policy, _local_reuse)
+      if getattr(args, "manifest", None) is not None:
+        args.manifest.add_package(spec, "already_installed",
+                                  effective_architecture=effective_arch(spec, args.architecture))
+      return
+  except (OSError, ValueError) as exc:
+    dieOnError(True, "Cannot symlink package %s: %s" % (p, exc))
+
   # 4b: select reused packages from the module overlay. Consumers source init.sh
   # from the deployment, or a private local copy when --symlinks is enabled.
   # Both paths skip building/unpacking. Strict = same remote hash (publishable);
@@ -2041,7 +2074,7 @@ def build_one_package(p, ctx):
         spec["hash"] = spec.get("remote_revision_hash") or spec.get("hash", "")
         spec["cachedTarball"] = ""
         spec.setdefault("deps_hash", "")
-        if cfg.symlinks:
+        if cfg.symlinks and not cfg.symlink_packages_from:
           from bits_helpers.reuse_symlinks import stage_reused_package
           _runtime_work = workDir
           if args.docker:
@@ -2049,7 +2082,8 @@ def build_one_package(p, ctx):
                              (workDir if args.containerUseWorkDir else "/container/bits/sw"))
           try:
             _local_reuse = stage_reused_package(
-                spec, cfg.reuse_cvmfs_base, workDir, args.architecture,
+                spec, cfg.reuse_cvmfs_base,
+                workDir, args.architecture,
                 runtime_work_dir=_runtime_work)
           except (OSError, ValueError) as exc:
             dieOnError(True, "Cannot stage reused package %s: %s" % (p, exc))
@@ -2699,8 +2733,11 @@ def build_one_package(p, ctx):
     if _reuse_relocations:
       # Exact package mappings above preserve families and effective arches.
       # The fallback maps other paths under the deployment's Packages root.
-      _reuse_relocations[_reuse_cvmfs_base.rstrip("/")] = join(
-          abspath(init_workDir), args.architecture)
+      if cfg.symlink_packages_from:
+        _reuse_relocations[cfg.symlink_packages_from.rstrip("/")] = abspath(init_workDir)
+      elif _reuse_cvmfs_base:
+        _reuse_relocations[_reuse_cvmfs_base.rstrip("/")] = join(
+            abspath(init_workDir), args.architecture)
     try:
       _reuse_relocations_text = serialize_relocation_table(_reuse_relocations)
     except ValueError as exc:
@@ -2872,11 +2909,16 @@ def build_one_package(p, ctx):
       jobLabel=("--label bits-job=%s " % quote(_job_id)) if _job_id else "",
       # Mount /cvmfs read-only when reusing deployed components, so a reused
       # dep's init.sh (and its files under /cvmfs) resolve inside the container.
-      cvmfsMount=(("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base else "") +
-                  ("-v %s " % quote("%s:%s:ro" % (cfg.reuse_cvmfs_base, cfg.reuse_cvmfs_base))
-                   if cfg.symlinks and cfg.reuse_cvmfs_base
-                   and cfg.reuse_cvmfs_base.rstrip("/") != "/cvmfs"
-                   and not cfg.reuse_cvmfs_base.startswith("/cvmfs/") else "")),
+      cvmfsMount=(("-v /cvmfs:/cvmfs:ro " if cfg.reuse_cvmfs_base or
+                   (cfg.symlinks and cfg.symlink_packages_from and
+                    (cfg.symlink_packages_from == "/cvmfs" or
+                     cfg.symlink_packages_from.startswith("/cvmfs/"))) else "") +
+                  "".join(
+                    "-v %s " % quote("%s:%s:ro" % (root, root))
+                    for root in dict.fromkeys((cfg.reuse_cvmfs_base,
+                                               cfg.symlink_packages_from))
+                    if cfg.symlinks and root and root.rstrip("/") != "/cvmfs"
+                    and not root.startswith("/cvmfs/"))),
       platformArg="--platform %s " % quote(_docker_platform) if _docker_platform else "",
       roSources=_ro_sources,
       image=quote(args.dockerImage),
@@ -3255,8 +3297,19 @@ def doBuild(args, parser):
   args.reuseOverlay = None
   args.reuseBuildId = None
   args.reuseCvmfsBase = None
-  dieOnError(getattr(args, "symlinks", False) and not args.reuseFrom,
-             "--symlinks requires --reuse-from (or BITS_REUSE_FROM).")
+  if getattr(args, "symlinkPackagesFrom", None):
+    args.symlinkPackagesFrom = os.path.abspath(os.path.expanduser(args.symlinkPackagesFrom))
+    dieOnError(not getattr(args, "symlinks", False),
+               "--symlink-packages-from requires --symlinks.")
+    dieOnError(not os.path.isdir(args.symlinkPackagesFrom),
+               "--symlink-packages-from is not a directory: %s" %
+               args.symlinkPackagesFrom)
+    info("Symlink packages: %s (%s policy)", args.symlinkPackagesFrom,
+         getattr(args, "symlinkPolicy", "strict"))
+  dieOnError(getattr(args, "symlinks", False)
+             and not (getattr(args, "symlinkPackagesFrom", None) or args.reuseFrom),
+             "--symlinks requires --symlink-packages-from DEPLOYMENT-ROOT "
+             "(or --reuse-from for legacy module staging).")
   if args.reuseFrom:
     info("Reuse-from modules: %s", args.reuseFrom)
     _install_base = _cvmfs.get("install_path") if _cvmfs else None
@@ -3504,6 +3557,12 @@ def doBuild(args, parser):
     dieOnError(True,
                "--reuse-policy relaxed produces loose-provenance artifacts that cannot be "
                "published. Drop --write-store, or rebuild with --reuse-policy strict.")
+  if (getattr(args, "symlinks", False) and getattr(args, "symlinkPackagesFrom", None)
+      and getattr(args, "symlinkPolicy", "strict") == "relaxed"
+      and getattr(args, "writeStore", "")):
+    dieOnError(True,
+               "--symlink-policy relaxed produces loose-provenance artifacts that cannot be "
+               "published. Drop --write-store, or use --symlink-policy strict.")
 
   # Snapshot the resolved build knobs now that the resolution phase above has
   # settled them, so downstream reads use typed cfg.<knob> instead of repeating

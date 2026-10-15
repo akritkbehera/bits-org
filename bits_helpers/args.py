@@ -1693,9 +1693,20 @@ def add_build_arguments(subparsers, ctx):
                                   "policy (e.g. 'cvmfs::relaxed'); it must agree with --reuse-policy if both "
                                   "are given. Defaults to $BITS_REUSE_FROM; an empty value turns reuse off."))
   build_remote.add_argument("--symlinks", action="store_true", default=False,
-                            help=("With --reuse-from, stage reused packages in the local work directory "
-                                  "using symlinks and a relocated local init.sh. The source installation "
-                                  "must remain accessible; dependency config files are not rewritten."))
+                            help=("Link matching packages from --symlink-packages-from into the work "
+                                  "directory, retaining private relocated initialization files. "
+                                  "Without that option, retain legacy staging of --reuse-from selections."))
+  build_remote.add_argument("--symlink-packages-from", dest="symlinkPackagesFrom",
+                            metavar="DEPLOYMENT-ROOT", default=None,
+                            help=("Find installed packages under ROOT/<architecture>/[family/]<package>/"
+                                  "<version[-revision]>, or ROOT/share for shared packages. "
+                                  "Requires --symlinks; no modulefiles or --reuse-from are needed."))
+  build_remote.add_argument("--symlink-policy", dest="symlinkPolicy",
+                            choices=["strict", "relaxed"], default="strict",
+                            help=("Package symlink selection: strict (default) requires .build-hash "
+                                  "to match a computed package hash; relaxed matches the architecture, "
+                                  "family and version path without checking the hash. "
+                                  "Independent of --reuse-policy."))
   build_remote.add_argument("--build-local", dest="buildLocal", metavar="PKG[,PKG...]", default="",
                             help=("Comma-separated packages to always build locally even under "
                                   "--reuse-policy relaxed (e.g. a package you need patched), rather than "

@@ -38,6 +38,8 @@ class BuildConfig:
   # Reuse / store consumers (resolved during import; read later in the loop).
   reuse_overlay: Optional[str]   # host path of the imported reuse overlay
   reuse_cvmfs_base: Optional[str]  # CVMFS Packages base for the reuse overlay
+  symlink_packages_from: Optional[str]  # install root supplying symlinked payloads
+  symlink_policy: str           # independent strict/relaxed package selection
   symlinks: bool                # stage selected reused packages locally
   reuse_beacon: Optional[str]    # reuse-beacon URL (falls back to env at the site)
   store_integrity: bool          # verify store-integrity ledger on cached reuse
@@ -77,6 +79,8 @@ class BuildConfig:
         prefetch_workers=getattr(args, "prefetchWorkers", -1),
         reuse_overlay=getattr(args, "reuseOverlay", None),
         reuse_cvmfs_base=getattr(args, "reuseCvmfsBase", None),
+        symlink_packages_from=getattr(args, "symlinkPackagesFrom", None),
+        symlink_policy=getattr(args, "symlinkPolicy", "strict"),
         symlinks=getattr(args, "symlinks", False),
         reuse_beacon=getattr(args, "reuseBeacon", None),
         store_integrity=getattr(args, "storeIntegrity", False),

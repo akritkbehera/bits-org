@@ -39,7 +39,7 @@ COVERED = (
 
 # --symlinks is opt-in; leave the epoch unchanged to preserve strict reuse of
 # existing deployments. The staging and post-install helpers are covered here.
-COVERED_SHA256 = "bab7719b4231a68b9be80abe58168c2deb97e2bb44a052f8517a7995d4ab4d7d"
+COVERED_SHA256 = "33682df4f512f74e5b2efdfa878786331cc775259ed1b87014afe11a82747a2d"
 
 
 def covered_sha256(root=None):
