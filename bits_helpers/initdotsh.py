@@ -18,22 +18,24 @@ def _prerequisites_first(reqs, specs):
   a dependency sourced first sets its _REVISION, so a later init.sh skips its stale copy."""
   wanted, seen, out = set(reqs), set(), []
 
-  def visit(d):
-    if d in seen or d not in specs:
-      return
-    seen.add(d)
-    for r in specs[d].get("requires", ()):
-      visit(r)
-    if d in wanted:
-      out.append(d)
-  for d in reqs:
-    visit(d)
+  for dep in reqs:
+    stack = [(dep, False)]
+    while stack:
+      d, expanded = stack.pop()
+      if expanded:
+        if d in wanted:
+          out.append(d)
+      elif d not in seen and d in specs:
+        seen.add(d)
+        stack.append((d, True))
+        stack.extend((r, False) for r in reversed(specs[d].get("requires", ())))
   return out
 
 
 def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=False,
                        from_modules=False, cmake_prefix_env=False,
-                       reuse_cvmfs_base=None):
+                       reuse_cvmfs_base=None, _include_dependencies=True,
+                       _root_override=None):
   """Return the contents of the given package's etc/profile/init.sh as a string.
 
   If post_build is true, also generate variables pointing to the package
@@ -52,7 +54,10 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
   which CMake's find_package() reads natively on Unix. Off by default so the
   text stays byte-identical to aliBuild's when the knob is not set.
   """
+  # direct affects only build-time activation; installed init.sh stays recursive.
+  # Private arguments generate a dependency's own environment without expanding it.
   spec = specs[package]
+  direct = not post_build and spec.get("build_environment") == "direct"
   # Allow users to override BITS_ARCH_PREFIX if they manually source
   # init.sh. This is useful for development off CVMFS, since we have a
   # slightly different directory hierarchy there.
@@ -121,7 +126,8 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
 
   # An own_hash package (the toolchain) is shared across defaults: its installed
   # init.sh must not name the defaults-release of the build that made it.
-  _reqs = [d for d in spec.get("requires", ()) if not specs[d].get("not_needed")
+  _reqs = [d for d in spec.get("requires", ()) if _include_dependencies
+           and not specs[d].get("not_needed")
            and not (post_build and spec.get("own_hash") and d == "defaults-release")]
   _reused_set = {d for d in _reqs
                  if reuse_cvmfs_base and specs[d].get("reuse_module_id")
@@ -144,6 +150,20 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       'unset _bits_swd _bits_sap',
     ]
 
+  def _setup_dependency(d):
+    if not direct:
+      return _reused_dep_lines(d) if d in _reused_set else [_dep_init_path(d)]
+    root_override = None
+    if d in _reused_set:
+      verrev = specs[d]["reuse_module_id"].split("/", 1)[1]
+      root_override = quote("%s/%s/%s" % (reuse_cvmfs_base, specs[d]["package"], verrev))
+    environment = generate_initdotsh(
+      d, specs, architecture, workDir=workDir, post_build=True,
+      from_modules=from_modules, cmake_prefix_env=cmake_prefix_env,
+      _include_dependencies=False, _root_override=root_override)
+    return ['if [ -z "${%s_REVISION:-}" ]; then' % pkg_to_shell_id(d),
+            environment, 'fi']
+
   if _reused_set or any(specs[d].get("reuse_symlinked") for d in _reqs):
     # Emit deps in topological order (prerequisites first) so a dep set up
     # before a reused dep whose deployed init.sh transitively references it —
@@ -154,7 +174,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     _order = [d for d in topological_sort(specs) if d in _req_set]
     # The not-needed packages of this package's own dependencies only: its init.sh
     # must not depend on what else the build had.
-    _closure, _todo = set(), list(spec.get("requires", ()))
+    _closure, _todo = set(), [] if direct else list(spec.get("requires", ()))
     while _todo:
       d = _todo.pop()
       if d in specs and d not in _closure:
@@ -166,10 +186,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
                  '%s="${%s:-} %s_REVISION"; }' % (v, v, _nn, _nn, v)
                  for v in _not_needed)
     for d in _order:
-      if d in _reused_set:
-        lines.extend(_reused_dep_lines(d))
-      else:
-        lines.append(_dep_init_path(d))
+      lines.extend(_setup_dependency(d))
     if _not_needed:
       lines.append('for _bits_v in ${%s:-}; do unset "$_bits_v"; done; '
                    'unset %s _bits_v' % (_nn, _nn))
@@ -202,7 +219,8 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       'unset _bits_rpc _bits_root _bits_pcd _bits_pc',
     ] if _reused_roots else [])
   else:
-    lines.extend(_dep_init_path(dep) for dep in _prerequisites_first(_reqs, specs))
+    for dep in _prerequisites_first(_reqs, specs):
+      lines.extend(_setup_dependency(dep))
 
   if post_build:
     bigpackage = pkg_to_shell_id(package)
@@ -215,6 +233,9 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
     lines.extend(line.format(
       bigpackage=bigpackage,
       arch_prefix=self_arch_prefix,
+      root=(_root_override if _root_override is not None else
+            "%s/%s%s/%s" % (self_arch_prefix, self_family_seg,
+                            quote(spec["package"]), quote(ver_rev(spec)))),
       family=self_family_seg,
       package=quote(spec["package"]),
       version=quote(spec["version"]),
@@ -226,7 +247,7 @@ def generate_initdotsh(package, specs, architecture, workDir="sw", post_build=Fa
       hash=quote(spec["hash"]),
       commit_hash=quote(spec["commit_hash"]),
     ) for line in (
-      'export {bigpackage}_ROOT={arch_prefix}/{family}{package}/{ver_rev}',
+      'export {bigpackage}_ROOT={root}',
       'export RECC_PREFIX_MAP="${bigpackage}_ROOT=/recc/{bigpackage}_ROOT:$RECC_PREFIX_MAP"',
       "export {bigpackage}_VERSION={version}",
       "export {bigpackage}_REVISION={revision}",

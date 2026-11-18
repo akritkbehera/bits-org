@@ -2909,6 +2909,7 @@ Only one version pin per dependency is allowed across the whole graph; conflicti
 | Field | Description |
 |-------|-------------|
 | `env` | Key-value pairs exported when this package is loaded via `modulecmd`. |
+| `build_environment` | `recursive` (default) activates dependency init.sh chains during a build. `direct` activates only immediate `requires`, `build_requires` and `untracked_requires` (plus defaults-release), including their own recipe environment and standard paths. It does not activate their transitive dependencies. Build ordering and installed runtime initialization remain recursive. Opting in changes the package hash. |
 | `prepend_path` | Variables to prepend to (e.g. `PATH`, `LD_LIBRARY_PATH`). |
 | `append_path` | Variables to append to. |
 

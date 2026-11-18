@@ -159,6 +159,9 @@ def storeHashes(package, specs, considerRelocation):
   # For now, all the hashers share data -- they'll be split below.
   h_all = Hasher()
 
+  if spec.get("build_environment") == "direct":
+    h_all("build_environment:direct")
+
   if spec.get("force_rebuild", False):
     h_all(str(time.time()))
 
