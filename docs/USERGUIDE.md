@@ -764,3 +764,22 @@ bits overlay lcg -a x86_64-el9-gcc15 --platform x86_64-el9-gcc15-opt \
 - **[Reference Manual](REFERENCE.md)** — command-line flags, recipe format, environment variables, Docker, stores, CVMFS pipeline, developer guide
 - **[Workflows](WORKFLOWS.md)** — development-to-deployment walkthrough
 - **[Roadmap](ROADMAP.md)** — planned features and priorities
+
+### Limit a recipe's build environment to direct dependencies
+
+For a recipe whose build system configures its own dependency environment (for
+example SCRAM), set this top-level recipe field:
+
+```yaml
+build_environment: direct
+```
+
+BITS activates the recipe's immediate runtime and build dependencies, including
+untracked dependencies and defaults-release. It generates their own environment
+settings from the resolved recipes without sourcing their recursive `init.sh`
+chains. Dependencies still build in the usual order, and installed runtime
+`init.sh` files keep their recursive behavior. Declare each tool the recipe needs
+directly; tools only required by another dependency are not activated. Existing
+shell environment variables are retained. Omitting the field, or setting it to
+`recursive`, preserves the default behavior and existing hashes. `direct` has a
+separate package hash, so its artifacts cannot reuse those built recursively.

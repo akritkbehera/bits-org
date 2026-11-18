@@ -33,6 +33,8 @@ def validateSpec(spec):
     raise SpecError("Empty recipe.")
   if type(spec) != OrderedDict:
     raise SpecError("Not a YAML key / value.")
+  if spec.get("build_environment", "recursive") not in ("recursive", "direct"):
+    raise SpecError("build_environment must be 'recursive' or 'direct'.")
   if "package" not in spec:
     raise SpecError("Missing package field in header.")
   # A recipe may omit `version:` when it declares `version_from:` (the version is

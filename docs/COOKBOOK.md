@@ -592,3 +592,22 @@ grep -rl g77 . | xargs --no-run-if-empty sed -i 's/\bg77\b/gfortran/g'
 ---
 
 *Back to [User Guide](USERGUIDE.md) · [Reference Manual](REFERENCE.md)*
+
+### Let SCRAM configure an Integration Build environment
+
+When SCRAM adds paths for the IB dependency graph, avoid populating those same
+paths through every external package's recursive initialization:
+
+```yaml
+package: MyIntegrationBuild
+version: "1"
+build_environment: direct
+build_requires:
+  - SCRAMV1
+  - cmssw-tool-conf
+```
+
+Add other tools needed directly by the build to `build_requires`. The option
+activates each declared dependency's own environment, not its dependency closure;
+SCRAM remains responsible for configuring the external libraries. The installed
+package's runtime initialization still loads its dependencies recursively.

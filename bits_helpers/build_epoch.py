@@ -47,7 +47,9 @@ COVERED = (
 # The build host on top of a package's log: the log is not packaged; BUILD_EPOCH unchanged.
 # init.sh sources prerequisites first and an own_hash package's names no defaults-release;
 # chmod u+w: existing tarballs stay valid, so BUILD_EPOCH is unchanged.
-COVERED_SHA256 = "60d16759877a4274981b611d6c28bdca3d94dbcee87cc6a7c09b54544782c4f4"
+# Direct build environments are opt-in and separately hashed; default artifacts
+# and runtime init.sh contents are unchanged, so BUILD_EPOCH stays unchanged.
+COVERED_SHA256 = "de8689ceea915be1392a47b06af0bb67b0be44bf0af973e5c1ebbd7307b2e71b"
 
 
 def covered_sha256(root=None):
