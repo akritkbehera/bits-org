@@ -326,6 +326,63 @@ class Boto3TestCase(unittest.TestCase):
             upload_file=MagicMock(return_value=None),
         )
 
+    def test_prefetched_archive_keeps_remote_provenance_and_cannot_mask_live_hash(self):
+        from pathlib import Path
+
+        helper = sync.Boto3RemoteSync("b3://localhost", "", ARCHITECTURE, self.workdir)
+        for existing in (GOOD_SPEC, BAD_SPEC):
+            path = Path(self.workdir, resolve_store_path(ARCHITECTURE, existing["hash"]),
+                        tarball_name(existing))
+            path.unlink()
+        spec = dict(GOOD_SPEC, planned_tarball=tarball_name(GOOD_SPEC))
+        helper.s3 = MagicMock()
+
+        def download(**kwargs):
+            archive = Path(kwargs["Filename"])
+            self.assertTrue(archive.parent.name.startswith(".prefetch-"))
+            archive.touch()
+
+        helper.s3.download_file.side_effect = download
+        helper.fetch_tarball(spec)
+        archive = Path(self.workdir, resolve_store_path(ARCHITECTURE, GOOD_HASH),
+                       spec["planned_tarball"])
+        self.assertTrue(sync.is_prefetched_tarball(str(archive)))
+
+        live = dict(GOOD_SPEC, hash=BAD_HASH, remote_hashes=[GOOD_HASH, BAD_HASH])
+        live_dir = sync.resolve_store_path(ARCHITECTURE, BAD_HASH)
+        with patch.object(helper, "_s3_listdir", return_value=[live_dir + "/" + tarball_name(GOOD_SPEC)]) as listing, \
+             patch.object(helper, "_download_tarball") as fetch:
+            helper.fetch_tarball(live)
+            listing.assert_called_once_with(live_dir)
+            fetch.assert_called_once_with(live_dir, live_dir + "/" + tarball_name(GOOD_SPEC), live)
+
+        local = archive.with_suffix(".local")
+        local.write_bytes(b"locally built")
+        local.replace(archive)
+        self.assertFalse(sync.is_prefetched_tarball(str(archive)))
+
+    def test_planned_tarball_uses_exact_key_before_listing(self):
+        from botocore.exceptions import ClientError
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as workdir:
+            helper = sync.Boto3RemoteSync("b3://localhost", "", ARCHITECTURE, workdir)
+            pkg_hash = GOOD_SPEC["remote_hashes"][0]
+            store_path = sync.resolve_store_path(ARCHITECTURE, pkg_hash)
+            spec = dict(GOOD_SPEC, remote_hashes=[pkg_hash], planned_tarball=tarball_name(GOOD_SPEC))
+            key = store_path + "/" + spec["planned_tarball"]
+            with patch.object(helper, "_download_tarball") as download, \
+                 patch.object(helper, "_s3_listdir", return_value=[key]) as listing:
+                helper.fetch_tarball(spec)
+                download.assert_called_once_with(store_path, key, spec)
+                listing.assert_not_called()
+
+                download.reset_mock(side_effect=True)
+                download.side_effect = [ClientError({"Error": {"Code": "404"}}, "HeadObject"), None]
+                helper.fetch_tarball(spec)
+                listing.assert_called_once_with(store_path)
+                self.assertEqual(download.call_count, 2)
+
     @patch("glob.glob", new=MagicMock(return_value=[]))
     @patch("os.listdir", new=MagicMock(return_value=[]))
     @patch("os.makedirs", new=MagicMock())

@@ -262,7 +262,7 @@ def prefetch_wanted(build_order, states):
 
 
 def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
-                      sources=True) -> None:
+                      sources=True, planned=None) -> None:
   """Background task: prefetch the prebuilt tarball + all source archives.
 
   Uses the sentinel-file mechanism (``<path>.downloading`` files; see
@@ -273,27 +273,18 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
   Sentinels for source archives: ``<source_file>.downloading`` (managed inside
   ``download()`` via ``_acquire_download``/``_wait_for_sentinel``).
 
-  This function is designed to be run in a thread pool; its result is never
-  collected, so any exception it raises is silently swallowed by the executor.
-  It must therefore not depend on state the main loop has not yet produced.
-
-  In particular ``spec["hash"]`` is assigned per package inside the build loop
-  (``storeHashes`` / the revision counter), in topological order because a hash
-  folds in its dependencies' hashes. The prefetch pool, however, is submitted
-  BEFORE that loop starts, so for any package not yet processed ``spec["hash"]``
-  does not exist yet. Return quietly in that case instead of raising a swallowed
-  KeyError: prefetch is a best-effort speedup, the main loop fetches the tarball
-  synchronously anyway.
+  Store hits get a separate, planned identity for downloading before the build loop.
   """
   from bits_helpers.download import _acquire_download, _wait_for_sentinel, download
   from bits_helpers.checksum import parse_entry as _pe
 
-  if not spec.get("hash"):
+  fetch_spec = planned if planned is not None else spec
+  if not fetch_spec.get("hash"):
     debug("Prefetch skipped for %s: hash not computed yet", spec.get("package"))
     return
 
   arch = effective_arch(spec, build_arch)
-  tar_hash_dir = os.path.join(work_dir, resolve_store_path(arch, spec["hash"]))
+  tar_hash_dir = os.path.join(work_dir, resolve_store_path(arch, fetch_spec["hash"]))
 
   # --- Tarball prefetch -------------------------------------------------------
   if not spec.get("is_devel_pkg"):
@@ -302,7 +293,7 @@ def _prefetch_package(spec, sync_helper, work_dir, build_arch, source_arch=None,
     if _acquire_download(tar_hash_dir):
       try:
         os.makedirs(tar_hash_dir, exist_ok=True)
-        sync_helper.fetch_tarball(spec)
+        sync_helper.fetch_tarball(fetch_spec)
       finally:
         # Always remove the sentinel so the main loop is never left waiting.
         sentinel = tar_hash_dir + ".downloading"
@@ -1824,6 +1815,8 @@ def runBuildCommand(scheduler, p, specs, args, build_command, cachedTarball, scr
   #     container-level equivalent, derived from the same ladder) into `… run`.
   nice_ladder = getattr(scheduler, "nice_ladder", None) if scheduler is not None else None
   nice_token = None
+  if cachedTarball and getattr(args, "parallelInstalls", 4) > 0:
+    nice_ladder = None
   if nice_ladder is not None:
     nice_token, nice_level = nice_ladder.acquire()
     if nice_level:  # nice 0 / default shares need no change
@@ -3117,6 +3110,8 @@ def build_one_package(p, ctx):
           workDir, resolve_store_path(effective_arch(spec, args.architecture), spec["hash"]))
       local_tarballs = [t for t in glob(os.path.join(local_hash_dir, "*gz"))
                         if os.path.isfile(t)]
+      if cfg.require_signed_reuse:
+        local_tarballs = [t for t in local_tarballs if packed_ledger.packed_here(workDir, t)]
       spec["cachedTarball"] = _select_cached_tarball(
           local_tarballs, spec, effective_arch(spec, args.architecture))
 
@@ -3519,7 +3514,8 @@ def build_one_package(p, ctx):
                          _download_time_mode(effective_checksum_mode), syncHelper,
                          cfg.parallel_sources, raw_architecture)
       build_deps = build_deps + [fetch_id]
-    scheduler.parallel("build:%s" % p, build_deps, "build", runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
+    task_type = "install" if cachedTarball and getattr(args, "parallelInstalls", 4) > 0 else "build"
+    scheduler.parallel("build:%s" % p, build_deps, task_type, runBuildCommand, scheduler, p, specs, args, build_command,cachedTarball, scriptDir, workDir, syncHelper)
 
 
 def enter_target(package, spec, build_family):
@@ -4604,6 +4600,7 @@ def doBuild(args, parser):
     info("--dry-run / -n specified. Not building.")
     return
   _full_order, _skipped, _states = list(buildOrder), set(), {}
+  _planned_prefetch = {}
   try:
     import copy
     _planned = copy.deepcopy(specs)
@@ -4613,6 +4610,12 @@ def doBuild(args, parser):
     _plan.adopt(specs, _planned, set(buildOrder) - _need)
     _skipped, _states = set(buildOrder) - _need, _plan_states
     buildOrder = [x for x in buildOrder if x in _need]
+    from bits_helpers.sync import Boto3RemoteSync
+    if isinstance(syncHelper, Boto3RemoteSync):
+      _planned_prefetch = {
+        p: dict(_planned[p], remote_hashes=[_planned[p]["hash"]])
+        for p in buildOrder if _states[p] == _plan.REMOTE
+      }
   except Exception as exc:          # pylint: disable=broad-except
     warning("Could not plan the build (%s): every package is fetched or built.", exc)
   try:
@@ -4720,7 +4723,8 @@ def doBuild(args, parser):
 
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, cfg.parallel_downloads),
-                          criticalPath=cfg.critical_path_schedule)
+                          criticalPath=cfg.critical_path_schedule,
+                          parallelInstalls=max(0, getattr(args, "parallelInstalls", 4)))
 
     # Collect concise per-package failures during the run so we can write a
     # readable summary at the end (write_failure_summary), instead of leaving the
@@ -4770,7 +4774,8 @@ def doBuild(args, parser):
     )
     _prefetch_futures = [
         _prefetch_executor.submit(_prefetch_package, specs[_pkg], syncHelper, workDir,
-                                  args.architecture, raw_architecture, sources=_src)
+                                  args.architecture, raw_architecture, sources=_src,
+                                  planned=_planned_prefetch.get(_pkg))
         for _pkg, _src in _prefetch_order]
 
   # Default build_family for the final banner, matching the in-loop formula

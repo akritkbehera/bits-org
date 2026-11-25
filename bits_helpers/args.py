@@ -1927,6 +1927,10 @@ def add_build_arguments(subparsers, ctx):
                             (the scheduler's "download" task cap, separate from the --builders compile
                             cap). Default: 2. Works with --builders > 1.
                             """)
+  build_remote.add_argument("--parallel-installs", dest="parallelInstalls", type=int, default=4,
+                            metavar="N",
+                            help=("Concurrent cached archive installs with --builders > 1. "
+                                  "Default: 4. Use 0 to share the build slots."))
   build_remote.add_argument("--parallel-sources", dest="parallelSources", type=int, default=1,
                             metavar="N",
                             help="""\

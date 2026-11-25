@@ -1347,6 +1347,22 @@ https://s3.cern.ch/swift/v1/{bucket}/$hashedurl" \\
     dieOnError(err, "Unable to upload source archive to store.")
 
 
+def _prefetched_marker(path, archive):
+  st = os.stat(archive)
+  return "%s.prefetched-%d-%d-%d" % (path, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def is_prefetched_tarball(path):
+  """Whether this archive has a marker for its remote file identity."""
+  try:
+    os.stat(_prefetched_marker(path, path))
+    return True
+  except FileNotFoundError:
+    return False
+  except OSError:
+    return True
+
+
 class Boto3RemoteSync(RemoteSync):
   """Sync package build directory from and to S3 using boto3.
 
@@ -1628,43 +1644,80 @@ class Boto3RemoteSync(RemoteSync):
     debug("Updating remote store for package %s with hashes %s", spec["package"],
           ", ".join(spec["remote_hashes"]))
 
-    # If we already have a tarball with any equivalent hash, don't check S3.
-    for pkg_hash in spec["remote_hashes"]:
+    hashes = spec["remote_hashes"]
+    selected_hash = spec.get("hash")
+    has_prefetched_alternative = False
+    for pkg_hash in hashes:
       store_path = resolve_store_path(arch, pkg_hash)
-      # Use os.path.isfile() to skip dangling symlinks that glob would otherwise return.
-      if any(os.path.isfile(t) for t in glob.glob(
-          os.path.join(self.workdir, store_path, "%s-*.tar.gz" % spec["package"]))):
+      for tarball in glob.glob(os.path.join(
+          self.workdir, store_path, "%s-*.tar.gz" % spec["package"])):
+        if not os.path.isfile(tarball):
+          continue
+        if selected_hash and pkg_hash != selected_hash and is_prefetched_tarball(tarball):
+          has_prefetched_alternative = True
+          continue
         debug("Reusing existing tarball for %s@%s", spec["package"], pkg_hash)
         return
 
-    for pkg_hash in spec["remote_hashes"]:
-      store_path = resolve_store_path(arch, pkg_hash)
+    if has_prefetched_alternative and selected_hash in hashes:
+      hashes = [selected_hash] + [h for h in hashes if h != selected_hash]
 
-      # We don't already have a tarball with the hash that we need, so download
-      # the first existing one from the remote, if possible. (Downloading more
-      # than one is a waste of time as they should be equivalent and we only
-      # ever use one anyway.)
+    planned = spec.get("planned_tarball")
+    if planned and len(spec["remote_hashes"]) == 1 and tarball_name_regex(spec, arch).fullmatch(planned):
+      from botocore.exceptions import ClientError
+      store_path = resolve_store_path(arch, spec["remote_hashes"][0])
+      try:
+        self._download_tarball(store_path, store_path + "/" + planned, spec)
+        return
+      except ClientError as exc:
+        if str(exc.response.get("Error", {}).get("Code")) not in ("404", "NoSuchKey", "NotFound"):
+          raise
+        debug("Planned tarball %s disappeared; checking the store again", planned)
+
+    for pkg_hash in hashes:
+      store_path = resolve_store_path(arch, pkg_hash)
       for tarball in self._s3_listdir(store_path):
         if not tarball_name_regex(spec, arch).match(os.path.basename(tarball)):
           continue                      # another object under the hash: not the tarball
-        debug("Fetching tarball %s", tarball)
-        progress = ProgressPrint("Downloading tarball for %s@%s" %
-                                 (spec["package"], spec["version"]), min_interval=5.0)
-        progress("[0%%] Starting download of %s", tarball)   # initialise progress bar
-        # Create containing directory locally. (exist_ok= is python3-specific.)
-        os.makedirs(os.path.join(self.workdir, store_path), exist_ok=True)
-        meta = self.s3.head_object(Bucket=self.remoteStore, Key=tarball)
-        total_size = int(meta.get("ContentLength", 0))
-        self.s3.download_file(
-          Bucket=self.remoteStore, Key=tarball,
-          Filename=os.path.join(self.workdir, store_path, os.path.basename(tarball)),
-          Callback=lambda num_bytes: progress("[%d/%d] bytes transferred", num_bytes, total_size),
-        )
-        progress.end("done")
+        self._download_tarball(store_path, tarball, spec)
         return
 
     debug("Remote has no tarballs for %s with hashes %s", spec["package"],
           ", ".join(spec["remote_hashes"]))
+
+  def _download_tarball(self, store_path, tarball, spec):
+    debug("Fetching tarball %s", tarball)
+    progress = ProgressPrint("Downloading tarball for %s@%s" %
+                             (spec["package"], spec["version"]), min_interval=5.0)
+    progress("[0%%] Starting download of %s", tarball)   # initialise progress bar
+    # Create containing directory locally. (exist_ok= is python3-specific.)
+    os.makedirs(os.path.join(self.workdir, store_path), exist_ok=True)
+    meta = self.s3.head_object(Bucket=self.remoteStore, Key=tarball)
+    total_size = int(meta.get("ContentLength", 0))
+    destination = os.path.join(self.workdir, store_path, os.path.basename(tarball))
+    def download(filename):
+      self.s3.download_file(
+        Bucket=self.remoteStore, Key=tarball, Filename=filename,
+        Callback=lambda num_bytes: progress("[%d/%d] bytes transferred", num_bytes, total_size),
+      )
+
+    if spec.get("planned_tarball"):
+      from tempfile import TemporaryDirectory
+      # Keep partial downloads private. Publish without replacing an archive
+      # written by the build loop or by another process.
+      with TemporaryDirectory(prefix=".prefetch-", dir=os.path.dirname(destination)) as temp_dir:
+        staged = os.path.join(temp_dir, os.path.basename(destination))
+        download(staged)
+        if not os.path.isfile(destination):
+          with open(_prefetched_marker(destination, staged), "a"):
+            pass
+          try:
+            os.link(staged, destination)
+          except FileExistsError:
+            pass
+    else:
+      download(destination)
+    progress.end("done")
 
   def fetch_symlinks(self, spec) -> None:
     from botocore.exceptions import ClientError

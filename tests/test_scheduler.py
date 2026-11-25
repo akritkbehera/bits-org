@@ -264,3 +264,21 @@ if __name__ == "__main__":
 
   # Handle tests with build resources (cpu, rss) requirement
   test_resource_monitor()
+
+
+def test_cached_installs_have_independent_slots():
+  from threading import Barrier
+
+  scheduler = Scheduler(1, parallelInstalls=2)
+  ready = Barrier(3, timeout=5)
+  def wait():
+    ready.wait()
+
+  scheduler.parallel("build:source", [], "build", wait)
+  scheduler.parallel("build:cached-a", [], "install", wait)
+  scheduler.parallel("build:cached-b", [], "install", wait)
+  scheduler.parallel("build:consumer", ["build:cached-a", "build:cached-b"],
+                     "build", lambda: None)
+  scheduler.run()
+  assert not scheduler.errors
+  assert "build:consumer" in scheduler.doneJobs

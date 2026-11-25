@@ -45,7 +45,7 @@ class Scheduler:
   # either parallel or serial. This job is guaranteed to be executed last and
   # avoids having deadlocks due to all the queues having been disposed.
   def __init__(self, parallelThreads, logDelegate=None, buildStats=None, parallelDownloads=2,
-               criticalPath=True):
+               criticalPath=True, parallelInstalls=0):
     self.workersQueue = PriorityQueue()
     self.resultsQueue = Queue()
     self.notifyQueue = Queue()
@@ -56,10 +56,11 @@ class Scheduler:
     self.runningJobsCache = []
     self.doneJobs = []
     self.brokenJobs = []
-    self.parallelThreads = parallelThreads+parallelDownloads
+    self.parallelThreads = parallelThreads + parallelDownloads + parallelInstalls
     self.logDelegate = logDelegate
     self.resourceManager = None
     self.runningJobsCount = {"build": 0, "fetch": 0, "download": 0, "max_build": parallelThreads, "max_download": parallelDownloads}
+    self.runningJobsCount.update(install=0, max_install=parallelInstalls)
     self.errors = {}
     # Critical-path scheduling: order ready jobs by the longest (history-weighted)
     # path to the sink, so the build's long pole starts as early as its
@@ -201,6 +202,8 @@ class Scheduler:
     the cold-start default) for build jobs; 0 for fetch/download/sentinel jobs,
     which act as zero-cost connectors in the DAG (cf. Ninja's phony edges)."""
     job = self.jobs.get(taskId, {})
+    if job.get("taskType") == "install":
+      return self._defaultCost
     if job.get("taskType") != "build":
       return 0.0
     pkg = taskId.split(":", 1)[1] if ":" in taskId else taskId
@@ -293,9 +296,11 @@ class Scheduler:
       allJobs.append({"id": taskId, "priority": self.jobs[taskId]["priority"]})
     buildJobs =[]
     downloadJobs = []
+    installJobs = []
     forceJobs = []
     bldCount = self.runningJobsCount["max_build"]-self.runningJobsCount["build"]
     dwnCount = self.runningJobsCount["max_download"]-self.runningJobsCount["download"]
+    installCount = self.runningJobsCount["max_install"] - self.runningJobsCount["install"]
     for task in sorted(allJobs, key=lambda k: k['priority']):
       taskId = task["id"]
       taskType = self.jobs[taskId]["taskType"]
@@ -303,6 +308,10 @@ class Scheduler:
         if dwnCount>0:
           downloadJobs.append(taskId)
           dwnCount -= 1
+      elif taskType == "install":
+        if installCount > 0:
+          installJobs.append(taskId)
+          installCount -= 1
       elif taskType == "build":
         if bldCount>0: #include all build jobs so that we can match those which can be run
           buildJobs.append(taskId)
@@ -313,7 +322,7 @@ class Scheduler:
         buildJobs = self.resourceManager.allocResourcesForExternals(buildJobs, count=bldCount)
       else:
         buildJobs = buildJobs[:bldCount]
-    for taskId in forceJobs + downloadJobs + buildJobs:
+    for taskId in forceJobs + downloadJobs + installJobs + buildJobs:
       taskType = self.jobs[taskId]["taskType"]
       if taskType in self.runningJobsCount:
         self.runningJobsCount[taskType] += 1

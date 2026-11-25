@@ -56,6 +56,17 @@ class ClassifyTest(unittest.TestCase):
     self._tarball(RH, "2")
     self.assertEqual(self._classify(), (plan.LOCAL_TARBALL, RH, "2"))
 
+  def test_prefetched_archive_is_not_local_for_signed_reuse(self):
+    self._tarball(RH, "4")
+    from bits_helpers.sync import _prefetched_marker
+    archive = os.path.join(self.tmp, "TARS", ARCH, "store", RH[:2], RH,
+                           "zlib-1.3-4.%s.tar.gz" % ARCH)
+    with open(_prefetched_marker(archive, archive), "w"):
+      pass
+    store = _Store(["zlib-1.3-4.%s.tar.gz" % ARCH])
+    self.assertEqual(self._classify(store, trusted={})[0], plan.REMOTE_UNSIGNED)
+    self.assertEqual(self._classify(store, trusted={(ARCH, RH): "sha"})[0], plan.REMOTE)
+
   def test_local_revision_under_local_hash(self):
     self._tarball(LH, "local1")
     self.assertEqual(self._classify(), (plan.LOCAL_TARBALL, LH, "local1"))
