@@ -3,6 +3,8 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** Prefetch planned `b3://` store hits using their selected package identity and S3 archive. Cached archive installs have four separate scheduler slots with `--builders > 1`, configurable with `--parallel-installs`.
+
 - **[Improvement]** Opt-in recipe-resolution profiling: set `BITS_PROFILE_RECIPES=1` to record per-recipe parse invocations, operation timings (inclusive/exclusive), and counters (FS reads, path lookups, includes) to a process-specific JSON file plus a human-readable summary. Inert when off; no behavior changes.
 - **[Improvement]** Bits searches for package recipes at each checkout root first, then in `recipes/`. Flat and mixed checkouts work, and root recipes win on name clashes. Defaults, patches and other repository files stay at the root.
 - **[Feature]** Recipes can set `build_environment: direct` to activate only immediate dependencies while building, avoiding recursive environment growth with SCRAM. Runtime initialization stays recursive; opting in has a separate artifact hash (from #149, by @akritkbehera).

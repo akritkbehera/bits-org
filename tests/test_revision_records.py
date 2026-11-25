@@ -343,6 +343,24 @@ class TestPrefetchPackage(unittest.TestCase):
         build._prefetch_package(spec, helper, self.tmp, self.ARCH)   # no raise
         self.assertNotIn("prefetched_tarballs", spec)
 
+    def test_planned_identity_prefetches_before_live_hash_is_assigned(self):
+        from bits_helpers.utilities import resolve_store_path
+
+        spec = {"package": "bzip2", "is_devel_pkg": False}
+        planned = dict(spec, hash="aabb", remote_hashes=["aabb"])
+        tarball = os.path.join(self.tmp, resolve_store_path(self.ARCH, "aabb"),
+                               "bzip2-1.0.6-1.%s.tar.gz" % self.ARCH)
+
+        def fetch(candidate):
+            self.assertEqual(candidate["hash"], "aabb")
+            with open(tarball, "w"):
+                pass
+
+        build._prefetch_package(spec, types.SimpleNamespace(fetch_tarball=fetch),
+                                self.tmp, self.ARCH, sources=False, planned=planned)
+        self.assertNotIn("hash", spec)
+        self.assertEqual(spec["prefetched_tarballs"], [tarball])
+
     def test_records_remotely_fetched_tarball(self):
         from bits_helpers.utilities import resolve_store_path
         h = "a888a899"

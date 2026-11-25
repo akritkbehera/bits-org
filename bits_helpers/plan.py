@@ -20,6 +20,7 @@ from bits_helpers.arch import effective_arch
 from bits_helpers.log import ProgressPrint, banner, debug
 from bits_helpers.sync import binary_redistributable
 from bits_helpers.rev_index import revision_from_tarball
+from bits_helpers.sync import is_prefetched_tarball
 from bits_helpers.utilities import is_virtual_package, resolve_store_path
 
 INSTALLED = "installed"
@@ -82,7 +83,7 @@ def _installed(spec, work_dir, eff, rev, h):
     return False
 
 
-def _local(spec, eff, work_dir, write_store):
+def _local(spec, eff, work_dir, write_store, signed=False):
   """(INSTALLED or LOCAL_TARBALL, hash, revision) of a tarball of *spec* in the
   local store, or None."""
   forced = spec.get("force_revision") if "force_revision" in spec else None
@@ -93,8 +94,13 @@ def _local(spec, eff, work_dir, write_store):
     remote, local = list(spec["remote_hashes"]), [] if write_store else list(spec["local_hashes"])
   for hashes, is_local in ((remote, False), (local, True)):
     for h in hashes:
-      rev = pick_revision(glob(os.path.join(work_dir, resolve_store_path(eff, h), "*.tar.gz")),
-                          spec, eff, local=is_local, forced=forced)
+      names = glob(os.path.join(work_dir, resolve_store_path(eff, h), "*.tar.gz"))
+      if signed:
+        names = [name for name in names if not is_prefetched_tarball(name)
+                 or ((rev := revision_from_tarball(
+                     os.path.basename(name), spec["package"], spec["version"], eff)) is not None
+                     and _installed(spec, work_dir, eff, rev, h))]
+      rev = pick_revision(names, spec, eff, local=is_local, forced=forced)
       if rev is not None:
         state = INSTALLED if _installed(spec, work_dir, eff, rev, h) else LOCAL_TARBALL
         return state, h, rev
@@ -109,6 +115,7 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
   predicate for packages the reuse overlay satisfies. Not modelled: revision
   candidates known only from the signed manifest / rev-index markers, and the
   sha256 check of a downloaded tarball (so a REMOTE line can still rebuild)."""
+  spec.pop("planned_tarball", None)
   eff = effective_arch(spec, arch)
   if spec.get("is_devel_pkg"):
     return DEVEL, spec["local_revision_hash"], ""
@@ -123,7 +130,7 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
     return OVERLAY, spec["remote_revision_hash"], ""
   forced = spec.get("force_revision") if "force_revision" in spec else None
   remote = [spec["remote_revision_hash"]] if forced is not None else list(spec["remote_hashes"])
-  here = _local(spec, eff, work_dir, write_store)
+  here = _local(spec, eff, work_dir, write_store, signed=trusted is not None)
   if here:
     return here
   # A remote tarball the signed manifest does not vouch for is discarded by
@@ -132,11 +139,16 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
   unsigned = None
   if can_list:
     for h in remote:
-      rev = pick_revision(sync_helper.list_store_tarballs(eff, h), spec, eff, forced=forced)
+      names = sync_helper.list_store_tarballs(eff, h)
+      rev = pick_revision(names, spec, eff, forced=forced)
       if rev is not None:
         if trusted is not None and (eff, h) not in trusted:
           unsigned = (h, rev)
           break
+        spec["planned_tarball"] = next(
+            os.path.basename(name) for name in names
+            if revision_from_tarball(os.path.basename(name), spec["package"],
+                                     spec["version"], eff) == rev)
         return REMOTE, h, rev
   if (spec.get("_revision_policy_hash_injected") and not write_store
       and not is_virtual_package(spec)):
@@ -144,6 +156,8 @@ def classify(spec, arch, work_dir, sync_helper, can_list, write_store, trusted,
     local_hash = spec["local_revision_hash"]
     local_files = glob(os.path.join(
         work_dir, resolve_store_path(eff, local_hash), "*.tar.gz"))
+    if trusted is not None:
+      local_files = [name for name in local_files if not is_prefetched_tarball(name)]
     local_rev = pick_revision(local_files, spec, eff, forced=local_hash)
     if local_rev is not None:
       state = (INSTALLED if _installed(spec, work_dir, eff, local_rev, local_hash)
@@ -408,7 +422,7 @@ def plan(build_order, specs, args, work_dir, sync_helper, raw_architecture,
   from bits_helpers.sync import NoRemoteSync
   # None: there is no store, so nothing to check.
   can_list = None if isinstance(sync_helper, NoRemoteSync) else store_can_list(sync_helper)
-  trusted = trusted_index_fn() if (cfg.require_signed_reuse and can_list) else None
+  trusted = (trusted_index_fn() if can_list else {}) if cfg.require_signed_reuse else None
   overlay = _overlay_predicate(cfg)
   from bits_helpers.reuse_symlinks import select_symlink_package
   sym_trusted = (trusted_index_fn()
