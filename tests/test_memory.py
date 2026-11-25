@@ -485,3 +485,43 @@ class TestDefaultMemPerJob(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRestoreWorkerLimits(unittest.TestCase):
+    @patch("bits_helpers.memory._restore_cpu_quota", return_value=None)
+    @patch("bits_helpers.memory.resource.getrlimit", return_value=(4096, 4096))
+    @patch("bits_helpers.memory.restore_disk_headroom", return_value=1)
+    @patch("bits_helpers.memory.subprocess.check_output", return_value=b"24\n")
+    @patch("bits_helpers.memory.available_memory_mib", return_value=65536)
+    def test_cold_restore_and_build_limits(self, available, _, disk, _fd, quota):
+        from bits_helpers.memory import restore_worker_limits
+
+        self.assertEqual(restore_worker_limits("/sw", compiling=False), (24, 16))
+        self.assertEqual(restore_worker_limits("/sw", compiling=True), (24, 12))
+
+        quota.return_value = 4
+        self.assertEqual(restore_worker_limits("/sw", compiling=False), (4, 4))
+        quota.return_value = None
+        available.return_value = 1024
+        self.assertEqual(restore_worker_limits("/sw", compiling=True), (1, 1))
+        available.return_value = 128
+        self.assertEqual(restore_worker_limits("/sw", compiling=True), (0, 1))
+
+        available.return_value = 65536
+        disk.return_value = 0
+        self.assertEqual(restore_worker_limits("/sw", compiling=False), (0, 1))
+
+    def test_exhausted_parent_cgroup_clamps_memory(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from bits_helpers.memory import _cgroup_available_mib
+
+        with TemporaryDirectory() as directory:
+            parent = Path(directory)
+            child = parent / "child"
+            child.mkdir()
+            (child / "memory.max").write_text("max")
+            (parent / "memory.max").write_text(str(1024 ** 3))
+            (parent / "memory.current").write_text(str(1024 ** 3))
+            with patch("bits_helpers.memory._cgroup_v2_paths", return_value=(child, parent)):
+                self.assertEqual(_cgroup_available_mib(), 1)

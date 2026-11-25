@@ -340,6 +340,18 @@ def add_clean_arguments(subparsers, ctx):
   return clean_parser
 
 
+def _restore_workers(text):
+  if text.lower() == "auto":
+    return -1
+  try:
+    value = int(text)
+  except ValueError:
+    value = -2
+  if value < -1:
+    raise argparse.ArgumentTypeError("expected auto or a non-negative worker count")
+  return value
+
+
 def _days(text):
   """A number of days, 0 or more."""
   try:
@@ -1870,14 +1882,14 @@ def add_build_arguments(subparsers, ctx):
   build_remote.add_argument("--insecure", dest="insecure", action="store_true",
                             help="Don't validate TLS certificates when connecting to an https:// remote store.")
   _add_s3_connection_opts(build_remote)
-  build_remote.add_argument("--prefetch-workers", dest="prefetchWorkers", type=int, default=-1,
+  build_remote.add_argument("--prefetch-workers", dest="prefetchWorkers", type=_restore_workers, default=-1,
                             metavar="N",
                             help="""\
                             Start N background threads that pre-download pre-built tarballs and source
                             archives for the packages the build needs before it needs them, so that
                             downloads overlap the (serial) preparation loop instead of blocking it. A
                             .downloading sentinel file coordinates with the build loop so no file is
-                            fetched twice. Default: -1 (auto = min(builders, 4)); 0 disables prefetch.
+                            fetched twice. Default: auto (uses worker resources); 0 disables prefetch.
                             Works in all build modes.
                             """)
   build_remote.add_argument("--fetch-build-requires", dest="fetchBuildRequires", action="store_true",
@@ -1890,10 +1902,10 @@ def add_build_arguments(subparsers, ctx):
                             (the scheduler's "download" task cap, separate from the --builders compile
                             cap). Default: 2. Works with --builders > 1.
                             """)
-  build_remote.add_argument("--parallel-installs", dest="parallelInstalls", type=int, default=4,
+  build_remote.add_argument("--parallel-installs", dest="parallelInstalls", type=_restore_workers, default=-1,
                             metavar="N",
                             help=("Concurrent cached archive installs with --builders > 1. "
-                                  "Default: 4. Use 0 to share the build slots."))
+                                  "Default: auto (uses worker resources). Use 0 to share the build slots."))
   build_remote.add_argument("--parallel-sources", dest="parallelSources", type=int, default=1,
                             metavar="N",
                             help="""\

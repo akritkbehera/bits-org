@@ -45,7 +45,7 @@ class Scheduler:
   # either parallel or serial. This job is guaranteed to be executed last and
   # avoids having deadlocks due to all the queues having been disposed.
   def __init__(self, parallelThreads, logDelegate=None, buildStats=None, parallelDownloads=2,
-               criticalPath=True, parallelInstalls=0):
+               criticalPath=True, parallelInstalls=0, installMemory=None):
     self.workersQueue = PriorityQueue()
     self.resultsQueue = Queue()
     self.notifyQueue = Queue()
@@ -61,6 +61,7 @@ class Scheduler:
     self.resourceManager = None
     self.runningJobsCount = {"build": 0, "fetch": 0, "download": 0, "max_build": parallelThreads, "max_download": parallelDownloads}
     self.runningJobsCount.update(install=0, max_install=parallelInstalls)
+    self.installMemory = installMemory
     self.errors = {}
     # Critical-path scheduling: order ready jobs by the longest (history-weighted)
     # path to the sink, so the build's long pole starts as early as its
@@ -301,6 +302,12 @@ class Scheduler:
     bldCount = self.runningJobsCount["max_build"]-self.runningJobsCount["build"]
     dwnCount = self.runningJobsCount["max_download"]-self.runningJobsCount["download"]
     installCount = self.runningJobsCount["max_install"] - self.runningJobsCount["install"]
+    if (self.installMemory is not None and installCount > 0
+        and any(self.jobs[job["id"]]["taskType"] == "install" for job in allJobs)):
+      available = self.installMemory()
+      if available:
+        # Let one restore make progress even on a memory-constrained worker.
+        installCount = min(installCount, max(1 - self.runningJobsCount["install"], available // 512))
     for task in sorted(allJobs, key=lambda k: k['priority']):
       taskId = task["id"]
       taskType = self.jobs[taskId]["taskType"]

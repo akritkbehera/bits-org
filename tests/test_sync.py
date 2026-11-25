@@ -361,6 +361,23 @@ class Boto3TestCase(unittest.TestCase):
         local.replace(archive)
         self.assertFalse(sync.is_prefetched_tarball(str(archive)))
 
+    def test_auto_prefetch_defers_when_archive_exceeds_disk_headroom(self):
+        helper = sync.Boto3RemoteSync("b3://localhost", "", ARCHITECTURE, self.workdir)
+        helper.s3 = MagicMock()
+        helper.s3.head_object.return_value = {"ContentLength": 1024}
+        spec = dict(GOOD_SPEC, planned_tarball=tarball_name(GOOD_SPEC), auto_prefetch=True)
+        store_path = resolve_store_path(ARCHITECTURE, GOOD_HASH)
+        key = store_path + "/" + spec["planned_tarball"]
+        with patch("bits_helpers.sync.restore_disk_headroom", return_value=512):
+            helper._download_tarball(store_path, key, spec)
+        helper.s3.download_file.assert_not_called()
+
+        helper._prefetch_reserved_bytes = 1024
+        with patch("bits_helpers.sync.restore_disk_headroom", return_value=1536):
+            helper._download_tarball(store_path, key, spec)
+        helper.s3.download_file.assert_not_called()
+        self.assertEqual(helper._prefetch_reserved_bytes, 1024)
+
     def test_planned_tarball_uses_exact_key_before_listing(self):
         from botocore.exceptions import ClientError
         from tempfile import TemporaryDirectory

@@ -215,6 +215,8 @@ class NewCLIFlagsTest(unittest.TestCase):
 
         self.assertEqual(args.prefetchWorkers, -1,
                          "--prefetch-workers must default to -1 (auto)")
+        self.assertEqual(args.parallelInstalls, -1,
+                         "--parallel-installs must default to -1 (auto)")
         self.assertEqual(args.parallelSources, 1,
                          "--parallel-sources must default to 1")
         self.assertEqual(args.parallelDownloads, 2,
@@ -234,10 +236,11 @@ class NewCLIFlagsTest(unittest.TestCase):
 
         with _patch.object(sys, "argv",
                            ["bits", "build", "--force-unknown-architecture",
-                            "--prefetch-workers", "4", "zlib"]):
+                            "--prefetch-workers", "4", "--parallel-installs", "auto", "zlib"]):
             args, _ = doParseArgs()
 
         self.assertEqual(args.prefetchWorkers, 4)
+        self.assertEqual(args.parallelInstalls, -1)
 
     @patch("bits_helpers.arch.getoutput", new=lambda cmd: "x86_64")
     @patch("bits_helpers.args.commands")

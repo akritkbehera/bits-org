@@ -36,9 +36,13 @@ Examples
 """
 
 import math
+import os
 import platform
 import re
+import resource
+import shutil
 import subprocess
+from pathlib import Path
 
 from bits_helpers.log import debug, warning
 
@@ -90,6 +94,22 @@ def parse_memory(value) -> int:
     return result
 
 
+def _cgroup_v2_paths():
+    root = Path("/sys/fs/cgroup")
+    scope = root
+    try:
+        for line in Path("/proc/self/cgroup").read_text().splitlines():
+            if line.startswith("0::"):
+                candidate = root / line[3:].lstrip("/")
+                if ".." not in candidate.relative_to(root).parts:
+                    scope = candidate
+                break
+    except OSError:
+        pass
+
+    return (scope, *(p for p in scope.parents if p == root or root in p.parents))
+
+
 def _cgroup_available_mib() -> int:
     """Memory still available to *this cgroup* in MiB, or 0 when unlimited.
 
@@ -104,17 +124,17 @@ def _cgroup_available_mib() -> int:
     * cgroup v1: ``/sys/fs/cgroup/memory/memory.limit_in_bytes`` (a huge
       sentinel value = unlimited) and ``memory.usage_in_bytes``.
 
-    Returns 0 for "no effective limit" (bare metal, unlimited container, or
-    unreadable cgroupfs) so the caller falls back to the host estimate.
+    Returns 0 when no limit can be found, so the caller falls back to the
+    host estimate. A finite limit returns at least 1 MiB, even when exhausted.
     """
-    candidates = (
-        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),          # v2
-        ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
-         "/sys/fs/cgroup/memory/memory.usage_in_bytes"),                         # v1
-    )
+    candidates = [(directory / "memory.max", directory / "memory.current")
+                  for directory in _cgroup_v2_paths()]
+    candidates.append(("/sys/fs/cgroup/memory/memory.limit_in_bytes",
+                       "/sys/fs/cgroup/memory/memory.usage_in_bytes"))
+    available = []
     for limit_path, usage_path in candidates:
         try:
-            with open(limit_path) as fh:
+            with open(str(limit_path)) as fh:
                 raw = fh.read().strip()
             if raw == "max":
                 continue                       # v2 unlimited
@@ -125,14 +145,14 @@ def _cgroup_available_mib() -> int:
                 continue
             usage = 0
             try:
-                with open(usage_path) as fh:
+                with open(str(usage_path)) as fh:
                     usage = int(fh.read().strip())
             except Exception:  # pylint: disable=broad-except
                 pass           # limit alone is still a valid (conservative) cap
-            return max(0, (limit - usage)) // (1024 * 1024)
+            available.append(max(1, (limit - usage) // (1024 * 1024)))
         except Exception:  # pylint: disable=broad-except
             continue
-    return 0
+    return min(available) if available else 0
 
 
 def available_memory_mib() -> int:
@@ -172,9 +192,9 @@ def available_memory_mib() -> int:
             else:
                 debug("available_memory_mib: unsupported platform %r, skipping cap", system)
                 return 0
-        if system == "Linux" and host_avail > 0:
+        if system == "Linux":
             cg = _cgroup_available_mib()
-            if cg > 0 and cg < host_avail:
+            if cg > 0 and (host_avail <= 0 or cg < host_avail):
                 debug("available_memory_mib: cgroup limit clamps host estimate "
                       "%d MiB -> %d MiB", host_avail, cg)
                 return cg
@@ -182,6 +202,65 @@ def available_memory_mib() -> int:
     except Exception as exc:  # pylint: disable=broad-except
         warning("Could not detect available memory (%s); $JOBS will not be capped.", exc)
         return 0
+
+
+def restore_disk_headroom(path):
+    """Free bytes that speculative downloads can use."""
+    free = shutil.disk_usage(path).free
+    return max(0, free - 1024 ** 3)
+
+
+def _restore_cpu_quota():
+    """Read the effective cgroup v2 CPU quota, including parent limits."""
+    quotas = []
+    for directory in _cgroup_v2_paths():
+        try:
+            quota, period = (directory / "cpu.max").read_text().split()
+            if quota != "max":
+                quotas.append(max(1, math.ceil(int(quota) / int(period))))
+        except (OSError, ValueError, ZeroDivisionError):
+            continue
+    return min(quotas) if quotas else None
+
+
+def restore_worker_limits(work_dir, *, compiling):
+    """Choose (prefetch, cached install) concurrency for this worker."""
+    try:
+        cpus = max(1, int(subprocess.check_output(["nproc"], stderr=subprocess.DEVNULL, timeout=2)))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        try:
+            cpus = len(os.sched_getaffinity(0)) or 1
+        except (AttributeError, OSError):
+            cpus = os.cpu_count() or 1
+
+    quota = _restore_cpu_quota()
+    if quota is not None:
+        cpus = min(cpus, quota)
+
+    # Budget one third for downloads at 128 MiB each and one third for
+    # installs at 256 MiB each, keeping the remainder as headroom.
+    available = available_memory_mib()
+    restore_memory = available // (4 if compiling else 2)
+    download_memory = max(1, restore_memory // 384) if available else 4
+    install_memory = max(1, restore_memory // 768) if available else 2
+    install_cpus = max(1, cpus // 2) if compiling else cpus
+
+    # Reserve descriptors for the main process, S3 and any source builds.
+    soft_fd_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    fd_slots = 32 if soft_fd_limit == resource.RLIM_INFINITY else max(1, (soft_fd_limit - 64) // 48)
+    downloads = min(32, max(2, cpus), download_memory, fd_slots)
+    installs = min(16, install_cpus, install_memory, fd_slots)
+    if 0 < available < 256:
+        downloads = 0
+    archive_dir = os.path.join(work_dir, "TARS")
+    try:
+        if not restore_disk_headroom(archive_dir if os.path.isdir(archive_dir) else work_dir):
+            downloads = 0
+        if not restore_disk_headroom(work_dir):
+            installs = 1
+    except OSError:
+        downloads, installs = min(downloads, 2), 1
+    return downloads, installs
 
 
 def _available_linux() -> int:

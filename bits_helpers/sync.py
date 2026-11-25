@@ -11,12 +11,14 @@ import sys
 import time
 import requests
 from requests.exceptions import RequestException
+from threading import Lock
 from urllib.parse import quote
 
 from bits_helpers.cmd import execute
 from bits_helpers.log import debug, info, error, warning, dieOnError, ProgressPrint
 from bits_helpers.utilities import resolve_store_path, resolve_links_path, symlink, ver_rev
 from bits_helpers.arch import effective_arch
+from bits_helpers.memory import restore_disk_headroom
 from bits_helpers.rev_index import REVISION_TOKEN_PATTERN
 from bits_helpers import site
 
@@ -1270,6 +1272,8 @@ class Boto3RemoteSync(RemoteSync):
     self.writeStore = re.sub("^b3://", "", writeStore)
     self.architecture = architecture
     self.workdir = workdir
+    self._prefetch_lock = Lock()
+    self._prefetch_reserved_bytes = 0
     self._s3_init()
 
   def probe_url(self):
@@ -1557,12 +1561,38 @@ class Boto3RemoteSync(RemoteSync):
     os.makedirs(os.path.join(self.workdir, store_path), exist_ok=True)
     meta = self.s3.head_object(Bucket=self.remoteStore, Key=tarball)
     total_size = int(meta.get("ContentLength", 0))
+    transfer_options = {}
+    if spec.get("auto_prefetch"):
+      from boto3.s3.transfer import TransferConfig
+
+      config = TransferConfig(max_concurrency=2)
+      if hasattr(config, "preferred_transfer_client"):
+        config.preferred_transfer_client = "classic"
+      transfer_options["Config"] = config
     destination = os.path.join(self.workdir, store_path, os.path.basename(tarball))
     def download(filename):
-      self.s3.download_file(
-        Bucket=self.remoteStore, Key=tarball, Filename=filename,
-        Callback=lambda num_bytes: progress("[%d/%d] bytes transferred", num_bytes, total_size),
-      )
+      auto = spec.get("auto_prefetch")
+      if auto:
+        with self._prefetch_lock:
+          try:
+            headroom = restore_disk_headroom(os.path.dirname(destination))
+          except OSError:
+            headroom = 0
+          if headroom <= total_size + self._prefetch_reserved_bytes:
+            debug("Deferring prefetch of %s: insufficient free disk space", tarball)
+            return False
+          self._prefetch_reserved_bytes += total_size
+      try:
+        self.s3.download_file(
+          Bucket=self.remoteStore, Key=tarball, Filename=filename,
+          Callback=lambda num_bytes: progress("[%d/%d] bytes transferred", num_bytes, total_size),
+          **transfer_options,
+        )
+      finally:
+        if auto:
+          with self._prefetch_lock:
+            self._prefetch_reserved_bytes -= total_size
+      return True
 
     if spec.get("planned_tarball"):
       from tempfile import TemporaryDirectory
@@ -1570,7 +1600,8 @@ class Boto3RemoteSync(RemoteSync):
       # written by the build loop or by another process.
       with TemporaryDirectory(prefix=".prefetch-", dir=os.path.dirname(destination)) as temp_dir:
         staged = os.path.join(temp_dir, os.path.basename(destination))
-        download(staged)
+        if not download(staged):
+          return
         if not os.path.isfile(destination):
           with open(_prefetched_marker(destination, staged), "a"):
             pass
@@ -1578,8 +1609,8 @@ class Boto3RemoteSync(RemoteSync):
             os.link(staged, destination)
           except FileExistsError:
             pass
-    else:
-      download(destination)
+    elif not download(destination):
+      return
     progress.end("done")
 
   def fetch_symlinks(self, spec) -> None:
