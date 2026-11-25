@@ -40,6 +40,7 @@ from bits_helpers.build_config import BuildConfig
 from bits_helpers import plan as _plan
 from bits_helpers import fetch_cache
 from bits_helpers.build_progress import BuildProgress, package_info, package_label, set_package_progress
+import bits_helpers.profile_recipes  # noqa: F401  enables BITS_PROFILE_RECIPES
 from dataclasses import dataclass, field
 from bits_helpers.workarea import logged_scm, updateReferenceRepoSpec, checkout_sources
 try:

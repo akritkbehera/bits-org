@@ -10,8 +10,24 @@ import os
 from os.path import basename, dirname, exists, isdir, isfile, join
 
 from bits_helpers.log import dieOnError, error
+import bits_helpers.profile_recipes as _prof
 
 RECIPE_SUBDIR = "recipes"
+
+
+def _pl_exists(path):
+  _prof.count_path_lookup()
+  return exists(path)
+
+
+def _pl_isfile(path):
+  _prof.count_path_lookup()
+  return isfile(path)
+
+
+def _pl_isdir(path):
+  _prof.count_path_lookup()
+  return isdir(path)
 
 
 def recipe_file_name(path):
@@ -51,11 +67,11 @@ def checkForFilename(taps, pkg, d, ext=".sh", *, nested=True):
     yield "{}/{}".format(directory, pkg) if "/" in pkg else "{}/{}/latest".format(directory, pkg)
 
   root, fallback = candidates(d)
-  if exists(root) and (ext != ".sh" or not isdir(root)):
+  if _pl_exists(root) and (ext != ".sh" or not _pl_isdir(root)):
     return root
-  if nested and ext == ".sh" and not pkg.startswith("defaults-") and not isfile(fallback):
+  if nested and ext == ".sh" and not pkg.startswith("defaults-") and not _pl_isfile(fallback):
     for recipe in candidates(join(d, RECIPE_SUBDIR)):
-      if isfile(recipe):
+      if _pl_isfile(recipe):
         return recipe
   return fallback
 
@@ -97,7 +113,7 @@ def getConfigPaths(configDir):
         d = r          # provider checkout – absolute path used directly
       else:
         d = join(configDir, "%s.bits" % r)
-      if exists(d):
+      if _pl_exists(d):
         pkgDirs.append(d)
   return pkgDirs
 
@@ -107,7 +123,7 @@ def resolveFilename(taps, pkg, configDir, generatedPackages, ext=".sh", required
       meta = generatedPackages[d][pkg]
       return ("generate:{}@{}".format(pkg, meta["version"]), meta["pkgdir"])
     filename = checkForFilename(taps, pkg, d, ext=ext)
-    if exists(filename):
+    if _pl_exists(filename):
       return (filename, d)
   # Name the recipe(s) that pulled this dependency in (with their origin), so the
   # operator sees WHO required a missing package, not just that it is missing.
@@ -134,7 +150,7 @@ def resolveDefaultsFilename(defaults, configDir, failOnError=True):
   filename = None
   for d in getConfigPaths(configDir):
     candidate = "{}/defaults-{}.sh".format(d, defaults)
-    if exists(candidate):
+    if _pl_exists(candidate):
       return candidate
     filename = candidate  # keep last candidate for the error message
 

@@ -22,6 +22,8 @@ from bits_helpers.recipe import getRecipeReader, parseRecipe, getGeneratedPackag
 from bits_helpers.paths import resolveFilename, getConfigPaths, checkForFilename
 from bits_helpers.utilities import recipeSourceLabel, resolve_version
 from bits_helpers.defaults import SOURCE_KEYS, resolve_pkg_family
+import bits_helpers.profile_recipes as _prof
+import time as _time
 
 def shadowed_defaults_repo(pkg_filename, won_dir, search_dirs, defaults_dirs):
   """Return the first repo dir after *won_dir* in *search_dirs* that supplies an
@@ -215,6 +217,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
   for _dname, _ddir in _ddirs.items():
     if os.path.abspath(_ddir) != _base:
       _defaults_dirs.setdefault(os.path.abspath(_ddir), []).append("defaults-" + _dname)
+  _pf = _prof.current
+  _t_gpl = _prof._begin("getPackageList")
+  _cnt0 = _prof._counter_snapshot()
   while packages:
     p = packages.pop(0)
     if p in specs:
@@ -243,7 +248,9 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
     # they will end up with the same hash. The defaults must be called
     # "defaults-release" for this to work, since the defaults are a dependency
     # and all dependencies' names go into a package's hash.
+    _t_resolve = _prof._begin("resolveFilename")
     filename,pkgdir = resolveFilename(taps, pkg_filename, configDir, generatedPackages)
+    _prof._end("resolveFilename", _t_resolve)
 
     dieOnError(not filename, "Package {} not found in {}".format(p, configDir))
     assert(filename is not None)
@@ -256,8 +263,10 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
                 "is the intended one.", p, recipeSourceLabel(pkgdir, provider_dirs),
                 recipeSourceLabel(_later, provider_dirs), ", ".join(_defaults_dirs[_later]))
 
+    _t_parse = _prof._begin("parseRecipe_pkglist")
     reader = getRecipeReader(filename, configDir, generatedPackages[pkgdir], repo_dir=pkgdir)
     err, spec, recipe = parseRecipe(reader, generatedPackages)
+    _prof._end("parseRecipe_pkglist", _t_parse)
     dieOnError(err, err)
     # Unless there was an error, both spec and recipe should be valid.
     # otherwise the error should have been caught above.
@@ -585,6 +594,12 @@ def getPackageList(packages, specs, configDir, preferSystem, noSystem,
 
     specs[spec["package"]] = spec
     packages += spec["requires"]
+  _prof._end("getPackageList", _t_gpl)
+  if _pf is not None:
+    _cd = _prof._counter_delta(_cnt0)
+    _pf.count("pkglist_packages_resolved", len(specs))
+    _pf.count("pkglist_fs_reads", _cd.get("fs_reads", 0))
+    _pf.count("pkglist_path_lookups", _cd.get("path_lookups", 0))
 
   # ── Recipe-origin summary (package@repository:commit) ───────────────────────
   # One compact, always-on block grouping every resolved recipe by the

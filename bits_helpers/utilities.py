@@ -14,6 +14,7 @@ from os.path import basename, isdir, islink, join
 # Internal
 from bits_helpers.git import git
 from bits_helpers.log import dieOnError
+import bits_helpers.profile_recipes as _prof
 
 # Backward-compatibility re-exports: yamlLoad moved to bits_helpers.recipe and
 # yamlDump was restored there. External recipe generators (e.g. cms.bits) import
@@ -54,6 +55,7 @@ def topological_sort(specs):
   The algorithm used here was adapted from:
   http://www.stoimen.com/blog/2012/10/01/computer-algorithms-topological-sort-of-a-graph/
   """
+  _t = _prof._begin("topological_sort")
   edges = [(spec["package"], dep) for spec in specs.values() for dep in spec["requires"]]
   leaves = [spec["package"] for spec in specs.values() if not spec["requires"]]
   while leaves:
@@ -86,6 +88,7 @@ def topological_sort(specs):
       if current == start:  # We've gone full circle
         raise RuntimeError("Internal error: cycle detection failed")
     assert False, "Unreachable error: cycle detection failed"
+  _prof._end("topological_sort", _t)
 
 
 

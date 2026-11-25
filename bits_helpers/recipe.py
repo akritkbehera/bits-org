@@ -12,6 +12,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import OrderedDict
 from glob import escape, glob
 from os.path import join
@@ -23,6 +24,7 @@ from bits_helpers.cmd import getoutput
 from bits_helpers.git import git
 from bits_helpers.log import dieOnError
 from bits_helpers.paths import RECIPE_SUBDIR, checkForFilename, getConfigPaths, resolveFilename
+import bits_helpers.profile_recipes as _prof
 
 class SpecError(Exception):
   pass
@@ -85,6 +87,7 @@ class FileReader:
       if path.startswith(nested + os.sep) and path != join(nested, "latest"):
         self.repo_dir = repo_dir
   def __call__(self):
+    _prof.count_fs_read()
     with open(self.url) as f:
       return f.read()
       
@@ -93,6 +96,7 @@ class GitReader:
   def __init__(self, url, configDir) -> None:
     self.url, self.configDir = url, configDir
   def __call__(self):
+    _prof.count_fs_read()
     m = re.search(r'^dist:(.*)@([^@]+)$', self.url)
     fn, gh = m.groups()
     fn = fn.lower()
@@ -137,6 +141,7 @@ def yamlLoad(s):
   def construct_include(loader: YamlSafeOrderedLoader, node: yaml.Node) -> Any:
     """Include file referenced at node."""
     filename = os.path.abspath(os.path.join(loader._root, loader.construct_scalar(node)))
+    _prof.count_yaml_include()
     extension = os.path.splitext(filename)[1].lstrip('.')
     try:
       with open(filename) as f:
@@ -234,6 +239,7 @@ def resolveIncludes(body, recipe_url, repo_dir=None, _visited=None, _depth=0):
       raise RuntimeError("#!include: unsafe path %r in %s" % (rel, recipe_url or "?"))
     if path_abs in _visited:
       raise RuntimeError("#!include: cyclic include: %s" % " -> ".join(_visited + [path_abs]))
+    _prof.count_body_include()
     try:
       with open(path_abs) as f:
         content = f.read()
@@ -248,6 +254,10 @@ def resolveIncludes(body, recipe_url, repo_dir=None, _visited=None, _depth=0):
 def parseRecipe(reader, generatePackages=None, visited=None):
   assert(reader.__call__)
   err, spec, recipe = (None, None, None)
+  _pf = _prof.current
+  _t0 = _prof._begin("parseRecipe")
+  _url = getattr(reader, "url", "") or "<recipe>"
+  _cnt0 = _prof._counter_snapshot()
   try:
     d = reader()
     _m = re.search(r'^[ \t]*---[ \t]*$', d, re.M)
@@ -286,7 +296,9 @@ def parseRecipe(reader, generatePackages=None, visited=None):
       header,
       flags=re.MULTILINE,
     )
+    _t_yaml = _prof._begin("yamlLoad")
     spec = yamlLoad(header)
+    _prof._end("yamlLoad", _t_yaml)
     if spec and "from" in spec:
       basename = os.path.basename(getattr(reader, "url", "") or "")
       filename = basename[:-3] if basename.endswith(".sh") else basename
@@ -296,13 +308,29 @@ def parseRecipe(reader, generatePackages=None, visited=None):
       if spec["from"] in visited:
         raise RuntimeError(f" Cyclic Dependency: {' -> '.join(list(visited) + [spec['from']])}")
       visited.append(spec["from"])
+      _prof.count_parent_hop()
       parent_dir = os.path.join(repoDir, spec["from"])
       base_filename, pkgdir = resolveFilename({}, filename, parent_dir, generatePackages or {})
       base_reader = getRecipeReader(base_filename, repoDir, (generatePackages or {}).get(pkgdir, {}), pkgdir)
+      _t_parent = _prof._begin("parent_parse")
       err, base_spec, base_recipe = parseRecipe(base_reader, generatePackages, visited)
+      _prof._end("parent_parse", _t_parent)
       spec, recipe_append = handleMergePolicy(spec, base_spec)
       recipe = recipe + base_recipe if recipe_append else recipe
     validateSpec(spec)
+    if err is None and _pf is not None:
+      _cd = _prof._counter_delta(_cnt0)
+      _pf.record_invocation(
+        recipe_path=_url, phase=_prof.get_phase(), caller="parseRecipe",
+        duration_ns=time.perf_counter_ns() - _t0,
+        generated=isinstance(reader, GeneratedPackage),
+        yaml_includes=_cd.get("yaml_includes", 0),
+        body_includes=_cd.get("body_includes", 0),
+        parents=_cd.get("parent_hops", 0),
+        fs_reads=_cd.get("fs_reads", 0),
+        path_lookups=_cd.get("path_lookups", 0),
+        sha=None)
+    _prof._end("parseRecipe", _t0)
   except RuntimeError as e:
     err = str(e)
   except OSError as e:
@@ -319,6 +347,7 @@ def parseRecipe(reader, generatePackages=None, visited=None):
 
 
 def getGeneratedPackages(configDir):
+  _t = _prof._begin("getGeneratedPackages")
   all_pkgs = {}
   pkgDirs = getConfigPaths(configDir)
   def generated_in(directory, pkgdir):
@@ -346,6 +375,7 @@ def getGeneratedPackages(configDir):
       if name not in dir_pkgs and not os.path.exists(checkForFilename({}, name, pkgdir, nested=False)):
         dir_pkgs[name] = meta
     all_pkgs[pkgdir] = dir_pkgs
+  _prof._end("getGeneratedPackages", _t)
   return all_pkgs
 
 

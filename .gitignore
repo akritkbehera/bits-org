@@ -4,6 +4,8 @@
 build
 dist
 bits.egg-info
+build_bits.egg-info
+.venv-profile/
 _site
 .rubyversion
 *,cover

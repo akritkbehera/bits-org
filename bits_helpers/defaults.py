@@ -17,6 +17,7 @@ from bits_helpers.log import banner, debug, dieOnError, info
 from bits_helpers.recipe import getRecipeReader, parseRecipe
 from bits_helpers.paths import getConfigPaths, resolveDefaultsFilename
 from bits_helpers.utilities import asList
+import bits_helpers.profile_recipes as _prof
 
 # Recipe keys that change what a package fetches (its sources, tag, patches).
 SOURCE_KEYS = frozenset({"version", "tag", "source", "sources", "patches"})
@@ -201,6 +202,7 @@ def readDefaults(configDir, defaults, error, architecture):
 
 
 def _read_defaults_chain(configDir, defaults, error, architecture):
+  _t = _prof._begin("defaults_chain")
   defaultsMeta = {}
   defaultsBody = ""
   append_arch_qualifiers = []  # per-default append_arch values, in chain order
@@ -252,7 +254,9 @@ def _read_defaults_chain(configDir, defaults, error, architecture):
     else:
       defaults_dirs[xdefaults] = os.path.dirname(os.path.abspath(xDefaults))
     if xDefaults is not None and exists(xDefaults):
+      _t_d = _prof._begin("defaults_parse")
       err, xMeta, xBody = parseRecipe(getRecipeReader(xDefaults))
+      _prof._end("defaults_parse", _t_d)
       if xBody.strip() != "":
         defaultsBody += "\n" + xBody.strip()
       if err:
@@ -327,6 +331,7 @@ def _read_defaults_chain(configDir, defaults, error, architecture):
 
   debug("Merged Defaults: %s ",json.dumps(defaultsMeta,indent = 4))
 
+  _prof._end("defaults_chain", _t)
   return (defaultsMeta, defaultsBody)
 
 
@@ -388,6 +393,7 @@ def asDict(overrides_array):
 # (Almost pure part of the defaults parsing)
 # Override defaultsGetter for unit tests.
 def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=None):
+  _t = _prof._begin("parseDefaults")
   defaultsMeta, defaultsBody = defaultsGetter()
   if architecture and configDir:
     archDefaults = resolveDefaultsFilename(architecture, configDir, failOnError=False)
@@ -430,4 +436,5 @@ def parseDefaults(disable, defaultsGetter, log, architecture=None, configDir=Non
     if "@" in k:
       taps[f] = "dist:"+k
     overrides[f] = dict(**(v or {}))
+  _prof._end("parseDefaults", _t)
   return (None, overrides, taps, defaultsMeta)
