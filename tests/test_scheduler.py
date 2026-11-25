@@ -282,3 +282,22 @@ def test_cached_installs_have_independent_slots():
   scheduler.run()
   assert not scheduler.errors
   assert "build:consumer" in scheduler.doneJobs
+
+
+def test_automatic_installs_keep_one_slot_when_memory_is_low():
+  running = []
+  scheduler = Scheduler(1, parallelInstalls=4, installMemory=lambda: 128)
+
+  def install():
+    running.append(1)
+    try:
+      assert len(running) == 1
+      sleep(0.02)
+    finally:
+      running.pop()
+
+  for i in range(4):
+    scheduler.parallel("build:cached%d" % i, [], "install", install)
+  scheduler.run()
+  assert not scheduler.errors
+  assert len([job for job in scheduler.doneJobs if job.startswith("build:")]) == 4

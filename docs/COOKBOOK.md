@@ -88,9 +88,9 @@ bits build --parallel 4 --jobs 8 my_large_stack
 
 The scheduler dispatches packages as soon as their dependencies are satisfied. Use `--resources` to declare per-package CPU and memory budgets and prevent overcommit (see [Building several packages at once](USERGUIDE.md#building-several-packages-at-once) and the `--resources` option of [`bits build`](REFERENCE.md#bits-build)).
 
-With `--builders > 1`, use `--parallel-installs N` to tune concurrent cached archive extraction and relocation. The default is four and `0` shares the build slots.
+With `--builders > 1`, use `--parallel-installs N` to tune concurrent cached archive extraction and relocation. The default is `auto`, and `0` shares the build slots.
 
-**Prefetch remote tarballs** — when a binary store is in use (`--remote-store`/`--write-store`, or the platform default), bits fetches pre-built tarballs and source archives in the background while packages compile, with as many workers as `--parallel` (at most 4); `--prefetch-workers N` sets the number and `0` turns it off:
+**Prefetch remote tarballs** — when a binary store is in use (`--remote-store`/`--write-store`, or the platform default), bits fetches pre-built tarballs and source archives in the background while packages compile, with a worker count chosen from the available CPU, memory, disk and file-descriptor budget; `--prefetch-workers N` sets the number and `0` turns it off:
 
 ```bash
 bits build --parallel 4 \

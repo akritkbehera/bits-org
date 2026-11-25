@@ -3,6 +3,8 @@ Covers `bits`, `lcg.bits` (recipes), and `bits-recipe-tools`. Entries tagged **[
 ---
 # Unreleased
 
+- **[Improvement]** Size binary prefetch and cached install pools automatically from worker resources. Explicit worker counts remain available for throughput tuning.
+
 - **[Improvement]** Prefetch planned `b3://` store hits using their selected package identity and S3 archive. Cached archive installs have four separate scheduler slots with `--builders > 1`, configurable with `--parallel-installs`.
 
 - **[Fix]** With a write store, a new counter revision is reserved in the store (its rev-index marker) when it is picked, before the build; one another hash took meanwhile is skipped for the next free number. Two builds of one version running at once both took the same number, and one replaced the other's install path. bits-store markers are write-once; an S3 store's are where it supports `If-None-Match`, else the last writer wins. A build that fails keeps its number for a retry of the same hash (others skip it). A store that cannot be asked keeps the number, as before.

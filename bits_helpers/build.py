@@ -12,7 +12,7 @@ from bits_helpers.manifest import pip_recipe
 from bits_helpers.repo_provider import (fetch_repo_providers_iteratively, load_always_on_providers,
                                         announce_providers, MAX_PROVIDER_ITERATIONS,
                                         no_recipes_hint)
-from bits_helpers.memory import effective_jobs
+from bits_helpers.memory import available_memory_mib, effective_jobs, restore_worker_limits
 from bits_helpers.checksum import (parse_entry as parse_checksum_entry,
                                     enforcement_mode as checksum_enforcement_mode,
                                     write_checksums_enabled,
@@ -4689,6 +4689,25 @@ def doBuild(args, parser):
   elif cfg.monitor:   # explicit --monitor only; a system default may expect CI's URL
     warning("build-host monitor requested but no URL (--monitor-url / $METRICS_URL)")
 
+  _prefetch_order = prefetch_wanted(buildOrder, _states)
+  _prefetch_workers = cfg.prefetch_workers if _prefetch_order and not isinstance(syncHelper, NoRemoteSync) else 0
+  _auto_prefetch = _prefetch_workers < 0
+  _install_workers = getattr(args, "parallelInstalls", -1) if args.builders > 1 and buildOrder else 0
+  _auto_installs_requested = _install_workers < 0
+  if _auto_prefetch or _auto_installs_requested:
+    _cache_states = (_plan.REMOTE, _plan.LOCAL_TARBALL)
+    _cached_count = sum(_states.get(p) in _cache_states for p in buildOrder)
+    _compiling = any(_states.get(p) not in _plan.REUSED for p in buildOrder
+                     if not is_virtual_package(specs[p]))
+    _auto_downloads, _auto_installs = restore_worker_limits(workDir, compiling=_compiling)
+    if _auto_prefetch:
+      _prefetch_workers = min(_auto_downloads, len(_prefetch_order))
+    if _auto_installs_requested:
+      _install_workers = min(_auto_installs, max(1, _cached_count if _states else len(buildOrder)))
+    info("Restore parallelism: %d prefetch workers, %d cached install slots",
+         _prefetch_workers, _install_workers)
+  args.parallelInstalls = _install_workers
+
   scheduler = None
   if (args.builders > 1) and buildOrder:
     from bits_helpers.scheduler import Scheduler
@@ -4724,7 +4743,8 @@ def doBuild(args, parser):
     scheduler = Scheduler(args.builders, logDelegate=logger, buildStats=args.resources,
                           parallelDownloads=max(1, cfg.parallel_downloads),
                           criticalPath=cfg.critical_path_schedule,
-                          parallelInstalls=max(0, getattr(args, "parallelInstalls", 4)))
+                          parallelInstalls=_install_workers,
+                          installMemory=available_memory_mib if _auto_installs_requested else None)
 
     # Collect concise per-package failures during the run so we can write a
     # readable summary at the end (write_failure_summary), instead of leaving the
@@ -4758,15 +4778,11 @@ def doBuild(args, parser):
   remove_stale_sentinels(workDir)
 
   # --- Optional prefetch pool -------------------------------------------------
-  # Default (-1) means "auto": scale with the number of builders so that, on the
-  # serial preparation loop, downloads overlap instead of blocking — capped at 4
-  # to avoid hammering the store.  0 explicitly disables prefetch; N>0 forces N.
-  _prefetch_workers = cfg.prefetch_workers
-  if _prefetch_workers < 0:
-    _prefetch_workers = min(max(int(getattr(args, "builders", 1)), 1), 4)
   _prefetch_executor, _prefetch_futures = None, []
-  _prefetch_order = prefetch_wanted(buildOrder, _states)
-  if _prefetch_workers > 0 and _prefetch_order and not isinstance(syncHelper, NoRemoteSync):
+  if _prefetch_workers > 0:
+    if _auto_prefetch:
+      for _candidate in _planned_prefetch.values():
+        _candidate["auto_prefetch"] = True
     debug("Starting %d prefetch worker(s)", _prefetch_workers)
     _prefetch_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=_prefetch_workers,
